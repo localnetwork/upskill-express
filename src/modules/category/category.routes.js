@@ -6,6 +6,7 @@ import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
   createCategoryController,
   deleteCategoryController,
+  getCategoryController,
   listCategoriesController,
   updateCategoryController,
 } from "./category.controller.js";
@@ -14,6 +15,7 @@ import { createCategoryValidator, updateCategoryValidator } from "./category.val
 const router = Router();
 
 router.get("/", asyncHandler(listCategoriesController));
+router.get("/:slugOrId", asyncHandler(getCategoryController));
 router.post("/", authenticate, authorize("ADMIN"), validate(createCategoryValidator), asyncHandler(createCategoryController));
 router.patch("/:categoryId", authenticate, authorize("ADMIN"), validate(updateCategoryValidator), asyncHandler(updateCategoryController));
 router.delete("/:categoryId", authenticate, authorize("ADMIN"), asyncHandler(deleteCategoryController));

@@ -1,4 +1,10 @@
-import { createCategory, deleteCategory, listCategories, updateCategory } from "./category.service.js";
+import {
+  createCategory,
+  deleteCategory,
+  getCategoryBySlugOrId,
+  listCategories,
+  updateCategory,
+} from "./category.service.js";
 
 function toLegacyCategory(category) {
   return {
@@ -6,6 +12,7 @@ function toLegacyCategory(category) {
     title: category.name || category.title,
     category_description: category.description || category.category_description || null,
     parent_id: category.parentId || category.parent_id || null,
+    children: (category.children || []).map(toLegacyCategory),
   };
 }
 
@@ -26,6 +33,11 @@ export async function listCategoriesController(req, res) {
     ...data,
     data: data.data.map(toLegacyCategory),
   });
+}
+
+export async function getCategoryController(req, res) {
+  const data = await getCategoryBySlugOrId(req.params.slugOrId);
+  return res.json(toLegacyCategory(data));
 }
 
 export async function deleteCategoryController(req, res) {

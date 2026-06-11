@@ -6,6 +6,7 @@ import { validate } from "../../shared/middleware/validate.middleware.js";
 import {
   createCourseController,
   deleteDraftCourseController,
+  getCourseForManagementController,
   getCourseForLearnerController,
   getCourseRouteController,
   getCourseBySlugController,
@@ -26,6 +27,7 @@ router.get("/", asyncHandler(listCoursesController));
 router.get("/authored", authenticate, authorize("EDUCATOR"), asyncHandler(listAuthoredCoursesController));
 router.get("/route/:slug", asyncHandler(getCourseRouteController));
 router.get("/:slug/learn", authenticate, authorize("LEARNER"), asyncHandler(getCourseForLearnerController));
+router.get("/:slug/manage", authenticate, asyncHandler(getCourseForManagementController));
 router.get("/:slug", asyncHandler(getCourseBySlugController));
 
 router.post("/", authenticate, authorize("EDUCATOR"), validate(createCourseValidator), asyncHandler(createCourseController));

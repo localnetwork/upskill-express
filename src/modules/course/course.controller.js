@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   createCourse,
   deleteDraftCourse,
+  getCourseForManagement,
   getCourseForLearner,
   getCourseRoute,
   getCourseBySlug,
@@ -125,6 +126,11 @@ export async function listCoursesController(req, res) {
 
 export async function getCourseBySlugController(req, res) {
   const data = await getCourseBySlug(req.params.slug);
+  return res.json({ message: "Course fetched", data });
+}
+
+export async function getCourseForManagementController(req, res) {
+  const data = await getCourseForManagement(req.user, req.params.slug);
   return res.json({ message: "Course fetched", data });
 }
 

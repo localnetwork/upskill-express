@@ -5,6 +5,7 @@ import { slugify } from "../../shared/utils/slugify.js";
 
 const COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
 const PROMO_MEDIA_TYPES = ["PROMO_VIDEO"];
+const COURSE_GOALS_KEY_PREFIX = "course_goals::";
 
 function pickLatestMediaByTypes(mediaList = [], types = []) {
   return mediaList.find((item) => types.includes(item.mediaType)) || null;
@@ -17,6 +18,50 @@ function mapLegacyMedia(media) {
     path: media.storagePath,
     title: media.originalName,
   };
+}
+
+function getCourseGoalsSettingKey(courseId) {
+  return `${COURSE_GOALS_KEY_PREFIX}${courseId}`;
+}
+
+function normalizeGoalsPayload(payload = {}) {
+  const toList = (input) =>
+    Array.isArray(input)
+      ? input
+          .map((item) => String(item ?? "").trim())
+          .filter(Boolean)
+      : [];
+
+  return {
+    what_you_will_learn_data: toList(payload.what_you_will_learn_data),
+    requirements_data: toList(payload.requirements_data),
+    who_should_attend_data: toList(payload.who_should_attend_data),
+  };
+}
+
+async function readCourseGoals(courseId) {
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key: getCourseGoalsSettingKey(courseId) },
+    select: { value: true },
+  });
+
+  if (!setting?.value) {
+    return normalizeGoalsPayload({});
+  }
+
+  try {
+    const parsed = JSON.parse(setting.value);
+    return normalizeGoalsPayload(parsed);
+  } catch (_error) {
+    throw new ApiError(500, "Stored course goals are invalid");
+  }
+}
+
+function extractMediaId(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "object" && value.id) return String(value.id).trim();
+  return "";
 }
 
 function getCourseInclude() {
@@ -90,10 +135,46 @@ async function resolveLevelId(rawValue) {
   return null;
 }
 
+async function resolveCategoryId(payload) {
+  const directCategoryId = payload.categoryId || payload.category_id || null;
+  if (directCategoryId) return String(directCategoryId);
+
+  const normalizeCategoryRef = (value) => {
+    if (value === undefined || value === null) return "";
+    if (typeof value === "string" || typeof value === "number") {
+      return String(value).trim();
+    }
+    if (typeof value === "object") {
+      return String(value.id || value.category_id || "").trim();
+    }
+    return "";
+  };
+
+  const categoryIds = Array.isArray(payload.category_ids)
+    ? payload.category_ids
+        .map(normalizeCategoryRef)
+        .filter(Boolean)
+    : [];
+
+  if (categoryIds.length === 0) return null;
+
+  const categories = await prisma.category.findMany({
+    where: {
+      id: { in: categoryIds },
+      deletedAt: null,
+    },
+    select: { id: true, parentId: true },
+  });
+
+  if (!categories.length) return null;
+
+  // Prefer the most specific (child) category when parent + child are both submitted.
+  const child = categories.find((category) => category.parentId);
+  return child?.id || categories[0].id;
+}
+
 async function normalizeCoursePayload(payload) {
-  const categoryFromArray = Array.isArray(payload.category_ids)
-    ? payload.category_ids.find(Boolean)
-    : null;
+  const categoryId = await resolveCategoryId(payload);
   const levelInput = payload.levelId || payload.instructional_level || null;
   const levelId = await resolveLevelId(levelInput);
 
@@ -101,7 +182,7 @@ async function normalizeCoursePayload(payload) {
     title: payload.title,
     subtitle: payload.subtitle,
     description: payload.description,
-    categoryId: payload.categoryId || payload.category_id || categoryFromArray || null,
+    categoryId,
     levelId,
     priceTierId: payload.priceTierId || payload.price_tier || null,
     isPublished:
@@ -161,8 +242,7 @@ export async function updateCourse(userId, courseId, payload) {
       data: normalized,
     });
 
-    const coverImageId =
-      typeof payload.cover_image === "string" ? payload.cover_image.trim() : "";
+    const coverImageId = extractMediaId(payload.cover_image);
     if (coverImageId) {
       await tx.media.updateMany({
         where: {
@@ -177,8 +257,7 @@ export async function updateCourse(userId, courseId, payload) {
       });
     }
 
-    const promoVideoId =
-      typeof payload.promo_video === "string" ? payload.promo_video.trim() : "";
+    const promoVideoId = extractMediaId(payload.promo_video);
     if (promoVideoId) {
       await tx.media.updateMany({
         where: {
@@ -224,11 +303,21 @@ export async function updateCourseGoals(userId, courseId, payload) {
     throw new ApiError(403, "Forbidden");
   }
 
-  return {
-    what_you_will_learn_data: payload.what_you_will_learn_data || [],
-    requirements_data: payload.requirements_data || [],
-    who_should_attend_data: payload.who_should_attend_data || [],
-  };
+  const goals = normalizeGoalsPayload(payload);
+  await prisma.platformSetting.upsert({
+    where: { key: getCourseGoalsSettingKey(courseId) },
+    update: {
+      value: JSON.stringify(goals),
+      description: `Goals for course ${courseId}`,
+    },
+    create: {
+      key: getCourseGoalsSettingKey(courseId),
+      value: JSON.stringify(goals),
+      description: `Goals for course ${courseId}`,
+    },
+  });
+
+  return goals;
 }
 
 export async function deleteDraftCourse(userId, courseId) {
@@ -430,6 +519,17 @@ export async function getCourseBySlug(slug) {
       course.reviews.length
     : 0;
 
+  const goals = await readCourseGoals(course.id);
+
+  return mapCourseDetails(course, goals);
+}
+
+function mapCourseDetails(course, goals) {
+  const avgRating = course.reviews.length
+    ? course.reviews.reduce((acc, review) => acc + review.rating, 0) /
+      course.reviews.length
+    : 0;
+
   return {
     ...course,
     uuid: course.id,
@@ -450,14 +550,61 @@ export async function getCourseBySlug(slug) {
         }
       : null,
     category_ids: course.category ? [{ category_id: course.category.id }] : [],
-    goals: {
-      what_you_will_learn_data: [],
-      requirements_data: [],
-      who_should_attend_data: [],
-    },
+    goals,
     averageRating: Number(avgRating.toFixed(2)),
     reviewsCount: course.reviews.length,
   };
+}
+
+export async function getCourseForManagement(user, slug) {
+  const course = await prisma.course.findFirst({
+    where: {
+      OR: [{ slug }, { id: slug }],
+      deletedAt: null,
+    },
+    include: {
+      educator: { select: { id: true, username: true } },
+      category: true,
+      level: true,
+      priceTier: true,
+      media: {
+        where: {
+          mediaType: { in: [...COVER_MEDIA_TYPES, ...PROMO_MEDIA_TYPES] },
+        },
+        orderBy: { createdAt: "desc" },
+      },
+      sections: {
+        orderBy: { position: "asc" },
+        include: {
+          lessons: {
+            orderBy: { position: "asc" },
+            include: {
+              media: {
+                orderBy: { createdAt: "desc" },
+                take: 1,
+              },
+            },
+          },
+        },
+      },
+      reviews: {
+        select: { rating: true },
+      },
+    },
+  });
+
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+
+  const isOwner = course.educatorId === user?.id;
+  const isAdmin = Array.isArray(user?.roles) && user.roles.includes("ADMIN");
+  if (!isOwner && !isAdmin) {
+    throw new ApiError(403, "Forbidden");
+  }
+
+  const goals = await readCourseGoals(course.id);
+  return mapCourseDetails(course, goals);
 }
 
 export async function listAuthoredCourses(userId, query) {
@@ -524,6 +671,8 @@ export async function getCourseRoute(slug, userId) {
       ])
     : [null, null];
 
+  const goals = await readCourseGoals(course.id);
+
   return {
     id: course.id,
     slug: course.slug,
@@ -577,11 +726,7 @@ export async function getCourseRoute(slug, userId) {
       : null,
     promo_video: null,
     cover_image: null,
-    goals: {
-      what_you_will_learn_data: [],
-      requirements_data: [],
-      who_should_attend_data: [],
-    },
+    goals,
     is_enrolled: Boolean(isEnrolled),
     is_in_cart: Boolean(isInCart),
   };
@@ -615,6 +760,8 @@ export async function getCourseForLearner(userId, slug) {
     throw new ApiError(404, "Enrollment not found");
   }
 
+  const goals = await readCourseGoals(enrollment.course.id);
+
   return {
     course: {
       id: enrollment.course.id,
@@ -623,6 +770,7 @@ export async function getCourseForLearner(userId, slug) {
       title: enrollment.course.title,
       subtitle: enrollment.course.subtitle,
       description: enrollment.course.description,
+      goals,
       sections: enrollment.course.sections.map((section) => ({
         id: section.id,
         uuid: section.id,

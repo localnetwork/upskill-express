@@ -1,4 +1,4 @@
-import { approveCourse, getRevenueReport, rejectCourse } from "./admin.service.js";
+import { approveCourse, getRevenueReport, listAdminCourses, rejectCourse } from "./admin.service.js";
 
 export async function approveCourseController(req, res) {
   const data = await approveCourse(req.user.id, req.params.courseId, req.body.note);
@@ -13,4 +13,12 @@ export async function rejectCourseController(req, res) {
 export async function revenueReportController(_req, res) {
   const data = await getRevenueReport();
   return res.json({ message: "Revenue report fetched", data });
+}
+
+export async function listAdminCoursesController(req, res) {
+  const data = await listAdminCourses(req.query);
+  return res.json({
+    message: "Admin courses fetched",
+    ...data,
+  });
 }
