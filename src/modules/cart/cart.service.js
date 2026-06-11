@@ -17,6 +17,12 @@ export async function getCart(userId) {
           course: {
             include: {
               priceTier: true,
+              media: {
+                where: {
+                  mediaType: { in: ["COVER_IMAGE", "IMAGE", "PROMO_VIDEO"] },
+                },
+                orderBy: { createdAt: "desc" },
+              },
               educator: {
                 select: {
                   id: true,
@@ -72,13 +78,29 @@ export async function addToCart(userId, courseId) {
   return getCart(userId);
 }
 
-export async function removeFromCart(userId, courseId) {
+export async function removeFromCart(userId, itemOrCourseId) {
   const cart = await getOrCreateCart(userId);
-  await prisma.cartItem.deleteMany({
+  const deletedByItem = await prisma.cartItem.deleteMany({
     where: {
+      id: itemOrCourseId,
       cartId: cart.id,
-      courseId,
     },
   });
+
+  if (deletedByItem.count > 0) {
+    return getCart(userId);
+  }
+
+  const deletedByCourse = await prisma.cartItem.deleteMany({
+    where: {
+      cartId: cart.id,
+      courseId: itemOrCourseId,
+    },
+  });
+
+  if (deletedByCourse.count === 0) {
+    throw new ApiError(404, "Item not found in cart");
+  }
+
   return getCart(userId);
 }

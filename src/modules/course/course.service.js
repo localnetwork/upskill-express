@@ -643,6 +643,12 @@ export async function getCourseRoute(slug, userId) {
       category: true,
       level: true,
       priceTier: true,
+      media: {
+        where: {
+          mediaType: { in: [...COVER_MEDIA_TYPES, ...PROMO_MEDIA_TYPES] },
+        },
+        orderBy: { createdAt: "desc" },
+      },
       sections: {
         orderBy: { position: "asc" },
         include: {
@@ -672,6 +678,12 @@ export async function getCourseRoute(slug, userId) {
     : [null, null];
 
   const goals = await readCourseGoals(course.id);
+  const coverImage = mapLegacyMedia(
+    pickLatestMediaByTypes(course.media, COVER_MEDIA_TYPES),
+  );
+  const promoVideo = mapLegacyMedia(
+    pickLatestMediaByTypes(course.media, PROMO_MEDIA_TYPES),
+  );
 
   return {
     id: course.id,
@@ -724,8 +736,8 @@ export async function getCourseRoute(slug, userId) {
           price: String(course.priceTier.price),
         }
       : null,
-    promo_video: null,
-    cover_image: null,
+    promo_video: promoVideo,
+    cover_image: coverImage,
     goals,
     is_enrolled: Boolean(isEnrolled),
     is_in_cart: Boolean(isInCart),
@@ -738,7 +750,7 @@ export async function getCourseForLearner(userId, slug) {
       userId,
       status: "ACTIVE",
       course: {
-        slug,
+        OR: [{ slug }, { id: slug }],
         deletedAt: null,
       },
     },

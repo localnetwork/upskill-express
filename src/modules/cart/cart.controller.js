@@ -1,14 +1,36 @@
 import { addToCart, getCart, removeFromCart } from "./cart.service.js";
 
+function pickLatestMediaByTypes(mediaList = [], types = []) {
+  return mediaList.find((item) => types.includes(item.mediaType)) || null;
+}
+
+function mapLegacyMedia(media) {
+  if (!media) return null;
+  return {
+    id: media.id,
+    path: media.storagePath,
+    title: media.originalName,
+  };
+}
+
 function toLegacyCartItem(item) {
+  const coverImage = mapLegacyMedia(
+    pickLatestMediaByTypes(item.course.media, ["COVER_IMAGE", "IMAGE"]),
+  );
+  const promoVideo = mapLegacyMedia(
+    pickLatestMediaByTypes(item.course.media, ["PROMO_VIDEO"]),
+  );
+
   return {
     id: item.id,
     cart_id: item.courseId,
+    cart_item_id: item.id,
     course: {
       id: item.course.id,
       slug: item.course.slug,
       title: item.course.title,
-      cover_image: null,
+      cover_image: coverImage,
+      promo_video: promoVideo,
       price_tier: item.course.priceTier
         ? {
             id: item.course.priceTier.id,
@@ -59,7 +81,7 @@ export async function addToCartController(req, res) {
 }
 
 export async function removeFromCartController(req, res) {
-  const courseId = req.params.courseId || req.params.itemId;
-  const data = await removeFromCart(req.user.id, courseId);
+  const itemOrCourseId = req.params.courseId || req.params.itemId;
+  const data = await removeFromCart(req.user.id, itemOrCourseId);
   return res.json({ message: "Removed from cart", data: toLegacyCart(data) });
 }

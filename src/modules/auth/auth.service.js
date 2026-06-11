@@ -2,10 +2,39 @@ import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../../shared/utils/jwt.js";
 import { comparePassword, compareToken, hashPassword, hashToken, randomToken } from "../../shared/utils/security.js";
+import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { createUser, findUserByEmail, findUserById, findUserByUsername, updateUser } from "./auth.repository.js";
 
 function getRoles(user) {
   return (user.roles || []).map((item) => item.role.name);
+}
+
+function mapAuthUser(user, roles = getRoles(user)) {
+  const permissions = mapPermissionsFromRoles(roles);
+  return {
+    id: user.id,
+    email: user.email,
+    username: user.username,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    firstname: user.firstName,
+    lastname: user.lastName,
+    verified: Boolean(user.emailVerifiedAt),
+    isActive: user.isActive,
+    is_suspended: !user.isActive,
+    headline: user.headline || "",
+    biography: user.biography || "",
+    link_website: user.link_website || "",
+    link_facebook: user.link_facebook || "",
+    link_instagram: user.link_instagram || "",
+    link_linkedin: user.link_linkedin || "",
+    link_tiktok: user.link_tiktok || "",
+    link_x: user.link_x || "",
+    link_youtube: user.link_youtube || "",
+    link_github: user.link_github || "",
+    roles,
+    permissions,
+  };
 }
 
 async function ensureDefaultRole(roleName) {
@@ -76,16 +105,7 @@ export async function register(payload) {
   return {
     accessToken,
     refreshToken,
-    user: {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      firstname: user.firstName,
-      lastname: user.lastName,
-      roles: [roleName],
-    },
+    user: mapAuthUser(user, [roleName]),
     verificationToken,
   };
 }
@@ -122,16 +142,7 @@ export async function login(payload) {
   return {
     accessToken,
     refreshToken,
-    user: {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      firstname: user.firstName,
-      lastname: user.lastName,
-      roles: getRoles(user),
-    },
+    user: mapAuthUser(user),
   };
 }
 

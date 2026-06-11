@@ -4,6 +4,16 @@ model User {
   email                 String    @unique
   firstName             String?
   lastName              String?
+  headline              String?
+  biography             String?
+  link_website          String?
+  link_x                String?
+  link_linkedin         String?
+  link_instagram        String?
+  link_facebook         String?
+  link_tiktok           String?
+  link_youtube          String?
+  link_github           String?
   passwordHash          String
   isActive              Boolean   @default(true)
   emailVerifiedAt       DateTime?
@@ -292,7 +302,7 @@ model Order {
   platformFeeAmount Decimal    @default(0) @db.Decimal(10, 2)
   educatorEarnings Decimal     @default(0) @db.Decimal(10, 2)
   totalAmount      Decimal     @db.Decimal(10, 2)
-  currency         String      @default("USD")
+  currency         String      @default("PHP")
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
@@ -479,7 +489,7 @@ model PayoutRequest {
   educatorId          String
   reviewedById        String?
   amount              Decimal      @db.Decimal(10, 2)
-  currency            String       @default("USD")
+  currency            String       @default("PHP")
   status              PayoutStatus @default(REQUESTED)
   note                String?
   reviewNote          String?
@@ -556,7 +566,7 @@ model TaxTransaction {
   taxableAmount  Decimal   @db.Decimal(10, 2)
   taxAmount      Decimal   @db.Decimal(10, 2)
   totalAmount    Decimal   @db.Decimal(10, 2)
-  currency       String    @default("USD")
+  currency       String    @default("PHP")
   breakdown      Json?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt

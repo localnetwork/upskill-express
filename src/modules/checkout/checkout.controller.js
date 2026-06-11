@@ -3,10 +3,13 @@ import { captureCheckoutOrder, createCheckoutOrder, handlePayPalWebhook } from "
 export async function createCheckoutController(req, res) {
   const data = await createCheckoutOrder(req.user.id, req.body);
   const approvalLink = data?.paypal?.links?.find((link) => link.rel === "approve")?.href || null;
+  const fallbackRedirect = data?.freeCheckout
+    ? `/my-courses/learning?order_id=${data.orderId}`
+    : null;
   return res.status(201).json({
     message: "Checkout order created",
     data,
-    redirect_url: approvalLink,
+    redirect_url: approvalLink || fallbackRedirect,
   });
 }
 

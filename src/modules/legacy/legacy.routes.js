@@ -14,6 +14,34 @@ function mediaPath(file) {
   return `/uploads/${file.filename}`;
 }
 
+function normalizeExtendedProfile(payload = {}) {
+  return {
+    headline: payload.headline || "",
+    biography: payload.biography || "",
+    link_website: payload.link_website || "",
+    link_facebook: payload.link_facebook || "",
+    link_instagram: payload.link_instagram || "",
+    link_linkedin: payload.link_linkedin || "",
+    link_tiktok: payload.link_tiktok || "",
+    link_x: payload.link_x || "",
+    link_youtube: payload.link_youtube || "",
+    link_github: payload.link_github || "",
+  };
+}
+
+function pickLatestMediaByTypes(mediaList = [], types = []) {
+  return mediaList.find((item) => types.includes(item.mediaType)) || null;
+}
+
+function mapLegacyMedia(media) {
+  if (!media) return null;
+  return {
+    id: media.id,
+    path: media.storagePath,
+    title: media.originalName,
+  };
+}
+
 function mapLessonTypeToLegacyResource(type, lesson) {
   if (type === "VIDEO" || lesson.videoUrl) return "video";
   if (lesson.assignmentText) return "article";
@@ -106,6 +134,8 @@ router.get("/user/:slug", async (req, res, next) => {
       throw new ApiError(404, "User not found");
     }
 
+    const extended = normalizeExtendedProfile(user);
+
     return res.json({
       id: user.id,
       username: user.username,
@@ -114,8 +144,16 @@ router.get("/user/:slug", async (req, res, next) => {
       lastname: user.lastName || "",
       firstName: user.firstName || "",
       lastName: user.lastName || "",
-      biography: "",
-      headline: "",
+      biography: extended.biography,
+      headline: extended.headline,
+      link_website: extended.link_website,
+      link_facebook: extended.link_facebook,
+      link_instagram: extended.link_instagram,
+      link_linkedin: extended.link_linkedin,
+      link_tiktok: extended.link_tiktok,
+      link_x: extended.link_x,
+      link_youtube: extended.link_youtube,
+      link_github: extended.link_github,
       roles: user.roles.map((item) => ({
         role_name:
           item.role.name === "EDUCATOR"
@@ -144,6 +182,12 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
         },
         level: true,
         priceTier: true,
+        media: {
+          where: {
+            mediaType: { in: ["COVER_IMAGE", "IMAGE", "PROMO_VIDEO"] },
+          },
+          orderBy: { createdAt: "desc" },
+        },
         sections: { include: { lessons: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -152,8 +196,12 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
     const data = courses.map((course) => ({
       ...course,
       uuid: course.id,
-      cover_image: null,
-      promo_video: null,
+      cover_image: mapLegacyMedia(
+        pickLatestMediaByTypes(course.media, ["COVER_IMAGE", "IMAGE"]),
+      ),
+      promo_video: mapLegacyMedia(
+        pickLatestMediaByTypes(course.media, ["PROMO_VIDEO"]),
+      ),
       instructional_level: course.level
         ? { id: course.level.id, title: course.level.title }
         : null,
@@ -187,19 +235,40 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
 
 router.put("/profile", authenticate, async (req, res, next) => {
   try {
-    const updated = await prisma.user.update({
+    const updatedUser = await prisma.user.update({
       where: { id: req.user.id },
       data: {
-        firstName: req.body.firstname || req.body.firstName || undefined,
-        lastName: req.body.lastname || req.body.lastName || undefined,
+        firstName:
+          req.body.firstName === undefined ? req.body.firstname : req.body.firstName,
+        lastName:
+          req.body.lastName === undefined ? req.body.lastname : req.body.lastName,
+        headline: req.body.headline === undefined ? undefined : req.body.headline,
+        biography: req.body.biography === undefined ? undefined : req.body.biography,
+        link_website: req.body.link_website === undefined ? undefined : req.body.link_website,
+        link_facebook:
+          req.body.link_facebook === undefined ? undefined : req.body.link_facebook,
+        link_instagram:
+          req.body.link_instagram === undefined ? undefined : req.body.link_instagram,
+        link_linkedin:
+          req.body.link_linkedin === undefined ? undefined : req.body.link_linkedin,
+        link_tiktok: req.body.link_tiktok === undefined ? undefined : req.body.link_tiktok,
+        link_x: req.body.link_x === undefined ? undefined : req.body.link_x,
+        link_youtube:
+          req.body.link_youtube === undefined ? undefined : req.body.link_youtube,
+        link_github: req.body.link_github === undefined ? undefined : req.body.link_github,
       },
     });
+
+    const extended = normalizeExtendedProfile(updatedUser);
     return res.json({
       message: "Profile updated",
       data: {
-        id: updated.id,
-        firstname: updated.firstName || "",
-        lastname: updated.lastName || "",
+        id: updatedUser.id,
+        firstname: updatedUser.firstName || "",
+        lastname: updatedUser.lastName || "",
+        firstName: updatedUser.firstName || "",
+        lastName: updatedUser.lastName || "",
+        ...extended,
       },
     });
   } catch (error) {
@@ -207,11 +276,35 @@ router.put("/profile", authenticate, async (req, res, next) => {
   }
 });
 
-router.put("/profile/user-picture", authenticate, async (req, res) => {
-  return res.json({
-    message: "Profile image linked",
-    data: { id: req.body.user_picture || null, path: null },
-  });
+router.put("/profile/user-picture", authenticate, async (req, res, next) => {
+  try {
+    const mediaId = req.body.user_picture ? String(req.body.user_picture) : null;
+    if (!mediaId) {
+      throw new ApiError(400, "user_picture is required");
+    }
+
+    const media = await prisma.media.findFirst({
+      where: {
+        id: mediaId,
+        userId: req.user.id,
+      },
+      select: {
+        id: true,
+        storagePath: true,
+      },
+    });
+
+    if (!media) {
+      throw new ApiError(404, "Media not found");
+    }
+
+    return res.json({
+      message: "Profile image linked",
+      data: { id: media.id, path: media.storagePath },
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 router.post("/media", authenticate, upload.single("file"), async (req, res, next) => {

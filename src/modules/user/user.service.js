@@ -1,9 +1,15 @@
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { comparePassword, hashPassword } from "../../shared/utils/security.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
+import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { countMany, findById, findByUsername, findMany, updateById } from "./user.repository.js";
 
+function getOptional(payload, key) {
+  return payload[key] === undefined ? undefined : payload[key];
+}
+
 function mapUser(user) {
+  const roles = user.roles?.map((role) => role.role.name) || [];
   return {
     id: user.id,
     email: user.email,
@@ -15,7 +21,18 @@ function mapUser(user) {
     isActive: user.isActive,
     is_suspended: !user.isActive,
     verified: Boolean(user.emailVerifiedAt),
-    roles: user.roles?.map((role) => role.role.name) || [],
+    headline: user.headline || "",
+    biography: user.biography || "",
+    link_website: user.link_website || "",
+    link_facebook: user.link_facebook || "",
+    link_instagram: user.link_instagram || "",
+    link_linkedin: user.link_linkedin || "",
+    link_tiktok: user.link_tiktok || "",
+    link_x: user.link_x || "",
+    link_youtube: user.link_youtube || "",
+    link_github: user.link_github || "",
+    roles,
+    permissions: mapPermissionsFromRoles(roles),
   };
 }
 
@@ -45,10 +62,25 @@ export async function updateCurrentUser(userId, payload) {
     passwordHash = await hashPassword(payload.password);
   }
 
+  const firstName =
+    payload.firstName === undefined ? payload.firstname : payload.firstName;
+  const lastName =
+    payload.lastName === undefined ? payload.lastname : payload.lastName;
+
   const updated = await updateById(userId, {
     username: payload.username,
-    firstName: payload.firstName || payload.firstname,
-    lastName: payload.lastName || payload.lastname,
+    firstName,
+    lastName,
+    headline: getOptional(payload, "headline"),
+    biography: getOptional(payload, "biography"),
+    link_website: getOptional(payload, "link_website"),
+    link_facebook: getOptional(payload, "link_facebook"),
+    link_instagram: getOptional(payload, "link_instagram"),
+    link_linkedin: getOptional(payload, "link_linkedin"),
+    link_tiktok: getOptional(payload, "link_tiktok"),
+    link_x: getOptional(payload, "link_x"),
+    link_youtube: getOptional(payload, "link_youtube"),
+    link_github: getOptional(payload, "link_github"),
     passwordHash,
   });
 

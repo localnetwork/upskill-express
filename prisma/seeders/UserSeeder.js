@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcrypt";
 const prisma = new PrismaClient();
 
 export default class UserSeeder {
@@ -13,8 +14,7 @@ export default class UserSeeder {
         email: "admin@upskill.local",
         firstName: "Platform",
         lastName: "Admin",
-        passwordHash:
-          "$2b$10$h8yWPMN5pO2J5qYfQjVG0O8w9o4fL5vG3OW0H0j3xp4xgShh7LwJm",
+        password: "Admin@12345",
         role: "ADMIN",
       },
       {
@@ -22,8 +22,7 @@ export default class UserSeeder {
         email: "learner@upskill.local",
         firstName: "Default",
         lastName: "Learner",
-        passwordHash:
-          "$2b$10$h8yWPMN5pO2J5qYfQjVG0O8w9o4fL5vG3OW0H0j3xp4xgShh7LwJm",
+        password: "Learner@12345",
         role: "LEARNER",
       },
       {
@@ -31,8 +30,7 @@ export default class UserSeeder {
         email: "educator@upskill.local",
         firstName: "Default",
         lastName: "Educator",
-        passwordHash:
-          "$2b$10$h8yWPMN5pO2J5qYfQjVG0O8w9o4fL5vG3OW0H0j3xp4xgShh7LwJm",
+        password: "Educator@12345",
         role: "EDUCATOR",
       },
     ];
@@ -47,7 +45,12 @@ export default class UserSeeder {
         continue;
       }
 
-      const { role: roleName, ...createData } = userData;
+      const { role: roleName, password, ...baseData } = userData;
+      const passwordHash = await bcrypt.hash(password, 10);
+      const createData = {
+        ...baseData,
+        passwordHash,
+      };
 
       const user = await prisma.user.upsert({
         where: { email: userData.email },
@@ -75,7 +78,9 @@ export default class UserSeeder {
         },
       });
 
-      console.log(`✅ Upserted: ${user.email} with role ${roleName}`);
+      console.log(
+        `✅ Upserted: ${user.email} with role ${roleName} (password: ${password})`,
+      );
     }
   }
 }

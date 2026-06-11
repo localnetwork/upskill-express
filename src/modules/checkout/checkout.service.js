@@ -4,6 +4,8 @@ import { calculateTax } from "./tax.service.js";
 import { capturePayPalOrder, createPayPalOrder } from "./paypal.service.js";
 import { createNotification } from "../notification/notification.service.js";
 
+const DEFAULT_CURRENCY = "PHP";
+
 function decimal(value) {
   return Number(value || 0);
 }
@@ -92,9 +94,150 @@ export async function createCheckoutOrder(userId, payload) {
   });
 
   const totalAmount = Number((taxableAmount + taxResult.taxAmount).toFixed(2));
+  if (totalAmount <= 0) {
+    const platformFeePercent = await getPlatformFeePercent();
+
+    const result = await prisma.$transaction(async (tx) => {
+      const order = await tx.order.create({
+        data: {
+          userId,
+          couponId: coupon?.id,
+          status: "PAID",
+          subtotalAmount: subtotal,
+          discountAmount,
+          taxAmount: taxResult.taxAmount,
+          totalAmount,
+          currency: DEFAULT_CURRENCY,
+          platformFeeAmount: 0,
+          educatorEarnings: 0,
+        },
+      });
+
+      let sumPlatformFee = 0;
+      let sumEducatorEarnings = 0;
+
+      for (const item of cart.items) {
+        const unitPrice = decimal(item.course.priceTier?.price || 0);
+        const proportionalTax =
+          subtotal === 0
+            ? 0
+            : Number(((unitPrice / subtotal) * taxResult.taxAmount).toFixed(2));
+        const taxableItemAmount = unitPrice;
+        const itemPlatformFee = Number(
+          ((taxableItemAmount * platformFeePercent) / 100).toFixed(2),
+        );
+        const educatorEarning = Number(
+          (taxableItemAmount - itemPlatformFee).toFixed(2),
+        );
+        const totalLineAmount = Number(
+          (taxableItemAmount + proportionalTax).toFixed(2),
+        );
+
+        sumPlatformFee += itemPlatformFee;
+        sumEducatorEarnings += educatorEarning;
+
+        const orderItem = await tx.orderItem.create({
+          data: {
+            orderId: order.id,
+            courseId: item.courseId,
+            educatorId: item.course.educatorId,
+            unitPrice,
+            discountAmount: 0,
+            taxableAmount: taxableItemAmount,
+            taxAmount: proportionalTax,
+            platformFeePercent,
+            platformFeeAmount: itemPlatformFee,
+            educatorEarning,
+            totalAmount: totalLineAmount,
+          },
+        });
+
+        await tx.enrollment.upsert({
+          where: {
+            userId_courseId: {
+              userId,
+              courseId: item.courseId,
+            },
+          },
+          update: {},
+          create: {
+            userId,
+            courseId: item.courseId,
+            orderId: order.id,
+            orderItemId: orderItem.id,
+            status: "ACTIVE",
+          },
+        });
+      }
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          platformFeeAmount: Number(sumPlatformFee.toFixed(2)),
+          educatorEarnings: Number(sumEducatorEarnings.toFixed(2)),
+        },
+      });
+
+      await tx.taxTransaction.create({
+        data: {
+          orderId: order.id,
+          userId,
+          regionId: taxResult.region?.id || null,
+          taxableAmount,
+          taxAmount: taxResult.taxAmount,
+          totalAmount,
+          currency: DEFAULT_CURRENCY,
+          breakdown: taxResult.breakdown,
+        },
+      });
+
+      if (coupon) {
+        await tx.coupon.update({
+          where: { id: coupon.id },
+          data: {
+            usedCount: {
+              increment: 1,
+            },
+          },
+        });
+      }
+
+      await tx.cartItem.deleteMany({
+        where: {
+          cartId: cart.id,
+          courseId: {
+            in: cart.items.map((item) => item.courseId),
+          },
+        },
+      });
+
+      return order;
+    });
+
+    await createNotification({
+      userId,
+      type: "ORDER",
+      title: "Enrollment successful",
+      message: `Order ${result.id} has been completed.`,
+      metadata: { orderId: result.id, freeCheckout: true },
+    });
+
+    return {
+      freeCheckout: true,
+      orderId: result.id,
+      totals: {
+        subtotal,
+        discountAmount,
+        taxableAmount,
+        taxAmount: taxResult.taxAmount,
+        totalAmount,
+      },
+    };
+  }
+
   const providerOrder = await createPayPalOrder({
     amount: totalAmount,
-    currency: "USD",
+    currency: DEFAULT_CURRENCY,
     referenceId: `cart-${cart.id}`,
   });
 
@@ -110,7 +253,7 @@ export async function createCheckoutOrder(userId, payload) {
         discountAmount,
         taxAmount: taxResult.taxAmount,
         totalAmount,
-        currency: "USD",
+        currency: DEFAULT_CURRENCY,
         platformFeeAmount: 0,
         educatorEarnings: 0,
       },
@@ -176,7 +319,7 @@ export async function createCheckoutOrder(userId, payload) {
         taxableAmount,
         taxAmount: taxResult.taxAmount,
         totalAmount,
-        currency: "USD",
+        currency: DEFAULT_CURRENCY,
         breakdown: taxResult.breakdown,
       },
     });
