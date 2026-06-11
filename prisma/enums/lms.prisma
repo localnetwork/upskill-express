@@ -1,0 +1,74 @@
+enum RoleName {
+  ADMIN
+  EDUCATOR
+  LEARNER
+}
+
+enum CourseWorkflowStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PUBLISHED
+  REJECTED
+}
+
+enum LessonType {
+  VIDEO
+  QUIZ
+  CODING_EXERCISE
+  RESOURCE
+  ASSIGNMENT
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum OrderStatus {
+  CREATED
+  PAID
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+enum PaymentProvider {
+  PAYPAL
+}
+
+enum PaymentStatus {
+  CREATED
+  CAPTURED
+  FAILED
+  REFUNDED
+}
+
+enum CouponType {
+  PERCENTAGE
+  FIXED
+}
+
+enum TaxType {
+  VAT
+  GST
+  SALES_TAX
+}
+
+enum NotificationType {
+  SYSTEM
+  ORDER
+  ENROLLMENT
+  COURSE_REVIEW
+  PAYOUT
+  COURSE_APPROVAL
+}
+
+enum PayoutStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  EXECUTED
+  FAILED
+}

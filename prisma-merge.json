@@ -1,0 +1,5 @@
+{
+  "input": "prisma/schema/schema.prisma",
+  "output": "prisma/schema/merged.prisma",
+  "schemas": ["prisma/schema/models"]
+}
