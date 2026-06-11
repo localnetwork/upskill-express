@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
-import { authenticate } from "../../shared/middleware/auth.middleware.js";
+import { authenticate, authenticateOptional } from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import {
@@ -23,9 +23,9 @@ import { createCourseValidator, updateCourseValidator } from "./course.validator
 
 const router = Router();
 
-router.get("/", asyncHandler(listCoursesController));
+router.get("/", authenticateOptional, asyncHandler(listCoursesController));
 router.get("/authored", authenticate, authorize("EDUCATOR"), asyncHandler(listAuthoredCoursesController));
-router.get("/route/:slug", asyncHandler(getCourseRouteController));
+router.get("/route/:slug", authenticateOptional, asyncHandler(getCourseRouteController));
 router.get("/:slug/learn", authenticate, authorize("LEARNER"), asyncHandler(getCourseForLearnerController));
 router.get("/:slug/manage", authenticate, asyncHandler(getCourseForManagementController));
 router.get("/:slug", asyncHandler(getCourseBySlugController));

@@ -75,8 +75,8 @@ function toLegacyCourseSummary(course) {
           0,
         ) || 0,
     },
-    is_in_cart: false,
-    is_enrolled: false,
+    is_in_cart: Boolean(course.is_in_cart),
+    is_enrolled: Boolean(course.is_enrolled),
     published: course.isPublished ? "1" : "0",
   };
 }

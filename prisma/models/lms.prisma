@@ -30,6 +30,7 @@ model User {
   cart                  Cart?
   orders                Order[]
   orderItemsAsEducator  OrderItem[]
+  wishlists             Wishlist[]
   enrollments           Enrollment[]
   reviews               Review[]
   courseProgressRecords CourseProgress[]
@@ -171,6 +172,7 @@ model Course {
   sections            CourseSection[]
   lessons             Lesson[]
   cartItems           CartItem[]
+  wishlists           Wishlist[]
   orderItems          OrderItem[]
   enrollments         Enrollment[]
   reviews             Review[]
@@ -268,6 +270,20 @@ model CartItem {
   @@unique([cartId, courseId])
   @@index([courseId])
   @@map("cart_items")
+}
+
+model Wishlist {
+  id        String   @id @default(cuid())
+  userId    String
+  courseId  String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([courseId])
+  @@map("wishlists")
 }
 
 model Coupon {

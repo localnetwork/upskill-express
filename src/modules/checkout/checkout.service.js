@@ -1,13 +1,141 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
+import { env } from "../../shared/config/env.js";
 import { calculateTax } from "./tax.service.js";
-import { capturePayPalOrder, createPayPalOrder } from "./paypal.service.js";
+import { capturePayPalOrder, createPayPalOrder, getPayPalOrder } from "./paypal.service.js";
 import { createNotification } from "../notification/notification.service.js";
 
 const DEFAULT_CURRENCY = "PHP";
+const appBaseUrl = env.frontendUrl.replace(/\/$/, "");
 
 function decimal(value) {
   return Number(value || 0);
+}
+
+function getCaptureInfo(captureResponse) {
+  const purchaseUnit = captureResponse?.purchase_units?.[0] || {};
+  const capture = purchaseUnit?.payments?.captures?.[0] || null;
+  return {
+    captureId: capture?.id || null,
+    payerEmail: captureResponse?.payer?.email_address || null,
+    payerId: captureResponse?.payer?.payer_id || null,
+  };
+}
+
+async function finalizeCompletedPayPalOrderByProviderOrderId(providerOrderId, originalError) {
+  const paypalOrder = await getPayPalOrder(providerOrderId);
+  const isCompleted = paypalOrder?.status === "COMPLETED";
+  const captureId = paypalOrder?.purchase_units?.[0]?.payments?.captures?.[0]?.id;
+  if (!isCompleted || !captureId) {
+    throw originalError;
+  }
+
+  return finalizeCapturedPaymentByProviderOrderId(providerOrderId, paypalOrder);
+}
+
+async function finalizeCapturedPaymentByProviderOrderId(providerOrderId, captureResponse) {
+  const { captureId, payerEmail, payerId } = getCaptureInfo(captureResponse);
+  if (!captureId) {
+    throw new ApiError(400, "Unable to capture payment");
+  }
+
+  let wasAlreadyCaptured = false;
+  const result = await prisma.$transaction(async (tx) => {
+    const payment = await tx.payment.findUnique({
+      where: { providerOrderId },
+      include: {
+        order: {
+          include: {
+            items: true,
+          },
+        },
+      },
+    });
+
+    if (!payment) {
+      throw new ApiError(404, "Payment not found");
+    }
+
+    if (payment.status === "CAPTURED") {
+      wasAlreadyCaptured = true;
+      const existingOrder = await tx.order.findUnique({
+        where: { id: payment.orderId },
+        include: { items: true },
+      });
+      return { payment, order: existingOrder };
+    }
+
+    await tx.payment.update({
+      where: { id: payment.id },
+      data: {
+        providerCaptureId: captureId,
+        status: "CAPTURED",
+        capturedAt: new Date(),
+        payerEmail,
+        payerId,
+        rawResponse: captureResponse,
+      },
+    });
+
+    await tx.order.update({
+      where: { id: payment.orderId },
+      data: { status: "PAID" },
+    });
+
+    for (const item of payment.order.items) {
+      await tx.enrollment.upsert({
+        where: {
+          userId_courseId: {
+            userId: payment.order.userId,
+            courseId: item.courseId,
+          },
+        },
+        update: {},
+        create: {
+          userId: payment.order.userId,
+          courseId: item.courseId,
+          orderId: payment.orderId,
+          orderItemId: item.id,
+          status: "ACTIVE",
+        },
+      });
+    }
+
+    const cart = await tx.cart.findUnique({ where: { userId: payment.order.userId } });
+    if (cart) {
+      await tx.cartItem.deleteMany({
+        where: {
+          cartId: cart.id,
+          courseId: {
+            in: payment.order.items.map((item) => item.courseId),
+          },
+        },
+      });
+    }
+
+    const order = await tx.order.findUnique({
+      where: { id: payment.orderId },
+      include: { items: true },
+    });
+
+    return { payment, order };
+  });
+
+  if (!wasAlreadyCaptured) {
+    await createNotification({
+      userId: result.payment.order.userId,
+      type: "ORDER",
+      title: "Payment successful",
+      message: `Order ${result.order.id} has been paid and enrollments are active.`,
+      metadata: { orderId: result.order.id },
+    });
+  }
+
+  return {
+    order: result.order,
+    wasAlreadyCaptured,
+    paypalCapture: captureResponse,
+  };
 }
 
 async function getPlatformFeePercent() {
@@ -239,6 +367,8 @@ export async function createCheckoutOrder(userId, payload) {
     amount: totalAmount,
     currency: DEFAULT_CURRENCY,
     referenceId: `cart-${cart.id}`,
+    returnUrl: `${appBaseUrl}/checkout/success`,
+    cancelUrl: `${appBaseUrl}/checkout/cancel`,
   });
 
   const platformFeePercent = await getPlatformFeePercent();
@@ -362,89 +492,75 @@ export async function captureCheckoutOrder(userId, providerOrderId) {
     },
   });
 
-  if (!payment || payment.order.userId !== userId) {
+  if (!payment) {
     throw new ApiError(404, "Payment not found");
   }
+  if (userId && payment.order.userId !== userId) {
+    throw new ApiError(404, "Payment not found");
+  }
+
   if (payment.status === "CAPTURED") {
-    throw new ApiError(400, "Payment already captured");
+    return {
+      order: payment.order,
+      wasAlreadyCaptured: true,
+      paypalCapture: null,
+    };
   }
 
-  const captureResponse = await capturePayPalOrder(providerOrderId);
-  const captureId =
-    captureResponse.purchase_units?.[0]?.payments?.captures?.[0]?.id || null;
-
-  if (!captureId) {
-    throw new ApiError(400, "Unable to capture payment");
+  try {
+    const captureResponse = await capturePayPalOrder(providerOrderId);
+    return finalizeCapturedPaymentByProviderOrderId(providerOrderId, captureResponse);
+  } catch (error) {
+    const isAlreadyCaptured = error?.response?.data?.name === "UNPROCESSABLE_ENTITY";
+    if (!isAlreadyCaptured) {
+      throw error;
+    }
+    return finalizeCompletedPayPalOrderByProviderOrderId(providerOrderId, error);
   }
-
-  const result = await prisma.$transaction(async (tx) => {
-    await tx.payment.update({
-      where: { id: payment.id },
-      data: {
-        providerCaptureId: captureId,
-        status: "CAPTURED",
-        capturedAt: new Date(),
-        rawResponse: captureResponse,
-      },
-    });
-
-    await tx.order.update({
-      where: { id: payment.orderId },
-      data: { status: "PAID" },
-    });
-
-    for (const item of payment.order.items) {
-      await tx.enrollment.upsert({
-        where: {
-          userId_courseId: {
-            userId,
-            courseId: item.courseId,
-          },
-        },
-        update: {},
-        create: {
-          userId,
-          courseId: item.courseId,
-          orderId: payment.orderId,
-          orderItemId: item.id,
-          status: "ACTIVE",
-        },
-      });
-    }
-
-    const cart = await tx.cart.findUnique({ where: { userId } });
-    if (cart) {
-      await tx.cartItem.deleteMany({
-        where: {
-          cartId: cart.id,
-          courseId: {
-            in: payment.order.items.map((item) => item.courseId),
-          },
-        },
-      });
-    }
-
-    return tx.order.findUnique({
-      where: { id: payment.orderId },
-      include: { items: true },
-    });
-  });
-
-  await createNotification({
-    userId,
-    type: "ORDER",
-    title: "Payment successful",
-    message: `Order ${result.id} has been paid and enrollments are active.`,
-    metadata: { orderId: result.id },
-  });
-
-  return {
-    order: result,
-    paypalCapture: captureResponse,
-  };
 }
 
 export async function handlePayPalWebhook(event) {
+  if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
+    const providerOrderId = event.resource?.id;
+    if (providerOrderId) {
+      try {
+        const captureResponse = await capturePayPalOrder(providerOrderId);
+        await finalizeCapturedPaymentByProviderOrderId(providerOrderId, captureResponse);
+      } catch (error) {
+        const isAlreadyProcessed =
+          error?.response?.data?.name === "UNPROCESSABLE_ENTITY";
+        if (!isAlreadyProcessed) {
+          throw error;
+        }
+        await finalizeCompletedPayPalOrderByProviderOrderId(providerOrderId, error);
+      }
+    }
+  }
+
+  if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
+    const providerOrderId = event.resource?.supplementary_data?.related_ids?.order_id;
+    if (providerOrderId) {
+      const paymentsCapture = event.resource;
+      const normalizedCaptureResponse = {
+        payer: {
+          email_address: paymentsCapture?.payer?.email_address || null,
+          payer_id: paymentsCapture?.payer?.payer_id || null,
+        },
+        purchase_units: [
+          {
+            payments: {
+              captures: [paymentsCapture],
+            },
+          },
+        ],
+      };
+      await finalizeCapturedPaymentByProviderOrderId(
+        providerOrderId,
+        normalizedCaptureResponse,
+      );
+    }
+  }
+
   if (event.event_type === "PAYMENT.CAPTURE.DENIED") {
     const orderId = event.resource?.supplementary_data?.related_ids?.order_id;
     if (orderId) {

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { authenticate } from "../../shared/middleware/auth.middleware.js";
+import { authenticate, authenticateOptional } from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
@@ -18,8 +18,7 @@ router.post(
 
 router.post(
   "/capture",
-  authenticate,
-  authorize("LEARNER"),
+  authenticateOptional,
   validate(captureCheckoutValidator),
   asyncHandler(captureCheckoutController),
 );

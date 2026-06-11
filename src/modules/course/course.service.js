@@ -470,7 +470,37 @@ export async function listCourses(query, user) {
     prisma.course.count({ where }),
   ]);
 
-  return toPagedResult(rows, total, page, limit);
+  let cartCourseIds = new Set();
+  let enrolledCourseIds = new Set();
+
+  if (user?.id) {
+    const [cartRows, enrollmentRows] = await Promise.all([
+      prisma.cartItem.findMany({
+        where: {
+          cart: { userId: user.id },
+        },
+        select: { courseId: true },
+      }),
+      prisma.enrollment.findMany({
+        where: {
+          userId: user.id,
+          status: "ACTIVE",
+        },
+        select: { courseId: true },
+      }),
+    ]);
+
+    cartCourseIds = new Set(cartRows.map((row) => row.courseId));
+    enrolledCourseIds = new Set(enrollmentRows.map((row) => row.courseId));
+  }
+
+  const mappedRows = rows.map((course) => ({
+    ...course,
+    is_in_cart: cartCourseIds.has(course.id),
+    is_enrolled: enrolledCourseIds.has(course.id),
+  }));
+
+  return toPagedResult(mappedRows, total, page, limit);
 }
 
 export async function getCourseBySlug(slug) {
@@ -665,7 +695,7 @@ export async function getCourseRoute(slug, userId) {
     throw new ApiError(404, "Course not found");
   }
 
-  const [isEnrolled, isInCart] = userId
+  const [isEnrolled, isInCart, isInWishlist] = userId
     ? await Promise.all([
         prisma.enrollment.findFirst({ where: { userId, courseId: course.id } }),
         prisma.cartItem.findFirst({
@@ -674,8 +704,14 @@ export async function getCourseRoute(slug, userId) {
             cart: { userId },
           },
         }),
+        prisma.wishlist.findFirst({
+          where: {
+            userId,
+            courseId: course.id,
+          },
+        }),
       ])
-    : [null, null];
+    : [null, null, null];
 
   const goals = await readCourseGoals(course.id);
   const coverImage = mapLegacyMedia(
@@ -741,6 +777,7 @@ export async function getCourseRoute(slug, userId) {
     goals,
     is_enrolled: Boolean(isEnrolled),
     is_in_cart: Boolean(isInCart),
+    is_in_wishlist: Boolean(isInWishlist),
   };
 }
 

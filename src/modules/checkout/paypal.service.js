@@ -48,9 +48,25 @@ async function paypalRequest(method, path, data) {
   return response.data;
 }
 
-export async function createPayPalOrder({ amount, currency, referenceId }) {
+export async function createPayPalOrder({
+  amount,
+  currency,
+  referenceId,
+  returnUrl,
+  cancelUrl,
+}) {
+  if (!returnUrl || !cancelUrl) {
+    throw new ApiError(500, "PayPal return/cancel URLs are missing");
+  }
+
   return paypalRequest("POST", "/v2/checkout/orders", {
     intent: "CAPTURE",
+    application_context: {
+      return_url: returnUrl,
+      cancel_url: cancelUrl,
+      user_action: "PAY_NOW",
+      shipping_preference: "NO_SHIPPING",
+    },
     purchase_units: [
       {
         reference_id: referenceId,

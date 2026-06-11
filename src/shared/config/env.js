@@ -14,5 +14,6 @@ export const env = {
     process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com",
   paypalClientId: process.env.PAYPAL_CLIENT_ID || "",
   paypalClientSecret: process.env.PAYPAL_CLIENT_SECRET || "",
+  frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   uploadDir: process.env.UPLOAD_DIR || "uploads",
 };

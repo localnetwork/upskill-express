@@ -14,7 +14,7 @@ export async function createCheckoutController(req, res) {
 }
 
 export async function captureCheckoutController(req, res) {
-  const data = await captureCheckoutOrder(req.user.id, req.body.providerOrderId);
+  const data = await captureCheckoutOrder(req.user?.id || null, req.body.providerOrderId);
   return res.json({ message: "Checkout order captured", data });
 }
 

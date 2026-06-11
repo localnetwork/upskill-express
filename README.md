@@ -38,6 +38,7 @@ The API runs on `http://localhost:3000` by default.
 | `PAYPAL_BASE_URL` | `https://api-m.sandbox.paypal.com` |
 | `PAYPAL_CLIENT_ID` | `""` |
 | `PAYPAL_CLIENT_SECRET` | `""` |
+| `FRONTEND_URL` | `http://localhost:3000` |
 | `UPLOAD_DIR` | `uploads` |
 
 ## Scripts

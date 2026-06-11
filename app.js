@@ -15,6 +15,7 @@ import progressRoutes from "./src/modules/progress/progress.routes.js";
 import notificationRoutes from "./src/modules/notification/notification.routes.js";
 import payoutRoutes from "./src/modules/payout/payout.routes.js";
 import adminRoutes from "./src/modules/admin/admin.routes.js";
+import wishlistRoutes from "./src/modules/wishlist/wishlist.routes.js";
 import legacyRoutes from "./src/modules/legacy/legacy.routes.js";
 import { errorHandler, notFound } from "./src/shared/middleware/error.middleware.js";
 import { env } from "./src/shared/config/env.js";
@@ -46,6 +47,7 @@ app.use("/api/progress", progressRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/payouts", payoutRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/wishlist", wishlistRoutes);
 app.use("/api", legacyRoutes);
 app.get("/api/course-price-tiers", async (_req, res, next) => {
   try {
