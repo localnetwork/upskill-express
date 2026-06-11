@@ -10,7 +10,11 @@ function mapUser(user) {
     username: user.username,
     firstName: user.firstName,
     lastName: user.lastName,
+    firstname: user.firstName,
+    lastname: user.lastName,
     isActive: user.isActive,
+    is_suspended: !user.isActive,
+    verified: Boolean(user.emailVerifiedAt),
     roles: user.roles?.map((role) => role.role.name) || [],
   };
 }
@@ -43,8 +47,8 @@ export async function updateCurrentUser(userId, payload) {
 
   const updated = await updateById(userId, {
     username: payload.username,
-    firstName: payload.firstName,
-    lastName: payload.lastName,
+    firstName: payload.firstName || payload.firstname,
+    lastName: payload.lastName || payload.lastname,
     passwordHash,
   });
 

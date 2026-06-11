@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import path from "path";
 import authRoutes from "./src/modules/auth/auth.routes.js";
 import userRoutes from "./src/modules/user/user.routes.js";
 import categoryRoutes from "./src/modules/category/category.routes.js";
@@ -14,13 +15,16 @@ import progressRoutes from "./src/modules/progress/progress.routes.js";
 import notificationRoutes from "./src/modules/notification/notification.routes.js";
 import payoutRoutes from "./src/modules/payout/payout.routes.js";
 import adminRoutes from "./src/modules/admin/admin.routes.js";
+import legacyRoutes from "./src/modules/legacy/legacy.routes.js";
 import { errorHandler, notFound } from "./src/shared/middleware/error.middleware.js";
 import { env } from "./src/shared/config/env.js";
+import { prisma } from "./src/shared/database/prisma.js";
 
 const app = express();
 app.use(cors({ origin: env.corsOrigin }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use("/uploads", express.static(path.resolve(env.uploadDir)));
 
 app.get("/health", (_req, res) => {
   res.status(200).json({
@@ -42,6 +46,40 @@ app.use("/api/progress", progressRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/payouts", payoutRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api", legacyRoutes);
+app.get("/api/course-price-tiers", async (_req, res, next) => {
+  try {
+    const tiers = await prisma.coursePriceTier.findMany({
+      orderBy: { price: "asc" },
+    });
+    return res.json(
+      tiers.map((tier) => ({
+        id: tier.id,
+        title: tier.title,
+        price: String(tier.price),
+      })),
+    );
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.get("/api/course-levels", async (_req, res, next) => {
+  try {
+    const levels = await prisma.courseLevel.findMany({
+      orderBy: [{ weight: "asc" }, { createdAt: "asc" }],
+    });
+    return res.json(
+      levels.map((level) => ({
+        id: level.id,
+        title: level.title,
+        weight: level.weight,
+      })),
+    );
+  } catch (error) {
+    return next(error);
+  }
+});
 
 app.use(notFound);
 app.use(errorHandler);

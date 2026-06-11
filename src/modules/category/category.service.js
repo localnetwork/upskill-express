@@ -2,8 +2,17 @@ import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 
+function normalizeCategoryPayload(payload) {
+  return {
+    name: payload.name || payload.title,
+    slug: payload.slug,
+    description: payload.description || payload.category_description,
+    parentId: payload.parentId || payload.parent_id || null,
+  };
+}
+
 export async function createCategory(payload) {
-  return prisma.category.create({ data: payload });
+  return prisma.category.create({ data: normalizeCategoryPayload(payload) });
 }
 
 export async function updateCategory(categoryId, payload) {
@@ -15,7 +24,7 @@ export async function updateCategory(categoryId, payload) {
   }
   return prisma.category.update({
     where: { id: categoryId },
-    data: payload,
+    data: normalizeCategoryPayload(payload),
   });
 }
 
@@ -23,8 +32,11 @@ export async function listCategories(query) {
   const { page, limit, skip } = getPagination(query);
   const where = {
     deletedAt: null,
-    name: query.search
-      ? { contains: query.search, mode: "insensitive" }
+    OR: query.search
+      ? [
+          { name: { contains: query.search, mode: "insensitive" } },
+          { slug: { contains: query.search, mode: "insensitive" } },
+        ]
       : undefined,
   };
   const [rows, total] = await Promise.all([

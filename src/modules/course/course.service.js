@@ -3,6 +3,114 @@ import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { slugify } from "../../shared/utils/slugify.js";
 
+const COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
+const PROMO_MEDIA_TYPES = ["PROMO_VIDEO"];
+
+function pickLatestMediaByTypes(mediaList = [], types = []) {
+  return mediaList.find((item) => types.includes(item.mediaType)) || null;
+}
+
+function mapLegacyMedia(media) {
+  if (!media) return null;
+  return {
+    id: media.id,
+    path: media.storagePath,
+    title: media.originalName,
+  };
+}
+
+function getCourseInclude() {
+  return {
+    educator: {
+      select: { id: true, username: true, firstName: true, lastName: true },
+    },
+    level: true,
+    priceTier: true,
+    sections: {
+      include: {
+        lessons: {
+          select: { id: true, type: true },
+        },
+      },
+    },
+    media: {
+      where: {
+        mediaType: { in: [...COVER_MEDIA_TYPES, ...PROMO_MEDIA_TYPES] },
+      },
+      orderBy: { createdAt: "desc" },
+    },
+  };
+}
+
+function normalizeLevelTitle(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+async function resolveLevelId(rawValue) {
+  if (rawValue === undefined || rawValue === null || rawValue === "") {
+    return null;
+  }
+
+  const value = String(rawValue).trim();
+  if (!value || value === "0" || value === "4") {
+    return null;
+  }
+
+  const byId = await prisma.courseLevel.findUnique({
+    where: { id: value },
+    select: { id: true },
+  });
+  if (byId) return byId.id;
+
+  const numericValue = Number(value);
+  if (Number.isInteger(numericValue) && numericValue > 0) {
+    const byWeight = await prisma.courseLevel.findFirst({
+      where: { weight: numericValue },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    if (byWeight) return byWeight.id;
+  }
+
+  const title = normalizeLevelTitle(value);
+  if (title === "all levels" || title === "all") {
+    return null;
+  }
+
+  if (title) {
+    const byTitle = await prisma.courseLevel.findFirst({
+      where: { title: { equals: value, mode: "insensitive" } },
+      select: { id: true },
+    });
+    if (byTitle) return byTitle.id;
+  }
+
+  return null;
+}
+
+async function normalizeCoursePayload(payload) {
+  const categoryFromArray = Array.isArray(payload.category_ids)
+    ? payload.category_ids.find(Boolean)
+    : null;
+  const levelInput = payload.levelId || payload.instructional_level || null;
+  const levelId = await resolveLevelId(levelInput);
+
+  return {
+    title: payload.title,
+    subtitle: payload.subtitle,
+    description: payload.description,
+    categoryId: payload.categoryId || payload.category_id || categoryFromArray || null,
+    levelId,
+    priceTierId: payload.priceTierId || payload.price_tier || null,
+    isPublished:
+      payload.published === undefined
+        ? undefined
+        : payload.published === true || payload.published === "1",
+  };
+}
+
 async function makeUniqueSlug(title) {
   const base = slugify(title);
   const count = await prisma.course.count({
@@ -13,17 +121,19 @@ async function makeUniqueSlug(title) {
 
 export async function createCourse(userId, payload) {
   const slug = await makeUniqueSlug(payload.title);
+  const normalized = await normalizeCoursePayload(payload);
   return prisma.course.create({
     data: {
-      title: payload.title,
-      subtitle: payload.subtitle,
-      description: payload.description,
+      title: normalized.title,
+      subtitle: normalized.subtitle,
+      description: normalized.description,
       slug,
       language: payload.language || "en",
-      categoryId: payload.categoryId || null,
-      levelId: payload.levelId || null,
-      priceTierId: payload.priceTierId || null,
+      categoryId: normalized.categoryId,
+      levelId: normalized.levelId,
+      priceTierId: normalized.priceTierId,
       educatorId: userId,
+      isPublished: normalized.isPublished,
     },
   });
 }
@@ -43,10 +153,82 @@ export async function updateCourse(userId, courseId, payload) {
     throw new ApiError(400, "Only draft courses can be updated");
   }
 
-  return prisma.course.update({
-    where: { id: courseId },
-    data: payload,
+  const normalized = await normalizeCoursePayload(payload);
+
+  return prisma.$transaction(async (tx) => {
+    const updatedCourse = await tx.course.update({
+      where: { id: courseId },
+      data: normalized,
+    });
+
+    const coverImageId =
+      typeof payload.cover_image === "string" ? payload.cover_image.trim() : "";
+    if (coverImageId) {
+      await tx.media.updateMany({
+        where: {
+          id: coverImageId,
+          userId,
+          mediaType: { in: COVER_MEDIA_TYPES },
+        },
+        data: {
+          courseId: updatedCourse.id,
+          mediaType: "COVER_IMAGE",
+        },
+      });
+    }
+
+    const promoVideoId =
+      typeof payload.promo_video === "string" ? payload.promo_video.trim() : "";
+    if (promoVideoId) {
+      await tx.media.updateMany({
+        where: {
+          id: promoVideoId,
+          userId,
+          mediaType: { in: ["VIDEO", ...PROMO_MEDIA_TYPES] },
+        },
+        data: {
+          courseId: updatedCourse.id,
+          mediaType: "PROMO_VIDEO",
+        },
+      });
+    }
+
+    const hydratedCourse = await tx.course.findFirst({
+      where: { id: updatedCourse.id },
+      include: getCourseInclude(),
+    });
+
+    const coverImage = mapLegacyMedia(
+      pickLatestMediaByTypes(hydratedCourse?.media, COVER_MEDIA_TYPES),
+    );
+    const promoVideo = mapLegacyMedia(
+      pickLatestMediaByTypes(hydratedCourse?.media, PROMO_MEDIA_TYPES),
+    );
+
+    return {
+      ...hydratedCourse,
+      cover_image: coverImage,
+      promo_video: promoVideo,
+    };
   });
+}
+
+export async function updateCourseGoals(userId, courseId, payload) {
+  const course = await prisma.course.findFirst({
+    where: { id: courseId, deletedAt: null },
+  });
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+  if (course.educatorId !== userId) {
+    throw new ApiError(403, "Forbidden");
+  }
+
+  return {
+    what_you_will_learn_data: payload.what_you_will_learn_data || [],
+    requirements_data: payload.requirements_data || [],
+    who_should_attend_data: payload.who_should_attend_data || [],
+  };
 }
 
 export async function deleteDraftCourse(userId, courseId) {
@@ -115,6 +297,7 @@ export async function publishCourse(userId, courseId) {
   if (!course) {
     throw new ApiError(404, "Course not found");
   }
+
   if (course.educatorId !== userId) {
     throw new ApiError(403, "Forbidden");
   }
@@ -131,8 +314,30 @@ export async function publishCourse(userId, courseId) {
   });
 }
 
+export async function unpublishCourse(userId, courseId) {
+  const course = await prisma.course.findFirst({
+    where: { id: courseId, deletedAt: null },
+  });
+
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+  if (course.educatorId !== userId) {
+    throw new ApiError(403, "Forbidden");
+  }
+
+  return prisma.course.update({
+    where: { id: courseId },
+    data: {
+      workflowStatus: "APPROVED",
+      isPublished: false,
+    },
+  });
+}
+
 export async function listCourses(query, user) {
   const { page, limit, skip } = getPagination(query);
+  const resolvedLevelId = await resolveLevelId(query.levelId || query.instructional_level);
   const where = {
     deletedAt: null,
     workflowStatus: user?.roles?.includes("ADMIN")
@@ -143,8 +348,8 @@ export async function listCourses(query, user) {
     title: query.search
       ? { contains: query.search, mode: "insensitive" }
       : undefined,
-    categoryId: query.categoryId || undefined,
-    levelId: query.levelId || undefined,
+    categoryId: query.categoryId || query.category_id || undefined,
+    levelId: resolvedLevelId || undefined,
   };
 
   const [rows, total] = await Promise.all([
@@ -153,10 +358,23 @@ export async function listCourses(query, user) {
       skip,
       take: limit,
       include: {
-        educator: { select: { id: true, email: true, username: true } },
+        educator: { select: { id: true, email: true, username: true, firstName: true, lastName: true } },
         category: true,
         level: true,
         priceTier: true,
+        sections: {
+          include: {
+            lessons: {
+              select: { id: true, type: true },
+            },
+          },
+        },
+        media: {
+          where: {
+            mediaType: { in: [...COVER_MEDIA_TYPES, ...PROMO_MEDIA_TYPES] },
+          },
+          orderBy: { createdAt: "desc" },
+        },
       },
       orderBy: { createdAt: "desc" },
     }),
@@ -169,19 +387,32 @@ export async function listCourses(query, user) {
 export async function getCourseBySlug(slug) {
   const course = await prisma.course.findFirst({
     where: {
-      slug,
+      OR: [{ slug }, { id: slug }],
       deletedAt: null,
-      workflowStatus: "PUBLISHED",
     },
     include: {
       educator: { select: { id: true, username: true } },
       category: true,
       level: true,
       priceTier: true,
+      media: {
+        where: {
+          mediaType: { in: [...COVER_MEDIA_TYPES, ...PROMO_MEDIA_TYPES] },
+        },
+        orderBy: { createdAt: "desc" },
+      },
       sections: {
         orderBy: { position: "asc" },
         include: {
-          lessons: { orderBy: { position: "asc" } },
+          lessons: {
+            orderBy: { position: "asc" },
+            include: {
+              media: {
+                orderBy: { createdAt: "desc" },
+                take: 1,
+              },
+            },
+          },
         },
       },
       reviews: {
@@ -201,7 +432,240 @@ export async function getCourseBySlug(slug) {
 
   return {
     ...course,
+    uuid: course.id,
+    cover_image: mapLegacyMedia(
+      pickLatestMediaByTypes(course.media, COVER_MEDIA_TYPES),
+    ),
+    promo_video: mapLegacyMedia(
+      pickLatestMediaByTypes(course.media, PROMO_MEDIA_TYPES),
+    ),
+    instructional_level: course.level
+      ? { id: course.level.id, title: course.level.title }
+      : null,
+    price_tier: course.priceTier
+      ? {
+          id: course.priceTier.id,
+          title: course.priceTier.title,
+          price: String(course.priceTier.price),
+        }
+      : null,
+    category_ids: course.category ? [{ category_id: course.category.id }] : [],
+    goals: {
+      what_you_will_learn_data: [],
+      requirements_data: [],
+      who_should_attend_data: [],
+    },
     averageRating: Number(avgRating.toFixed(2)),
     reviewsCount: course.reviews.length,
   };
+}
+
+export async function listAuthoredCourses(userId, query) {
+  const { page, limit, skip } = getPagination(query);
+  const resolvedLevelId = await resolveLevelId(query.instructional_level || query.levelId);
+  const where = {
+    educatorId: userId,
+    deletedAt: null,
+    title: query.title ? { contains: query.title, mode: "insensitive" } : undefined,
+    levelId: resolvedLevelId || undefined,
+  };
+
+  const [rows, total] = await Promise.all([
+    prisma.course.findMany({
+      where,
+      skip,
+      take: limit,
+      include: getCourseInclude(),
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.course.count({ where }),
+  ]);
+
+  return toPagedResult(rows, total, page, limit);
+}
+
+export async function getCourseRoute(slug, userId) {
+  const course = await prisma.course.findFirst({
+    where: {
+      slug,
+      deletedAt: null,
+      workflowStatus: "PUBLISHED",
+    },
+    include: {
+      educator: { select: { id: true, username: true, firstName: true, lastName: true } },
+      category: true,
+      level: true,
+      priceTier: true,
+      sections: {
+        orderBy: { position: "asc" },
+        include: {
+          lessons: { orderBy: { position: "asc" } },
+        },
+      },
+      reviews: {
+        select: { rating: true },
+      },
+    },
+  });
+
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+
+  const [isEnrolled, isInCart] = userId
+    ? await Promise.all([
+        prisma.enrollment.findFirst({ where: { userId, courseId: course.id } }),
+        prisma.cartItem.findFirst({
+          where: {
+            courseId: course.id,
+            cart: { userId },
+          },
+        }),
+      ])
+    : [null, null];
+
+  return {
+    id: course.id,
+    slug: course.slug,
+    title: course.title,
+    subtitle: course.subtitle,
+    description: course.description,
+    categories: course.category
+      ? [{ id: course.category.id, slug: course.category.slug, title: course.category.name || course.category.title }]
+      : [],
+    sections: course.sections.map((section) => ({
+      id: section.id,
+      title: section.title,
+      curriculums: section.lessons.map((lesson) => ({
+        id: lesson.id,
+        uuid: lesson.id,
+        title: lesson.title,
+        curriculum_resource_type: lesson.type.toLowerCase(),
+        estimated_duration: lesson.durationInSeconds || 0,
+        curriculum_description: lesson.description || "",
+      })),
+    })),
+    resources_count: {
+      section_count: course.sections.length,
+      curriculum_count: course.sections.reduce((acc, section) => acc + section.lessons.length, 0),
+      article_count: course.sections.reduce(
+        (acc, section) => acc + section.lessons.filter((lesson) => lesson.type === "RESOURCE").length,
+        0,
+      ),
+    },
+    author: {
+      data: {
+        id: course.educator.id,
+        username: course.educator.username,
+        firstname: course.educator.firstName || "",
+        lastname: course.educator.lastName || "",
+        user_picture: null,
+      },
+    },
+    instructional_level: course.level
+      ? {
+          id: course.level.id,
+          title: course.level.title,
+        }
+      : { id: null, title: "All Levels" },
+    price_tier: course.priceTier
+      ? {
+          id: course.priceTier.id,
+          title: course.priceTier.title,
+          price: String(course.priceTier.price),
+        }
+      : null,
+    promo_video: null,
+    cover_image: null,
+    goals: {
+      what_you_will_learn_data: [],
+      requirements_data: [],
+      who_should_attend_data: [],
+    },
+    is_enrolled: Boolean(isEnrolled),
+    is_in_cart: Boolean(isInCart),
+  };
+}
+
+export async function getCourseForLearner(userId, slug) {
+  const enrollment = await prisma.enrollment.findFirst({
+    where: {
+      userId,
+      status: "ACTIVE",
+      course: {
+        slug,
+        deletedAt: null,
+      },
+    },
+    include: {
+      course: {
+        include: {
+          sections: {
+            orderBy: { position: "asc" },
+            include: {
+              lessons: { orderBy: { position: "asc" } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!enrollment) {
+    throw new ApiError(404, "Enrollment not found");
+  }
+
+  return {
+    course: {
+      id: enrollment.course.id,
+      uuid: enrollment.course.id,
+      slug: enrollment.course.slug,
+      title: enrollment.course.title,
+      subtitle: enrollment.course.subtitle,
+      description: enrollment.course.description,
+      sections: enrollment.course.sections.map((section) => ({
+        id: section.id,
+        uuid: section.id,
+        title: section.title,
+        curriculums: section.lessons.map((lesson) => ({
+          id: lesson.id,
+          uuid: lesson.id,
+          title: lesson.title,
+          curriculum_resource_type:
+            lesson.videoUrl || lesson.type === "VIDEO"
+              ? "video"
+              : lesson.assignmentText
+                ? "article"
+                : "null",
+          curriculum_description: lesson.description || "",
+          estimated_duration: lesson.durationInSeconds || 0,
+          asset:
+            lesson.videoUrl || lesson.media?.[0]
+              ? {
+                  id: lesson.media?.[0]?.id || lesson.id,
+                  path: lesson.videoUrl || lesson.media?.[0]?.storagePath || null,
+                }
+              : lesson.assignmentText
+                ? { id: lesson.id, content: lesson.assignmentText }
+                : null,
+          completed: false,
+        })),
+      })),
+    },
+  };
+}
+
+export async function updateCoursePricing(userId, courseId, priceTierId) {
+  const course = await prisma.course.findFirst({
+    where: { id: courseId, educatorId: userId, deletedAt: null },
+  });
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+
+  return prisma.course.update({
+    where: { id: courseId },
+    data: { priceTierId: priceTierId || null },
+    include: { priceTier: true },
+  });
 }

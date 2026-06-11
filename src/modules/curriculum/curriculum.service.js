@@ -17,8 +17,8 @@ export async function createSection(userId, courseId, payload) {
     data: {
       courseId,
       title: payload.title,
-      description: payload.description,
-      position: payload.position,
+      description: payload.description || payload.section_description,
+      position: payload.position ?? payload.sort_order ?? 0,
     },
   });
 }
@@ -36,7 +36,22 @@ export async function createLesson(userId, courseId, sectionId, payload) {
     data: {
       sectionId,
       courseId,
-      ...payload,
+      type:
+        payload.type ||
+        (payload.curriculum_type ? String(payload.curriculum_type).toUpperCase().replace("ARTICLE", "RESOURCE") : "RESOURCE"),
+      title: payload.title,
+      description: payload.description || payload.curriculum_description,
+      position: payload.position ?? payload.sort_order ?? 0,
+      durationInSeconds: payload.durationInSeconds ?? payload.estimated_duration ?? 0,
+      isPreview:
+        payload.isPreview ??
+        (payload.published === undefined ? false : !(payload.published === true || payload.published === "1")),
+      videoUrl: payload.videoUrl,
+      resourceUrl: payload.resourceUrl,
+      assignmentText: payload.assignmentText,
+      codingInstructions: payload.codingInstructions,
+      codingStarterCode: payload.codingStarterCode,
+      quizQuestions: payload.quizQuestions,
     },
   });
 }

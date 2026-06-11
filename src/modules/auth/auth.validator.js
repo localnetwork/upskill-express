@@ -3,11 +3,12 @@ import { createdUserValidator } from "../user/user.validator.js";
 
 export const registerValidator = createdUserValidator.extend({
   username: z.string().min(3).max(40),
-  role: z.enum(["LEARNER", "EDUCATOR"]).optional(),
+  role: z.string().optional(),
 });
 
 export const loginValidator = z.object({
-  email: z.string().email("Invalid email format"),
+  email: z.string().email("Invalid email format").optional(),
+  username: z.string().min(3).optional(),
   password: z.string().min(1, "Password is required"),
 });
 

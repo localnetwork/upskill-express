@@ -16,7 +16,7 @@ export async function listMyEnrollments(userId, query) {
         course: {
           include: {
             educator: {
-              select: { id: true, username: true },
+              select: { id: true, username: true, firstName: true, lastName: true },
             },
             sections: {
               include: {

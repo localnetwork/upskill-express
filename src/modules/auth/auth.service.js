@@ -24,6 +24,14 @@ function buildTokenPayload(user) {
   };
 }
 
+function normalizeRole(rawRole) {
+  if (!rawRole) return "LEARNER";
+  const value = String(rawRole).trim().toUpperCase();
+  if (value === "2" || value === "EDUCATOR" || value === "INSTRUCTOR") return "EDUCATOR";
+  if (value === "3" || value === "LEARNER" || value === "STUDENT") return "LEARNER";
+  return "LEARNER";
+}
+
 export async function register(payload) {
   const [existingEmail, existingUsername] = await Promise.all([
     findUserByEmail(payload.email),
@@ -40,14 +48,14 @@ export async function register(payload) {
 
   const verificationToken = randomToken(24);
   const hashedPassword = await hashPassword(payload.password);
-  const roleName = payload.role || "LEARNER";
+  const roleName = normalizeRole(payload.role);
   const defaultRole = await ensureDefaultRole(roleName);
 
   const user = await createUser({
     email: payload.email,
     username: payload.username,
-    firstName: payload.firstName,
-    lastName: payload.lastName,
+    firstName: payload.firstName || payload.firstname,
+    lastName: payload.lastName || payload.lastname,
     passwordHash: hashedPassword,
     verificationToken,
     roles: {
@@ -55,20 +63,43 @@ export async function register(payload) {
     },
   });
 
+  const tokenPayload = {
+    sub: user.id,
+    email: user.email,
+    roles: [roleName],
+  };
+  const accessToken = signAccessToken(tokenPayload);
+  const refreshToken = signRefreshToken(tokenPayload);
+  const refreshTokenHash = await hashToken(refreshToken);
+  await updateUser(user.id, { refreshTokenHash });
+
   return {
+    accessToken,
+    refreshToken,
     user: {
       id: user.id,
       email: user.email,
       username: user.username,
       firstName: user.firstName,
       lastName: user.lastName,
+      firstname: user.firstName,
+      lastname: user.lastName,
+      roles: [roleName],
     },
     verificationToken,
   };
 }
 
 export async function login(payload) {
-  const user = await findUserByEmail(payload.email);
+  const identifier = payload.email || payload.username;
+  if (!identifier) {
+    throw new ApiError(400, "Email or username is required");
+  }
+
+  const shouldUseEmail = Boolean(payload.email || identifier.includes("@"));
+  const user = shouldUseEmail
+    ? await findUserByEmail(identifier)
+    : await findUserByUsername(identifier);
   if (!user) {
     throw new ApiError(401, "Invalid credentials");
   }
@@ -97,6 +128,8 @@ export async function login(payload) {
       username: user.username,
       firstName: user.firstName,
       lastName: user.lastName,
+      firstname: user.firstName,
+      lastname: user.lastName,
       roles: getRoles(user),
     },
   };

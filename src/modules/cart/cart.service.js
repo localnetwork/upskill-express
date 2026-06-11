@@ -15,7 +15,17 @@ export async function getCart(userId) {
       items: {
         include: {
           course: {
-            include: { priceTier: true },
+            include: {
+              priceTier: true,
+              educator: {
+                select: {
+                  id: true,
+                  username: true,
+                  firstName: true,
+                  lastName: true,
+                },
+              },
+            },
           },
         },
       },
@@ -27,7 +37,11 @@ export async function addToCart(userId, courseId) {
   const [cart, course, existingEnrollment] = await Promise.all([
     getOrCreateCart(userId),
     prisma.course.findFirst({
-      where: { id: courseId, workflowStatus: "PUBLISHED", deletedAt: null },
+      where: {
+        id: courseId,
+        deletedAt: null,
+        OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
+      },
     }),
     prisma.enrollment.findFirst({
       where: { userId, courseId },

@@ -2,7 +2,12 @@ import { captureCheckoutOrder, createCheckoutOrder, handlePayPalWebhook } from "
 
 export async function createCheckoutController(req, res) {
   const data = await createCheckoutOrder(req.user.id, req.body);
-  return res.status(201).json({ message: "Checkout order created", data });
+  const approvalLink = data?.paypal?.links?.find((link) => link.rel === "approve")?.href || null;
+  return res.status(201).json({
+    message: "Checkout order created",
+    data,
+    redirect_url: approvalLink,
+  });
 }
 
 export async function captureCheckoutController(req, res) {

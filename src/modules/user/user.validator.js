@@ -7,16 +7,17 @@ export const createdUserValidator = z.object({
   password: z.string().min(8, "Password must be at least 8 characters"),
 
   firstName: z.string().optional(),
-
   lastName: z.string().optional(),
+  firstname: z.string().optional(),
+  lastname: z.string().optional(),
 });
 
 export const updateUserValidator = z.object({
   username: z.string().min(3).max(40).optional(),
   firstName: z.string().optional(),
-
   lastName: z.string().optional(),
-
+  firstname: z.string().optional(),
+  lastname: z.string().optional(),
   password: z
     .string()
     .min(8, "Password must be at least 8 characters")
