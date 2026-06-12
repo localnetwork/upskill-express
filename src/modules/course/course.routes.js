@@ -7,6 +7,7 @@ import {
   createCourseController,
   deleteDraftCourseController,
   getCourseForManagementController,
+  getCourseStudentsForManagementController,
   getCourseForLearnerController,
   getCourseRouteController,
   getCourseBySlugController,
@@ -28,6 +29,7 @@ router.get("/authored", authenticate, authorize("EDUCATOR"), asyncHandler(listAu
 router.get("/route/:slug", authenticateOptional, asyncHandler(getCourseRouteController));
 router.get("/:slug/learn", authenticate, authorize("LEARNER"), asyncHandler(getCourseForLearnerController));
 router.get("/:slug/manage", authenticate, asyncHandler(getCourseForManagementController));
+router.get("/:slug/students", authenticate, asyncHandler(getCourseStudentsForManagementController));
 router.get("/:slug", asyncHandler(getCourseBySlugController));
 
 router.post("/", authenticate, authorize("EDUCATOR"), validate(createCourseValidator), asyncHandler(createCourseController));

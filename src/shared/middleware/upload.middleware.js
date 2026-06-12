@@ -1,6 +1,7 @@
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
+import crypto from "crypto";
 import { createWriteStream } from "fs";
 import { pipeline } from "stream/promises";
 import multer from "multer";
@@ -13,9 +14,13 @@ if (!fs.existsSync(uploadPath)) {
 }
 
 function generateFileName(originalName) {
-  const safeOriginal = String(originalName || "file").replace(/[^\w.\-]/g, "_");
-  const suffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-  return `${suffix}-${safeOriginal}`;
+  const original = String(originalName || "file");
+  const extension = path.extname(original).toLowerCase().replace(/[^.\w]/g, "");
+  const hash = crypto
+    .createHash("sha256")
+    .update(`${Date.now()}-${crypto.randomBytes(16).toString("hex")}-${original}`)
+    .digest("hex");
+  return `${hash}${extension}`;
 }
 
 class R2StorageEngine {

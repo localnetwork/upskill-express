@@ -6,6 +6,7 @@ import {
   getCourseForLearner,
   getCourseRoute,
   getCourseBySlug,
+  getCourseStudentsForManagement,
   listAuthoredCourses,
   listCourses,
   publishCourse,
@@ -132,6 +133,26 @@ export async function getCourseBySlugController(req, res) {
 export async function getCourseForManagementController(req, res) {
   const data = await getCourseForManagement(req.user, req.params.slug);
   return res.json({ message: "Course fetched", data });
+}
+
+export async function getCourseStudentsForManagementController(req, res) {
+  const data = await getCourseStudentsForManagement(
+    req.user,
+    req.params.slug,
+    req.query,
+  );
+
+  return res.json({
+    message: "Course students fetched",
+    data: data.data,
+    stats: data.stats,
+    pagination: {
+      page: data.pagination.page,
+      limit: data.pagination.limit,
+      total: data.pagination.total,
+      total_pages: data.pagination.totalPages,
+    },
+  });
 }
 
 export async function listAuthoredCoursesController(req, res) {

@@ -647,6 +647,154 @@ export async function getCourseForManagement(user, slug) {
   return mapCourseDetails(course, goals);
 }
 
+export async function getCourseStudentsForManagement(user, slug, query = {}) {
+  const course = await prisma.course.findFirst({
+    where: {
+      OR: [{ slug }, { id: slug }],
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      slug: true,
+      educatorId: true,
+    },
+  });
+
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+
+  const isOwner = course.educatorId === user?.id;
+  const isAdmin = Array.isArray(user?.roles) && user.roles.includes("ADMIN");
+  if (!isOwner && !isAdmin) {
+    throw new ApiError(403, "Forbidden");
+  }
+
+  const { page, limit, skip } = getPagination(query);
+  const search = String(query.search || query.q || "")
+    .trim()
+    .slice(0, 120);
+
+  const activeEnrollmentWhere = {
+    courseId: course.id,
+    status: { in: ["ACTIVE", "COMPLETED"] },
+  };
+
+  const searchUserFilter = search
+    ? {
+        OR: [
+          { firstName: { contains: search, mode: "insensitive" } },
+          { lastName: { contains: search, mode: "insensitive" } },
+          { username: { contains: search, mode: "insensitive" } },
+        ],
+      }
+    : undefined;
+
+  const listWhere = {
+    ...activeEnrollmentWhere,
+    user: searchUserFilter,
+  };
+
+  const startOfMonth = new Date();
+  startOfMonth.setDate(1);
+  startOfMonth.setHours(0, 0, 0, 0);
+
+  const [totalStudents, increaseThisMonth, allProgressRows, rows, total] =
+    await Promise.all([
+      prisma.enrollment.count({ where: activeEnrollmentWhere }),
+      prisma.enrollment.count({
+        where: {
+          ...activeEnrollmentWhere,
+          enrolledAt: { gte: startOfMonth },
+        },
+      }),
+      prisma.enrollment.findMany({
+        where: activeEnrollmentWhere,
+        select: {
+          courseProgress: {
+            select: { progressPct: true },
+          },
+        },
+      }),
+      prisma.enrollment.findMany({
+        where: listWhere,
+        skip,
+        take: limit,
+        orderBy: { enrolledAt: "desc" },
+        select: {
+          id: true,
+          status: true,
+          enrolledAt: true,
+          completedAt: true,
+          user: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              username: true,
+            },
+          },
+          courseProgress: {
+            select: {
+              progressPct: true,
+              completedLessons: true,
+              totalLessons: true,
+              completedAt: true,
+            },
+          },
+        },
+      }),
+      prisma.enrollment.count({ where: listWhere }),
+    ]);
+
+  const averageProgressPct = totalStudents
+    ? Number(
+        (
+          allProgressRows.reduce(
+            (sum, row) => sum + Number(row.courseProgress?.progressPct || 0),
+            0,
+          ) / totalStudents
+        ).toFixed(2),
+      )
+    : 0;
+
+  const mappedRows = rows.map((row) => {
+    const progressPct = Number(row.courseProgress?.progressPct || 0);
+    const firstName = row.user?.firstName || "";
+    const lastName = row.user?.lastName || "";
+    const fullName = `${firstName} ${lastName}`.trim();
+
+    return {
+      enrollment_id: row.id,
+      student: {
+        id: row.user?.id || null,
+        name: fullName || row.user?.username || "Unknown",
+        username: row.user?.username || "",
+      },
+      enrollment_date: row.enrolledAt,
+      status: row.status,
+      progress: {
+        progress_pct: progressPct,
+        completed_lessons: row.courseProgress?.completedLessons || 0,
+        total_lessons: row.courseProgress?.totalLessons || 0,
+        completed:
+          progressPct >= 100 ||
+          row.status === "COMPLETED" ||
+          Boolean(row.completedAt || row.courseProgress?.completedAt),
+      },
+    };
+  });
+
+  return {
+    stats: {
+      total_students: totalStudents,
+      increase_this_month: increaseThisMonth,
+      average_progress_pct: averageProgressPct,
+    },
+    ...toPagedResult(mappedRows, total, page, limit),
+  };
+}
+
 export async function listAuthoredCourses(userId, query) {
   const { page, limit, skip } = getPagination(query);
   const resolvedLevelId = await resolveLevelId(query.instructional_level || query.levelId);
