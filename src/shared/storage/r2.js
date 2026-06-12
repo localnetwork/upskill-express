@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import { createReadStream } from "fs";
 import path from "path";
 import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { env } from "../config/env.js";
@@ -129,8 +130,26 @@ export async function uploadStreamToR2({ stream, objectKey, contentType }) {
 }
 
 export async function uploadLocalFileToR2(localFilePath, objectKey, contentType) {
-  const buffer = await fs.readFile(localFilePath);
-  return uploadBufferToR2({ buffer, objectKey, contentType });
+  const key = normalizeObjectKey(objectKey);
+  if (!key) {
+    throw new Error("R2 object key is required");
+  }
+
+  const stat = await fs.stat(localFilePath);
+  const client = getR2Client();
+  const command = new PutObjectCommand({
+    Bucket: env.cfBucket,
+    Key: key,
+    Body: createReadStream(localFilePath),
+    ContentType: contentType || "application/octet-stream",
+    ContentLength: stat.size,
+  });
+  const output = await client.send(command);
+  return {
+    key,
+    etag: output.ETag || null,
+    url: buildR2PublicUrl(key),
+  };
 }
 
 export async function getObjectFromR2(storagePath) {

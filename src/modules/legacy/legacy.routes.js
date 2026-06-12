@@ -10,6 +10,7 @@ import { getObjectFromR2, isR2Enabled, isR2StoragePath } from "../../shared/stor
 import { updateLessonProgress } from "../progress/progress.service.js";
 
 const router = Router();
+const QUIZ_ATTEMPT_KEY_PREFIX = "quiz_attempt::";
 
 function mediaPath(file) {
   if (!file) return null;
@@ -46,12 +47,27 @@ function mapLegacyMedia(media) {
 }
 
 function mapLessonTypeToLegacyResource(type, lesson) {
+  if (type === "QUIZ") return "quiz";
+  if (type === "CODING_EXERCISE") return "coding_exercise";
   if (type === "VIDEO" || lesson.videoUrl) return "video";
   if (lesson.assignmentText) return "article";
   return "null";
 }
 
+function parseJsonOrNull(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
+}
+
 function mapLessonToLegacyCurriculum(lesson) {
+  const parsedCodingStarterCode = parseJsonOrNull(lesson.codingStarterCode);
+  const parsedQuizQuestions = parseJsonOrNull(lesson.quizQuestions);
+
   return {
     id: lesson.id,
     uuid: lesson.id,
@@ -67,11 +83,26 @@ function mapLessonToLegacyCurriculum(lesson) {
     curriculum_description: lesson.description || "",
     curriculum_resource_type: mapLessonTypeToLegacyResource(lesson.type, lesson),
     estimated_duration: lesson.durationInSeconds || 0,
-    asset: lesson.videoUrl
-      ? { path: lesson.videoUrl }
-      : lesson.assignmentText
-        ? { content: lesson.assignmentText }
-        : null,
+    asset:
+      lesson.type === "QUIZ"
+        ? {
+            questions: Array.isArray(parsedQuizQuestions)
+              ? parsedQuizQuestions
+              : parsedQuizQuestions?.questions || [],
+          }
+        : lesson.type === "CODING_EXERCISE"
+          ? {
+              instructions: lesson.codingInstructions || "",
+              starter_code:
+                parsedCodingStarterCode?.starter_code || parsedCodingStarterCode || {},
+              expected_output: parsedCodingStarterCode?.expected_output || {},
+              languages: parsedCodingStarterCode?.languages || [],
+            }
+          : lesson.videoUrl
+            ? { path: lesson.videoUrl }
+            : lesson.assignmentText
+              ? { content: lesson.assignmentText }
+              : null,
   };
 }
 
@@ -117,6 +148,250 @@ async function ensureEducatorOwnsLesson(userId, lessonId) {
     throw new ApiError(404, "Curriculum not found");
   }
   return lesson;
+}
+
+async function ensureLearnerOwnsQuizLesson(userId, lessonId) {
+  const lesson = await prisma.lesson.findUnique({
+    where: { id: String(lessonId) },
+    include: {
+      course: true,
+    },
+  });
+
+  if (!lesson || !lesson.course || lesson.course.deletedAt) {
+    throw new ApiError(404, "Lesson not found");
+  }
+
+  const enrollment = await prisma.enrollment.findFirst({
+    where: {
+      userId,
+      courseId: lesson.courseId,
+      status: "ACTIVE",
+    },
+  });
+
+  if (!enrollment) {
+    throw new ApiError(403, "Not enrolled in this course");
+  }
+
+  if (lesson.type !== "QUIZ") {
+    throw new ApiError(400, "This lesson is not a quiz");
+  }
+
+  return { lesson, enrollment };
+}
+
+function getQuizAttemptSettingKey(userId, lessonId) {
+  return `${QUIZ_ATTEMPT_KEY_PREFIX}${userId}::${lessonId}`;
+}
+
+function parseJsonOrDefault(value, fallback) {
+  if (!value) return fallback;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function normalizeQuizPayload(quizQuestions) {
+  const parsed = parseJsonOrDefault(quizQuestions, {});
+  const rawQuestions = Array.isArray(parsed) ? parsed : parsed.questions || [];
+  const settings = {
+    passingScore: Number(parsed?.settings?.passingScore || 80),
+    allowSkip: Boolean(parsed?.settings?.allowSkip || false),
+    hintPenalty: Number(parsed?.settings?.hintPenalty || 1),
+    allowRetakeAfterPass: Boolean(parsed?.settings?.allowRetakeAfterPass || false),
+    quizTimerSeconds: Number(parsed?.settings?.quizTimerSeconds || 0),
+  };
+
+  return {
+    questions: rawQuestions.map((question, index) => ({
+      ...question,
+      id: question?.id || `q-${index + 1}`,
+      type: question?.type || "multiple_choice",
+      prompt: question?.prompt || "",
+      explanation: question?.explanation || "",
+      hint: question?.hint || "",
+      points: Number(question?.points || 10),
+    })),
+    settings,
+  };
+}
+
+function getCorrectAnswerPayload(question) {
+  if (question.type === "multiple_choice") {
+    const indices = (question.options || [])
+      .map((option, index) => ({ option, index }))
+      .filter(({ option }) => Boolean(option?.isCorrect))
+      .map(({ index }) => index);
+    return indices;
+  }
+
+  if (question.type === "true_false") {
+    return Boolean(question.correctAnswer);
+  }
+
+  if (question.type === "fill_in_the_blanks" || question.type === "short_answer") {
+    return (question.acceptedAnswers || []).map((value) => String(value || "").trim().toLowerCase());
+  }
+
+  return null;
+}
+
+function validateAnswer(question, submittedAnswer) {
+  const correctAnswer = getCorrectAnswerPayload(question);
+
+  if (question.type === "multiple_choice") {
+    const expected = Array.isArray(correctAnswer) ? correctAnswer : [];
+    const selected = Array.isArray(submittedAnswer)
+      ? submittedAnswer.map((value) => Number(value))
+      : [Number(submittedAnswer)];
+    const selectedUnique = Array.from(new Set(selected)).sort((a, b) => a - b);
+    const expectedUnique = Array.from(new Set(expected)).sort((a, b) => a - b);
+    const isCorrect =
+      selectedUnique.length === expectedUnique.length &&
+      selectedUnique.every((value, index) => value === expectedUnique[index]);
+    return { isCorrect, correctAnswer: expectedUnique };
+  }
+
+  if (question.type === "true_false") {
+    const normalized = String(submittedAnswer).toLowerCase() === "true";
+    return { isCorrect: normalized === Boolean(correctAnswer), correctAnswer: Boolean(correctAnswer) };
+  }
+
+  if (question.type === "fill_in_the_blanks" || question.type === "short_answer") {
+    const normalized = String(submittedAnswer || "").trim().toLowerCase();
+    const accepted = Array.isArray(correctAnswer) ? correctAnswer : [];
+    return { isCorrect: accepted.includes(normalized), correctAnswer: accepted };
+  }
+
+  return { isCorrect: false, correctAnswer: null };
+}
+
+function computeQuizMetrics(state, totalQuestions, passingScore) {
+  const resultEntries = Object.values(state.questionResults || {});
+  const answeredQuestions = resultEntries.length;
+  const correctAnswers = resultEntries.filter((item) => item?.isCorrect).length;
+  const incorrectAnswers = answeredQuestions - correctAnswers;
+  const hintsUsed = Object.values(state.hintUsage || {}).filter(Boolean).length;
+  const score = resultEntries.reduce((sum, item) => sum + Number(item?.awardedPoints || 0), 0);
+  const maxScore = resultEntries.reduce((sum, item) => sum + Number(item?.maxPoints || 0), 0);
+  const scorePercentage = maxScore > 0 ? Number(((score / maxScore) * 100).toFixed(2)) : 0;
+  const completionPercentage =
+    totalQuestions > 0 ? Number(((answeredQuestions / totalQuestions) * 100).toFixed(2)) : 0;
+  const completed = answeredQuestions >= totalQuestions && totalQuestions > 0;
+  const passed = completed ? scorePercentage >= passingScore : false;
+  const startedAt = state.startedAt ? new Date(state.startedAt) : new Date();
+  const lastActivityAt = state.lastActivityAt ? new Date(state.lastActivityAt) : new Date();
+  const timeSpentSeconds = Math.max(
+    0,
+    Math.floor((lastActivityAt.getTime() - startedAt.getTime()) / 1000),
+  );
+
+  return {
+    totalQuestions,
+    answeredQuestions,
+    correctAnswers,
+    incorrectAnswers,
+    hintsUsed,
+    score,
+    maxScore,
+    scorePercentage,
+    completionPercentage,
+    completed,
+    passed,
+    timeSpentSeconds,
+  };
+}
+
+function buildDefaultQuizState(quizPayload) {
+  return {
+    startedAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString(),
+    currentQuestionIndex: 0,
+    answers: {},
+    hintUsage: {},
+    questionResults: {},
+    metrics: computeQuizMetrics({ questionResults: {}, hintUsage: {} }, quizPayload.questions.length, quizPayload.settings.passingScore),
+    completed: false,
+    passed: false,
+    attemptNumber: 1,
+    attemptHistory: [],
+    completionRecorded: false,
+  };
+}
+
+async function loadQuizAttemptState(userId, lesson) {
+  const quizPayload = normalizeQuizPayload(lesson.quizQuestions);
+  const key = getQuizAttemptSettingKey(userId, lesson.id);
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key },
+    select: { value: true },
+  });
+
+  const saved = parseJsonOrDefault(setting?.value, null);
+  const baseState = saved || buildDefaultQuizState(quizPayload);
+  const state = {
+    ...buildDefaultQuizState(quizPayload),
+    ...baseState,
+    lastActivityAt: new Date().toISOString(),
+  };
+  state.metrics = computeQuizMetrics(
+    state,
+    quizPayload.questions.length,
+    quizPayload.settings.passingScore,
+  );
+  state.completed = state.metrics.completed;
+  state.passed = state.metrics.passed;
+
+  return { key, quizPayload, state };
+}
+
+async function saveQuizAttemptState(key, state) {
+  await prisma.platformSetting.upsert({
+    where: { key },
+    create: { key, value: JSON.stringify(state) },
+    update: { value: JSON.stringify(state) },
+  });
+}
+
+async function finalizeQuizCompletion(userId, lessonId, state, quizPayload) {
+  const metrics = computeQuizMetrics(state, quizPayload.questions.length, quizPayload.settings.passingScore);
+  state.metrics = metrics;
+  state.completed = metrics.completed;
+  state.passed = metrics.passed;
+
+  if (!metrics.completed) {
+    return state;
+  }
+
+  if (!state.completionRecorded) {
+    state.attemptHistory = Array.isArray(state.attemptHistory) ? state.attemptHistory : [];
+    state.attemptHistory.push({
+      attemptNumber: state.attemptNumber || 1,
+      completedAt: new Date().toISOString(),
+      passed: metrics.passed,
+      score: metrics.score,
+      scorePercentage: metrics.scorePercentage,
+      correctAnswers: metrics.correctAnswers,
+      incorrectAnswers: metrics.incorrectAnswers,
+      hintsUsed: metrics.hintsUsed,
+      completionPercentage: metrics.completionPercentage,
+      timeSpentSeconds: metrics.timeSpentSeconds,
+    });
+    state.completionRecorded = true;
+  }
+
+  await updateLessonProgress(userId, {
+    lessonId,
+    progressPct: metrics.passed ? 100 : metrics.scorePercentage,
+    isCompleted: metrics.passed,
+    lastPosition: 0,
+  });
+
+  return state;
 }
 
 async function canAccessCourseMedia(userId, courseId) {
@@ -685,12 +960,40 @@ router.post("/course-curriculums", authenticate, authorize("EDUCATOR"), async (r
 router.put("/course-curriculums/:lessonId", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
   try {
     const lesson = await ensureEducatorOwnsLesson(req.user.id, req.params.lessonId);
+    const quizQuestions =
+      req.body.quizQuestions !== undefined ? req.body.quizQuestions : req.body.quiz_questions;
+    const codingInstructions =
+      req.body.codingInstructions !== undefined
+        ? req.body.codingInstructions
+        : req.body.coding_instructions;
+    const codingStarterCode =
+      req.body.codingStarterCode !== undefined
+        ? req.body.codingStarterCode
+        : req.body.coding_starter_code;
+
+    const data = {
+      title: req.body.title,
+      description: req.body.description || "",
+    };
+
+    if (quizQuestions !== undefined) {
+      data.quizQuestions = quizQuestions;
+    }
+
+    if (codingInstructions !== undefined) {
+      data.codingInstructions = String(codingInstructions || "");
+    }
+
+    if (codingStarterCode !== undefined) {
+      data.codingStarterCode =
+        typeof codingStarterCode === "string"
+          ? codingStarterCode
+          : JSON.stringify(codingStarterCode || {});
+    }
+
     const updated = await prisma.lesson.update({
       where: { id: lesson.id },
-      data: {
-        title: req.body.title,
-        description: req.body.description || "",
-      },
+      data,
     });
     return res.json({ data: mapLessonToLegacyCurriculum(updated) });
   } catch (error) {
@@ -722,6 +1025,166 @@ router.post("/course-curriculums/add-progress", authenticate, async (req, res, n
       lastPosition: 0,
     });
     return res.json({ data });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/course-curriculums/:lessonId/quiz-attempt", authenticate, authorize("LEARNER"), async (req, res, next) => {
+  try {
+    const { lesson } = await ensureLearnerOwnsQuizLesson(req.user.id, req.params.lessonId);
+    const { key, quizPayload, state } = await loadQuizAttemptState(req.user.id, lesson);
+    await saveQuizAttemptState(key, state);
+
+    return res.json({
+      data: {
+        lessonId: lesson.id,
+        settings: quizPayload.settings,
+        totalQuestions: quizPayload.questions.length,
+        state,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/course-curriculums/:lessonId/quiz-attempt/hint", authenticate, authorize("LEARNER"), async (req, res, next) => {
+  try {
+    const questionIndex = Number(req.body.questionIndex);
+    if (!Number.isInteger(questionIndex) || questionIndex < 0) {
+      throw new ApiError(400, "Invalid questionIndex");
+    }
+
+    const { lesson } = await ensureLearnerOwnsQuizLesson(req.user.id, req.params.lessonId);
+    const { key, quizPayload, state } = await loadQuizAttemptState(req.user.id, lesson);
+    const question = quizPayload.questions[questionIndex];
+    if (!question) {
+      throw new ApiError(404, "Question not found");
+    }
+    if (state.completed) {
+      throw new ApiError(400, "Quiz already completed");
+    }
+
+    const questionKey = question.id || `q-${questionIndex + 1}`;
+    const alreadyUsed = Boolean(state.hintUsage?.[questionKey]);
+    if (!alreadyUsed) {
+      state.hintUsage = state.hintUsage || {};
+      state.hintUsage[questionKey] = true;
+      state.lastActivityAt = new Date().toISOString();
+      state.metrics = computeQuizMetrics(state, quizPayload.questions.length, quizPayload.settings.passingScore);
+      await saveQuizAttemptState(key, state);
+    }
+
+    return res.json({
+      data: {
+        questionIndex,
+        hint: question.hint || "Focus on key concepts in the question prompt and eliminate unlikely options.",
+        alreadyUsed,
+        hintUsed: true,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/course-curriculums/:lessonId/quiz-attempt/validate", authenticate, authorize("LEARNER"), async (req, res, next) => {
+  try {
+    const questionIndex = Number(req.body.questionIndex);
+    if (!Number.isInteger(questionIndex) || questionIndex < 0) {
+      throw new ApiError(400, "Invalid questionIndex");
+    }
+
+    const { lesson } = await ensureLearnerOwnsQuizLesson(req.user.id, req.params.lessonId);
+    const { key, quizPayload, state } = await loadQuizAttemptState(req.user.id, lesson);
+    if (state.completed) {
+      throw new ApiError(400, "Quiz already completed");
+    }
+
+    if (!quizPayload.settings.allowSkip && questionIndex !== Number(state.currentQuestionIndex || 0)) {
+      throw new ApiError(400, "You must answer questions in order");
+    }
+
+    const question = quizPayload.questions[questionIndex];
+    if (!question) {
+      throw new ApiError(404, "Question not found");
+    }
+
+    const questionKey = question.id || `q-${questionIndex + 1}`;
+    const submittedAnswer = req.body.answer;
+    const validation = validateAnswer(question, submittedAnswer);
+    const hintUsed = Boolean(state.hintUsage?.[questionKey]);
+    const maxPoints = Number(question.points || 10);
+    const deduction = hintUsed ? Number(quizPayload.settings.hintPenalty || 0) : 0;
+    const awardedPoints = validation.isCorrect ? Math.max(0, maxPoints - deduction) : 0;
+
+    state.answers = state.answers || {};
+    state.answers[questionKey] = submittedAnswer;
+    state.questionResults = state.questionResults || {};
+    state.questionResults[questionKey] = {
+      questionIndex,
+      submittedAnswer,
+      isCorrect: validation.isCorrect,
+      correctAnswer: validation.correctAnswer,
+      explanation: question.explanation || "Review this concept before your next attempt.",
+      awardedPoints,
+      maxPoints,
+      hintUsed,
+      answeredAt: new Date().toISOString(),
+    };
+
+    if (!quizPayload.settings.allowSkip) {
+      state.currentQuestionIndex = Math.min(questionIndex + 1, Math.max(quizPayload.questions.length - 1, 0));
+    } else {
+      state.currentQuestionIndex = Number(req.body.nextQuestionIndex ?? questionIndex + 1);
+    }
+    state.lastActivityAt = new Date().toISOString();
+
+    await finalizeQuizCompletion(req.user.id, lesson.id, state, quizPayload);
+    await saveQuizAttemptState(key, state);
+
+    return res.json({
+      data: {
+        questionIndex,
+        validation: state.questionResults[questionKey],
+        metrics: state.metrics,
+        completed: state.completed,
+        passed: state.passed,
+        nextQuestionIndex: state.currentQuestionIndex,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/course-curriculums/:lessonId/quiz-attempt/retry", authenticate, authorize("LEARNER"), async (req, res, next) => {
+  try {
+    const { lesson } = await ensureLearnerOwnsQuizLesson(req.user.id, req.params.lessonId);
+    const { key, quizPayload, state } = await loadQuizAttemptState(req.user.id, lesson);
+
+    if (state.passed && !quizPayload.settings.allowRetakeAfterPass) {
+      throw new ApiError(400, "Retake is not allowed for this quiz");
+    }
+
+    const nextAttemptNumber = Number(state.attemptNumber || 1) + 1;
+    const resetState = {
+      ...buildDefaultQuizState(quizPayload),
+      attemptNumber: nextAttemptNumber,
+      attemptHistory: Array.isArray(state.attemptHistory) ? state.attemptHistory : [],
+    };
+
+    await saveQuizAttemptState(key, resetState);
+
+    return res.json({
+      data: {
+        lessonId: lesson.id,
+        settings: quizPayload.settings,
+        totalQuestions: quizPayload.questions.length,
+        state: resetState,
+      },
+    });
   } catch (error) {
     return next(error);
   }

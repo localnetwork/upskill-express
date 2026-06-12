@@ -50,7 +50,12 @@ export async function createLesson(userId, courseId, sectionId, payload) {
       resourceUrl: payload.resourceUrl,
       assignmentText: payload.assignmentText,
       codingInstructions: payload.codingInstructions,
-      codingStarterCode: payload.codingStarterCode,
+      codingStarterCode:
+        payload.codingStarterCode === undefined
+          ? undefined
+          : typeof payload.codingStarterCode === "string"
+            ? payload.codingStarterCode
+            : JSON.stringify(payload.codingStarterCode || {}),
       quizQuestions: payload.quizQuestions,
     },
   });

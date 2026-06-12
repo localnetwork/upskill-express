@@ -24,6 +24,6 @@ export const createLessonValidator = z.object({
   resourceUrl: z.string().optional(),
   assignmentText: z.string().optional(),
   codingInstructions: z.string().optional(),
-  codingStarterCode: z.string().optional(),
+  codingStarterCode: z.any().optional(),
   quizQuestions: z.any().optional(),
 });

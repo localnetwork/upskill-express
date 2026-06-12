@@ -64,6 +64,16 @@ function extractMediaId(value) {
   return "";
 }
 
+function safeParseJson(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
+}
+
 function getCourseInclude() {
   return {
     educator: {
@@ -845,13 +855,19 @@ export async function getCourseForLearner(userId, slug) {
         curriculums: section.lessons.map((lesson) => {
           const lessonProgress = lesson.progress?.[0] || null;
           const isTaken = Boolean(lessonProgress?.isCompleted);
+          const parsedQuizQuestions = safeParseJson(lesson.quizQuestions);
+          const parsedStarterCode = safeParseJson(lesson.codingStarterCode);
 
           return {
             id: lesson.id,
             uuid: lesson.id,
             title: lesson.title,
             curriculum_resource_type:
-              lesson.videoUrl || lesson.type === "VIDEO"
+                lesson.type === "QUIZ"
+                  ? "quiz"
+                  : lesson.type === "CODING_EXERCISE"
+                    ? "coding_exercise"
+                    : lesson.videoUrl || lesson.type === "VIDEO"
                 ? "video"
                 : lesson.assignmentText
                   ? "article"
@@ -859,7 +875,21 @@ export async function getCourseForLearner(userId, slug) {
             curriculum_description: lesson.description || "",
             estimated_duration: lesson.durationInSeconds || 0,
             asset:
-              lesson.videoUrl || lesson.media?.[0]
+              lesson.type === "QUIZ"
+                ? {
+                    questions: Array.isArray(parsedQuizQuestions)
+                      ? parsedQuizQuestions
+                      : parsedQuizQuestions?.questions || [],
+                  }
+                : lesson.type === "CODING_EXERCISE"
+                  ? {
+                      instructions: lesson.codingInstructions || "",
+                      starter_code:
+                        parsedStarterCode?.starter_code || parsedStarterCode || {},
+                      expected_output: parsedStarterCode?.expected_output || {},
+                      languages: parsedStarterCode?.languages || [],
+                    }
+                : lesson.videoUrl || lesson.media?.[0]
                 ? {
                     id: lesson.media?.[0]?.id || lesson.id,
                     path: lesson.videoUrl || lesson.media?.[0]?.storagePath || null,
