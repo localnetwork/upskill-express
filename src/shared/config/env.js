@@ -16,4 +16,9 @@ export const env = {
   paypalClientSecret: process.env.PAYPAL_CLIENT_SECRET || "",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   uploadDir: process.env.UPLOAD_DIR || "uploads",
+  cfAccessKeyId: process.env.CF_ACCESS_KEY_ID || "",
+  cfAccessSecret: process.env.CF_ACCESS_SECRET || "",
+  cfEndpoint: process.env.CF_ENDPOINT || "",
+  cfBucket: process.env.CF_BUCKET || "",
+  cfPublicAccessUrl: process.env.CF_PUBLIC_ACCESS_URL || "",
 };

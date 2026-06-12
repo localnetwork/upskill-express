@@ -797,7 +797,25 @@ export async function getCourseForLearner(userId, slug) {
           sections: {
             orderBy: { position: "asc" },
             include: {
-              lessons: { orderBy: { position: "asc" } },
+              lessons: {
+                orderBy: { position: "asc" },
+                include: {
+                  media: {
+                    where: { mediaType: "VIDEO" },
+                    orderBy: { createdAt: "desc" },
+                    take: 1,
+                  },
+                  progress: {
+                    where: { userId },
+                    orderBy: { updatedAt: "desc" },
+                    select: {
+                      isCompleted: true,
+                      progressPct: true,
+                    },
+                    take: 1,
+                  },
+                },
+              },
             },
           },
         },
@@ -824,29 +842,36 @@ export async function getCourseForLearner(userId, slug) {
         id: section.id,
         uuid: section.id,
         title: section.title,
-        curriculums: section.lessons.map((lesson) => ({
-          id: lesson.id,
-          uuid: lesson.id,
-          title: lesson.title,
-          curriculum_resource_type:
-            lesson.videoUrl || lesson.type === "VIDEO"
-              ? "video"
-              : lesson.assignmentText
-                ? "article"
-                : "null",
-          curriculum_description: lesson.description || "",
-          estimated_duration: lesson.durationInSeconds || 0,
-          asset:
-            lesson.videoUrl || lesson.media?.[0]
-              ? {
-                  id: lesson.media?.[0]?.id || lesson.id,
-                  path: lesson.videoUrl || lesson.media?.[0]?.storagePath || null,
-                }
-              : lesson.assignmentText
-                ? { id: lesson.id, content: lesson.assignmentText }
-                : null,
-          completed: false,
-        })),
+        curriculums: section.lessons.map((lesson) => {
+          const lessonProgress = lesson.progress?.[0] || null;
+          const isTaken = Boolean(lessonProgress?.isCompleted);
+
+          return {
+            id: lesson.id,
+            uuid: lesson.id,
+            title: lesson.title,
+            curriculum_resource_type:
+              lesson.videoUrl || lesson.type === "VIDEO"
+                ? "video"
+                : lesson.assignmentText
+                  ? "article"
+                  : "null",
+            curriculum_description: lesson.description || "",
+            estimated_duration: lesson.durationInSeconds || 0,
+            asset:
+              lesson.videoUrl || lesson.media?.[0]
+                ? {
+                    id: lesson.media?.[0]?.id || lesson.id,
+                    path: lesson.videoUrl || lesson.media?.[0]?.storagePath || null,
+                  }
+                : lesson.assignmentText
+                  ? { id: lesson.id, content: lesson.assignmentText }
+                  : null,
+            is_taken: isTaken,
+            completed: isTaken,
+            progress_pct: Number(lessonProgress?.progressPct || 0),
+          };
+        }),
       })),
     },
   };

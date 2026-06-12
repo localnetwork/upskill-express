@@ -1,17 +1,20 @@
 import path from "path";
+import { Readable } from "stream";
 import { Router } from "express";
 import { prisma } from "../../shared/database/prisma.js";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { upload } from "../../shared/middleware/upload.middleware.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
+import { getObjectFromR2, isR2Enabled, isR2StoragePath } from "../../shared/storage/r2.js";
 import { updateLessonProgress } from "../progress/progress.service.js";
 
 const router = Router();
 
 function mediaPath(file) {
   if (!file) return null;
-  return `/uploads/${file.filename}`;
+  if (file.path) return file.path;
+  return file.filename ? `/uploads/${file.filename}` : null;
 }
 
 function normalizeExtendedProfile(payload = {}) {
@@ -114,6 +117,124 @@ async function ensureEducatorOwnsLesson(userId, lessonId) {
     throw new ApiError(404, "Curriculum not found");
   }
   return lesson;
+}
+
+async function canAccessCourseMedia(userId, courseId) {
+  const [course, enrollment] = await Promise.all([
+    prisma.course.findFirst({
+      where: {
+        id: courseId,
+        educatorId: userId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    }),
+    prisma.enrollment.findFirst({
+      where: {
+        userId,
+        courseId,
+        status: "ACTIVE",
+      },
+      select: { id: true },
+    }),
+  ]);
+
+  return Boolean(course || enrollment);
+}
+
+async function resolveLessonVideoById(id) {
+  const lesson = await prisma.lesson.findUnique({
+    where: { id: String(id) },
+    include: {
+      media: {
+        where: { mediaType: "VIDEO" },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
+    },
+  });
+
+  if (!lesson) {
+    return null;
+  }
+
+  const storagePath = lesson.videoUrl || lesson.media?.[0]?.storagePath || null;
+  return {
+    courseId: lesson.courseId,
+    storagePath,
+  };
+}
+
+async function resolveMediaSourceByQueryId(id) {
+  const media = await prisma.media.findUnique({
+    where: { id: String(id) },
+    include: {
+      lesson: {
+        select: { courseId: true },
+      },
+    },
+  });
+
+  if (media) {
+    return {
+      userId: media.userId,
+      courseId: media.lesson?.courseId || media.courseId || null,
+      storagePath: media.storagePath,
+    };
+  }
+
+  const lessonVideo = await resolveLessonVideoById(id);
+  if (lessonVideo) {
+    return {
+      userId: null,
+      courseId: lessonVideo.courseId,
+      storagePath: lessonVideo.storagePath,
+    };
+  }
+
+  return null;
+}
+
+async function sendMediaStoragePath(storagePath, res) {
+  if (!storagePath) {
+    throw new ApiError(404, "Video file not found");
+  }
+
+  if (isR2Enabled() && isR2StoragePath(storagePath)) {
+    const object = await getObjectFromR2(storagePath);
+    if (!object.body) {
+      throw new ApiError(404, "Video file not found");
+    }
+    res.setHeader("Content-Type", object.contentType);
+    if (object.contentLength) {
+      res.setHeader("Content-Length", String(object.contentLength));
+    }
+    if (typeof object.body.pipe === "function") {
+      object.body.pipe(res);
+      return;
+    }
+
+    if (typeof object.body.transformToWebStream === "function") {
+      Readable.fromWeb(object.body.transformToWebStream()).pipe(res);
+      return;
+    }
+
+    if (typeof object.body.transformToByteArray === "function") {
+      const bytes = await object.body.transformToByteArray();
+      res.end(Buffer.from(bytes));
+      return;
+    }
+
+    throw new ApiError(500, "Unsupported media stream format from storage");
+  }
+
+  if (/^https?:\/\//i.test(storagePath)) {
+    res.redirect(storagePath);
+    return;
+  }
+
+  const absolutePath = path.resolve(storagePath.replace(/^\//, ""));
+  res.sendFile(absolutePath);
 }
 
 router.get("/user/:slug", async (req, res, next) => {
@@ -655,34 +776,27 @@ router.post(
 
 router.get("/stream.php", authenticate, async (req, res, next) => {
   try {
-    const mediaId = req.query.id;
-    if (!mediaId) {
+    const queryId = req.query.id;
+    if (!queryId) {
       throw new ApiError(400, "Missing media id");
     }
 
-    const media = await prisma.media.findUnique({
-      where: { id: String(mediaId) },
-      include: {
-        lesson: true,
-      },
-    });
-    if (!media || !media.lesson) {
+    const mediaSource = await resolveMediaSourceByQueryId(queryId);
+    if (!mediaSource) {
       throw new ApiError(404, "Media not found");
     }
 
-    const enrollment = await prisma.enrollment.findFirst({
-      where: {
-        userId: req.user.id,
-        courseId: media.lesson.courseId,
-        status: "ACTIVE",
-      },
-    });
-    if (!enrollment) {
-      throw new ApiError(403, "Not enrolled in this course");
+    if (mediaSource.courseId) {
+      const allowed = await canAccessCourseMedia(req.user.id, mediaSource.courseId);
+      if (!allowed) {
+        throw new ApiError(403, "Not allowed to access this media");
+      }
+    } else if (mediaSource.userId && mediaSource.userId !== req.user.id) {
+      throw new ApiError(403, "Not allowed to access this media");
     }
 
-    const absolutePath = path.resolve(media.storagePath.replace(/^\//, ""));
-    return res.sendFile(absolutePath);
+    await sendMediaStoragePath(mediaSource.storagePath, res);
+    return;
   } catch (error) {
     return next(error);
   }

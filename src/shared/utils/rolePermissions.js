@@ -11,7 +11,8 @@ const ROLE_PERMISSION_MAP = {
 
 export function mapPermissionsFromRoles(roles = []) {
   if (!Array.isArray(roles)) return [];
-  const permissions = roles.flatMap((role) => ROLE_PERMISSION_MAP[String(role || "").toUpperCase()] || []);
+  const permissions = roles.flatMap(
+    (role) => ROLE_PERMISSION_MAP[String(role || "").toUpperCase()] || [],
+  );
   return [...new Set(permissions)];
 }
-

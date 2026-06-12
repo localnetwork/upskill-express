@@ -177,7 +177,47 @@ function calculateDiscount(coupon, subtotal) {
   return Number(Math.min(subtotal, decimal(coupon.value)).toFixed(2));
 }
 
-export async function createCheckoutOrder(userId, payload) {
+async function removeCoursesFromCartByUserId(tx, userId, courseIds) {
+  const cart = await tx.cart.findUnique({ where: { userId } });
+  if (!cart) {
+    return;
+  }
+
+  await tx.cartItem.deleteMany({
+    where: {
+      cartId: cart.id,
+      courseId: { in: courseIds },
+    },
+  });
+}
+
+async function resolveCheckoutItems(userId, payload) {
+  const expressCourseIdentifier = payload.courseId || payload.course_id || null;
+
+  if (expressCourseIdentifier) {
+    const course = await prisma.course.findFirst({
+      where: {
+        AND: [
+          { OR: [{ id: expressCourseIdentifier }, { slug: expressCourseIdentifier }] },
+          { OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }] },
+        ],
+        deletedAt: null,
+      },
+      include: {
+        priceTier: true,
+      },
+    });
+
+    if (!course) {
+      throw new ApiError(404, "Course not found");
+    }
+
+    return {
+      referenceId: `course-${course.id}`,
+      items: [{ courseId: course.id, course }],
+    };
+  }
+
   const cart = await prisma.cart.findUnique({
     where: { userId },
     include: {
@@ -197,7 +237,16 @@ export async function createCheckoutOrder(userId, payload) {
     throw new ApiError(400, "Cart is empty");
   }
 
-  const courseIds = cart.items.map((item) => item.courseId);
+  return {
+    referenceId: `cart-${cart.id}`,
+    items: cart.items,
+  };
+}
+
+export async function createCheckoutOrder(userId, payload) {
+  const checkoutContext = await resolveCheckoutItems(userId, payload);
+  const checkoutItems = checkoutContext.items;
+  const courseIds = checkoutItems.map((item) => item.courseId);
   const existingEnrollments = await prisma.enrollment.findMany({
     where: {
       userId,
@@ -208,7 +257,7 @@ export async function createCheckoutOrder(userId, payload) {
     throw new ApiError(400, "Cannot buy an already enrolled course");
   }
 
-  const subtotal = cart.items.reduce(
+  const subtotal = checkoutItems.reduce(
     (sum, item) => sum + decimal(item.course.priceTier?.price || 0),
     0,
   );
@@ -244,7 +293,7 @@ export async function createCheckoutOrder(userId, payload) {
       let sumPlatformFee = 0;
       let sumEducatorEarnings = 0;
 
-      for (const item of cart.items) {
+      for (const item of checkoutItems) {
         const unitPrice = decimal(item.course.priceTier?.price || 0);
         const proportionalTax =
           subtotal === 0
@@ -330,14 +379,7 @@ export async function createCheckoutOrder(userId, payload) {
         });
       }
 
-      await tx.cartItem.deleteMany({
-        where: {
-          cartId: cart.id,
-          courseId: {
-            in: cart.items.map((item) => item.courseId),
-          },
-        },
-      });
+      await removeCoursesFromCartByUserId(tx, userId, courseIds);
 
       return order;
     });
@@ -366,7 +408,7 @@ export async function createCheckoutOrder(userId, payload) {
   const providerOrder = await createPayPalOrder({
     amount: totalAmount,
     currency: DEFAULT_CURRENCY,
-    referenceId: `cart-${cart.id}`,
+    referenceId: checkoutContext.referenceId,
     returnUrl: `${appBaseUrl}/checkout/success`,
     cancelUrl: `${appBaseUrl}/checkout/cancel`,
   });
@@ -392,7 +434,7 @@ export async function createCheckoutOrder(userId, payload) {
     let sumPlatformFee = 0;
     let sumEducatorEarnings = 0;
 
-    for (const item of cart.items) {
+    for (const item of checkoutItems) {
       const unitPrice = decimal(item.course.priceTier?.price || 0);
       const proportionalTax =
         subtotal === 0 ? 0 : Number(((unitPrice / subtotal) * taxResult.taxAmount).toFixed(2));

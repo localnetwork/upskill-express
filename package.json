@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
+    "migrate:uploads:r2": "node scripts/migrate-uploads-to-r2.js",
     "prisma:merge": "node scripts/merge-prisma.js",
     "prisma:generate": "npm run prisma:merge && prisma generate",
     "prisma:migrate": "npm run prisma:merge && prisma migrate dev",
@@ -16,6 +17,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.883.0",
     "@prisma/client": "^5.22.0",
     "axios": "^1.16.1",
     "bcrypt": "^5.1.1",

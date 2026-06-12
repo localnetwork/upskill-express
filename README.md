@@ -1,38 +1,66 @@
 # Upskill Node API
 
-Express + Prisma backend for an LMS-style platform with authentication, courses, checkout, enrollments, reviews, progress tracking, notifications, payouts, and admin moderation.
+Express + Prisma backend for an LMS-style platform with auth, courses, checkout, enrollments, reviews, progress, notifications, payouts, wishlist, and admin moderation.
 
-## Quick start
+## Table of contents
+
+- [Tech stack](#tech-stack)
+- [Getting started](#getting-started)
+- [Environment variables](#environment-variables)
+- [Scripts](#scripts)
+- [API overview](#api-overview)
+- [Project structure](#project-structure)
+- [Postman](#postman)
+
+## Tech stack
+
+- Node.js + Express
+- Prisma ORM
+- MySQL/PostgreSQL-compatible `DATABASE_URL` (via Prisma)
+- JWT authentication
+- PayPal integration
+- Cloudflare R2 integration (optional)
+
+## Getting started
 
 1. Install dependencies:
    ```bash
    npm install
    ```
-2. Create/update `.env` (see variables below).
-3. Generate Prisma client:
+2. Copy environment variables:
+   ```bash
+   cp .env.example .env
+   ```
+   On Windows PowerShell:
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+3. Update `.env` values (`DATABASE_URL`, JWT secrets, PayPal keys, and any storage config).
+4. Generate Prisma client:
    ```bash
    npm run prisma:generate
    ```
-4. Run migrations:
+5. Run migrations:
    ```bash
    npm run prisma:migrate
    ```
-5. Start API:
+6. Start the API:
    ```bash
    npm run dev
    ```
 
-The API runs on `http://localhost:3000` by default.
+The server uses `PORT` from `.env` (runtime fallback: `3000`).
 
 ## Environment variables
 
-| Variable | Default |
+| Variable | Default / Example |
 | --- | --- |
+| `DATABASE_URL` | `""` (required) |
 | `NODE_ENV` | `development` |
-| `PORT` | `3000` |
+| `PORT` | `3000` (runtime fallback) |
 | `CORS_ORIGIN` | `*` |
-| `JWT_ACCESS_SECRET` | `access-secret` |
-| `JWT_REFRESH_SECRET` | `refresh-secret` |
+| `JWT_ACCESS_SECRET` | `access-secret` (set a secure value) |
+| `JWT_REFRESH_SECRET` | `refresh-secret` (set a secure value) |
 | `JWT_ACCESS_TTL` | `15m` |
 | `JWT_REFRESH_TTL` | `30d` |
 | `PAYPAL_BASE_URL` | `https://api-m.sandbox.paypal.com` |
@@ -40,22 +68,32 @@ The API runs on `http://localhost:3000` by default.
 | `PAYPAL_CLIENT_SECRET` | `""` |
 | `FRONTEND_URL` | `http://localhost:3000` |
 | `UPLOAD_DIR` | `uploads` |
+| `CF_ACCESS_KEY_ID` | `""` |
+| `CF_ACCESS_SECRET` | `""` |
+| `CF_ENDPOINT` | `""` |
+| `CF_BUCKET` | `""` |
+| `CF_PUBLIC_ACCESS_URL` | `""` |
 
 ## Scripts
 
-- `npm run dev` - start with nodemon
-- `npm start` - start with node
-- `npm run prisma:merge` - merge prisma files
-- `npm run prisma:generate` - merge + generate client
-- `npm run prisma:migrate` - merge + run migration
-- `npm run prisma:studio` - open Prisma Studio
-- `npm run seed` - run seed script
+| Script | Description |
+| --- | --- |
+| `npm run dev` | Start server with nodemon |
+| `npm start` | Start server with node |
+| `npm run migrate:uploads:r2` | Upload local `uploads/*` to Cloudflare R2 and update DB paths |
+| `npm run prisma:merge` | Merge Prisma schema files |
+| `npm run prisma:generate` | Merge schema + generate Prisma client |
+| `npm run prisma:migrate` | Merge schema + run Prisma migrations |
+| `npm run prisma:studio` | Open Prisma Studio |
+| `npm run seed` | Run seed script |
 
 ## API overview
 
-Base URL: `http://localhost:3000`
+Base URL: `http://localhost:<PORT>`
 
 - `GET /health`
+- `GET /api/course-price-tiers`
+- `GET /api/course-levels`
 - Auth: `/api/auth/*`
 - Users: `/api/users/*`
 - Categories: `/api/categories/*`
@@ -70,6 +108,8 @@ Base URL: `http://localhost:3000`
 - Notifications: `/api/notifications/*`
 - Payouts: `/api/payouts/*`
 - Admin: `/api/admin/*`
+- Wishlist: `/api/wishlist/*`
+- Legacy endpoints: `/api/*` (legacy router)
 
 Protected routes use:
 
@@ -77,11 +117,19 @@ Protected routes use:
 Authorization: Bearer <access_token>
 ```
 
-## Postman import
+## Project structure
 
-Use the included `postman_collection.json` file:
+```text
+.
+├─ app.js
+├─ server.js
+├─ prisma/
+├─ scripts/
+└─ src/
+   ├─ modules/
+   └─ shared/
+```
 
-1. Open Postman
-2. Click **Import**
-3. Select `postman_collection.json`
-4. Set collection variables (`baseUrl`, `accessToken`, IDs/slugs as needed)
+## Postman
+
+Import `postman_collection.json` into Postman, then set collection variables (`baseUrl`, `accessToken`, IDs/slugs) before running requests.
