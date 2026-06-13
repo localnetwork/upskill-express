@@ -1,4 +1,5 @@
 import {
+  cancelCheckoutOrder,
   captureCheckoutOrder,
   createCheckoutOrder,
   getCheckoutOrderStatus,
@@ -28,6 +29,11 @@ export async function createCheckoutController(req, res) {
 export async function captureCheckoutController(req, res) {
   const data = await captureCheckoutOrder(req.user?.id || null, req.body.providerOrderId);
   return res.json({ message: "Checkout order captured", data });
+}
+
+export async function cancelCheckoutController(req, res) {
+  const data = await cancelCheckoutOrder(req.user?.id || null, req.body.providerOrderId);
+  return res.json({ message: "Checkout order cancelled", data });
 }
 
 export async function getCheckoutStatusController(req, res) {

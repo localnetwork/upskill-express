@@ -98,7 +98,7 @@ async function finalizeCompletedPayPalOrderByProviderOrderId(providerOrderId, or
   const isCompleted = paypalOrder?.status === "COMPLETED";
   const captureId = paypalOrder?.purchase_units?.[0]?.payments?.captures?.[0]?.id;
   if (!isCompleted || !captureId) {
-    throw originalError;
+    throw originalError || new ApiError(400, "PayPal order is not completed");
   }
 
   return finalizeCapturedPaymentByProviderOrderId(providerOrderId, paypalOrder);
@@ -214,7 +214,9 @@ function resolveCheckoutState({ paymentStatus, orderStatus, paypalStatus }) {
     paymentStatus === "FAILED" ||
     orderStatus === "FAILED" ||
     orderStatus === "CANCELLED" ||
-    paypalStatus === "VOIDED"
+    ["VOIDED", "CANCELLED", "EXPIRED", "DECLINED"].includes(
+      String(paypalStatus || "").toUpperCase(),
+    )
   ) {
     return "FAILED";
   }
@@ -269,6 +271,163 @@ async function syncCreatedPayPalOrderRecord(providerOrderId, paypalOrderPayload 
   }
 
   return payment;
+}
+
+async function markCheckoutAsCancelledByProviderOrderId(providerOrderId, paypalOrderPayload = null) {
+  if (!providerOrderId) return null;
+
+  const payment = await prisma.payment.findFirst({
+    where: { providerOrderId },
+    include: {
+      order: {
+        include: {
+          items: {
+            select: {
+              courseId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!payment) return null;
+  if (payment.status === "CAPTURED" || payment.order?.status === "PAID") {
+    return payment;
+  }
+
+  const currentRaw = payment.rawResponse && typeof payment.rawResponse === "object"
+    ? payment.rawResponse
+    : {};
+  const nextRaw = paypalOrderPayload && typeof paypalOrderPayload === "object"
+    ? { ...currentRaw, ...paypalOrderPayload }
+    : currentRaw;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: "FAILED",
+        rawResponse: nextRaw,
+      },
+    });
+
+    if (payment.order?.status === "CREATED") {
+      await tx.order.update({
+        where: { id: payment.order.id },
+        data: { status: "CANCELLED" },
+      });
+    }
+
+    const courseIds = Array.isArray(payment.order?.items)
+      ? payment.order.items.map((item) => item.courseId).filter(Boolean)
+      : [];
+    if (courseIds.length && payment.order?.userId) {
+      const cart = await tx.cart.upsert({
+        where: { userId: payment.order.userId },
+        create: { userId: payment.order.userId },
+        update: {},
+      });
+      await tx.cartItem.createMany({
+        data: Array.from(new Set(courseIds)).map((courseId) => ({
+          cartId: cart.id,
+          courseId,
+        })),
+        skipDuplicates: true,
+      });
+    }
+  });
+
+  if (payment.order?.userId) {
+    emitCheckoutStatusToUser(payment.order.userId, {
+      providerOrderId,
+      orderId: payment.order.id,
+      state: "FAILED",
+      paymentStatus: "FAILED",
+      orderStatus: "CANCELLED",
+      paypalStatus: nextRaw?.status || "CANCELLED",
+    });
+  }
+
+  return payment;
+}
+
+export async function cancelCheckoutOrder(userId, providerOrderId) {
+  const payment = await prisma.payment.findFirst({
+    where: { providerOrderId },
+    include: {
+      order: {
+        include: {
+          items: true,
+        },
+      },
+    },
+  });
+
+  if (!payment) {
+    throw new ApiError(404, "Payment not found");
+  }
+  if (userId && payment.order.userId !== userId) {
+    throw new ApiError(404, "Payment not found");
+  }
+  if (payment.status === "CAPTURED" || payment.order.status === "PAID") {
+    throw new ApiError(409, "Paid checkout cannot be cancelled");
+  }
+
+  let paypalPayload = payment.rawResponse && typeof payment.rawResponse === "object"
+    ? payment.rawResponse
+    : null;
+  let paypalStatus = String(paypalPayload?.status || "").toUpperCase();
+
+  try {
+    const paypalOrder = await getPayPalOrder(providerOrderId);
+    paypalPayload = paypalOrder;
+    paypalStatus = String(paypalOrder?.status || "").toUpperCase();
+  } catch (error) {
+    const isInvalidProviderOrder =
+      error?.response?.data?.name === "INVALID_RESOURCE_ID";
+    if (isInvalidProviderOrder) {
+      paypalStatus = "CANCELLED";
+    } else {
+      throw error;
+    }
+  }
+
+  if (["APPROVED", "COMPLETED"].includes(paypalStatus)) {
+    throw new ApiError(409, "Approved checkout cannot be cancelled");
+  }
+
+  const normalizedCancellationStatus = ["VOIDED", "CANCELLED", "EXPIRED", "DECLINED"]
+    .includes(paypalStatus)
+    ? paypalStatus
+    : "CANCELLED";
+  const cancellationPayload =
+    paypalPayload && typeof paypalPayload === "object"
+      ? { ...paypalPayload, status: normalizedCancellationStatus }
+      : { status: normalizedCancellationStatus };
+
+  await markCheckoutAsCancelledByProviderOrderId(providerOrderId, cancellationPayload);
+
+  const latestPayment = await prisma.payment.findFirst({
+    where: { providerOrderId },
+    include: {
+      order: {
+        include: {
+          items: true,
+        },
+      },
+    },
+  });
+  if (!latestPayment) {
+    throw new ApiError(404, "Payment not found");
+  }
+
+  return {
+    state: "FAILED",
+    paymentStatus: latestPayment.status,
+    orderStatus: latestPayment.order.status,
+    paypalStatus: normalizedCancellationStatus,
+    order: latestPayment.order,
+  };
 }
 
 async function getPlatformFeePercent() {
@@ -410,17 +569,35 @@ async function findExistingPendingCheckout(userId, courseIds = []) {
   );
   if (!overlappingCourseIds.length) return null;
 
+  let paypalPayload = payment.rawResponse && typeof payment.rawResponse === "object"
+    ? payment.rawResponse
+    : null;
+  try {
+    const paypalOrder = await getPayPalOrder(payment.providerOrderId);
+    paypalPayload = paypalOrder;
+    await syncCreatedPayPalOrderRecord(payment.providerOrderId, paypalOrder);
+    const paypalStatus = String(paypalOrder?.status || "").toUpperCase();
+    if (["VOIDED", "CANCELLED", "EXPIRED", "DECLINED"].includes(paypalStatus)) {
+      await markCheckoutAsCancelledByProviderOrderId(payment.providerOrderId, paypalOrder);
+      return null;
+    }
+  } catch (error) {
+    const isInvalidProviderOrder =
+      error?.response?.data?.name === "INVALID_RESOURCE_ID";
+    if (isInvalidProviderOrder) {
+      await markCheckoutAsCancelledByProviderOrderId(payment.providerOrderId, {
+        status: "CANCELLED",
+      });
+      return null;
+    }
+  }
+
   await prisma.cartItem.deleteMany({
     where: {
       cart: { userId },
       courseId: { in: overlappingCourseIds },
     },
   });
-
-  const paypalPayload =
-    payment.rawResponse && typeof payment.rawResponse === "object"
-      ? payment.rawResponse
-      : null;
 
   return {
     reused: true,
@@ -814,11 +991,71 @@ export async function getCheckoutOrderStatus(userId, providerOrderId) {
   }
 
   const captureId = paypalOrder?.purchase_units?.[0]?.payments?.captures?.[0]?.id || null;
+  const paypalStatus = String(paypalOrder?.status || "").toUpperCase();
+
+  if (["VOIDED", "CANCELLED", "EXPIRED", "DECLINED"].includes(paypalStatus)) {
+    await markCheckoutAsCancelledByProviderOrderId(providerOrderId, paypalOrder);
+    const latestPayment = await prisma.payment.findFirst({
+      where: { providerOrderId },
+      include: {
+        order: {
+          include: {
+            items: true,
+          },
+        },
+      },
+    });
+    if (!latestPayment) {
+      throw new ApiError(404, "Payment not found");
+    }
+    return {
+      state: "FAILED",
+      paymentStatus: latestPayment.status,
+      orderStatus: latestPayment.order.status,
+      paypalStatus,
+      order: latestPayment.order,
+      statusSource: "paypal",
+    };
+  }
+
   if (paypalOrder?.status === "COMPLETED" && captureId) {
-    const finalized = await finalizeCapturedPaymentByProviderOrderId(
-      providerOrderId,
-      paypalOrder,
-    );
+    let finalized = null;
+    try {
+      finalized = await finalizeCapturedPaymentByProviderOrderId(
+        providerOrderId,
+        paypalOrder,
+      );
+    } catch (error) {
+      if (error?.code !== "P2028") {
+        throw error;
+      }
+
+      const latestPayment = await prisma.payment.findFirst({
+        where: { providerOrderId },
+        include: {
+          order: {
+            include: {
+              items: true,
+            },
+          },
+        },
+      });
+
+      if (!latestPayment) {
+        throw new ApiError(404, "Payment not found");
+      }
+
+      return {
+        state: latestPayment.status === "CAPTURED" || latestPayment.order.status === "PAID"
+          ? "PAID"
+          : "PENDING",
+        paymentStatus: latestPayment.status,
+        orderStatus: latestPayment.order.status,
+        paypalStatus: "COMPLETED",
+        order: latestPayment.order,
+        statusSource: "database",
+      };
+    }
     return {
       state: "PAID",
       paymentStatus: "CAPTURED",
@@ -845,6 +1082,8 @@ export async function getCheckoutOrderStatus(userId, providerOrderId) {
 }
 
 export async function handlePayPalWebhook(event) {
+  const eventType = String(event?.event_type || "").toUpperCase();
+
   if (event.event_type === "CHECKOUT.ORDER.CREATED") {
     const providerOrderId = event.resource?.id;
     if (providerOrderId) {
@@ -924,6 +1163,32 @@ export async function handlePayPalWebhook(event) {
           paypalStatus: "DENIED",
         });
       }
+    }
+  }
+
+  if (
+    eventType === "CHECKOUT.ORDER.VOIDED" ||
+    eventType === "CHECKOUT.ORDER.CANCELLED" ||
+    eventType === "CHECKOUT.ORDER.EXPIRED" ||
+    eventType === "CHECKOUT.ORDER.DECLINED"
+  ) {
+    const providerOrderId = event.resource?.id;
+    if (providerOrderId) {
+      await markCheckoutAsCancelledByProviderOrderId(providerOrderId, event.resource);
+    }
+  }
+
+  if (eventType === "CHECKOUT.ORDER.SAVED") {
+    const providerOrderId = event.resource?.id;
+    if (providerOrderId) {
+      await syncCreatedPayPalOrderRecord(providerOrderId, event.resource);
+    }
+  }
+
+  if (eventType === "CHECKOUT.ORDER.COMPLETED") {
+    const providerOrderId = event.resource?.id;
+    if (providerOrderId) {
+      await finalizeCompletedPayPalOrderByProviderOrderId(providerOrderId, null);
     }
   }
 

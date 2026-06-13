@@ -4,12 +4,14 @@ import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
+  cancelCheckoutController,
   captureCheckoutController,
   createCheckoutController,
   getCheckoutStatusController,
   webhookController,
 } from "./checkout.controller.js";
 import {
+  cancelCheckoutValidator,
   captureCheckoutValidator,
   checkoutStatusValidator,
   createCheckoutValidator,
@@ -26,6 +28,13 @@ router.post(
 );
 
 router.post(
+  "/cancel",
+  authenticateOptional,
+  validate(cancelCheckoutValidator),
+  asyncHandler(cancelCheckoutController),
+);
+
+router.post(
   "/capture",
   authenticateOptional,
   validate(captureCheckoutValidator),
@@ -34,7 +43,7 @@ router.post(
 
 router.get(
   "/status/:providerOrderId",
-  authenticate,
+  authenticateOptional,
   validate(checkoutStatusValidator, "params"),
   asyncHandler(getCheckoutStatusController),
 );
