@@ -45,7 +45,7 @@ function getDisplayName(user) {
   return fullName || user?.username || "Unknown";
 }
 
-function normalizeStoredCertificate(value) {
+function normalizeStoredCertificate(value, overrides = {}) {
   const parsed = safeParseJson(value);
   if (!parsed) {
     throw new ApiError(500, "Stored certificate data is invalid");
@@ -58,7 +58,7 @@ function normalizeStoredCertificate(value) {
     reference_no: parsed.referenceNo,
     course_title: parsed.courseTitle,
     instructor_name: parsed.instructorName,
-    student_name: parsed.studentName,
+    student_name: overrides.studentName ?? parsed.studentName,
     issued_at: parsed.issuedAt,
   };
 }
@@ -78,7 +78,23 @@ export async function getCertificateBySlug(slug) {
     throw new ApiError(404, "Certificate not found");
   }
 
-  return normalizeStoredCertificate(setting.value);
+  const parsed = safeParseJson(setting.value);
+  if (!parsed) {
+    throw new ApiError(500, "Stored certificate data is invalid");
+  }
+
+  let studentName = parsed.studentName;
+  if (parsed.userId) {
+    const user = await prisma.user.findUnique({
+      where: { id: parsed.userId },
+      select: { firstName: true, lastName: true, username: true },
+    });
+    if (user) {
+      studentName = getDisplayName(user);
+    }
+  }
+
+  return normalizeStoredCertificate(setting.value, { studentName });
 }
 
 export async function generateCourseCertificate(userId, courseSlug) {

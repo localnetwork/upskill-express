@@ -9,7 +9,7 @@ export function notFound(_req, res) {
 export function errorHandler(error, _req, res, _next) {
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     return res.status(400).json({
-      message: "Database error",
+      message: "Unable to process this request.",
       code: error.code,
     });
   }

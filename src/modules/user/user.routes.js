@@ -4,6 +4,7 @@ import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
+import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { updateUserValidator } from "./user.validator.js";
 import {
   changePasswordController,
@@ -15,7 +16,17 @@ import {
 
 const router = Router();
 
-router.get("/me", authenticate, asyncHandler(meController));
+router.get(
+  "/me",
+  authenticate,
+  cacheGetResponse({
+    prefix: "users:me",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["users", "user-profile"],
+  }),
+  asyncHandler(meController),
+);
 router.patch("/me", authenticate, validate(updateUserValidator), asyncHandler(updateMeController));
 router.post(
   "/me/change-password",
@@ -29,7 +40,18 @@ router.post(
   asyncHandler(changePasswordController),
 );
 
-router.get("/", authenticate, authorize("ADMIN"), asyncHandler(listUsersController));
+router.get(
+  "/",
+  authenticate,
+  authorize("ADMIN"),
+  cacheGetResponse({
+    prefix: "users:list",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["users"],
+  }),
+  asyncHandler(listUsersController),
+);
 router.delete("/:userId", authenticate, authorize("ADMIN"), asyncHandler(deleteUserController));
 
 export default router;

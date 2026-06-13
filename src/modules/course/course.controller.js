@@ -15,6 +15,7 @@ import {
   updateCoursePricing,
   updateCourseGoals,
   updateCourse,
+  updateCourseMessages,
 } from "./course.service.js";
 
 const submitSchema = z.object({
@@ -204,4 +205,17 @@ export async function updateCoursePricingController(req, res) {
 export async function updateCourseGoalsController(req, res) {
   const data = await updateCourseGoals(req.user.id, req.params.courseId, req.body);
   return res.json({ message: "Course goals updated", data });
+}
+
+export async function updateCourseMessagesController(req, res) {
+  const data = await updateCourseMessages(req.user.id, req.params.courseId, req.body);
+  return res.json({
+    message: "Course messages updated",
+    data: {
+      id: data.id,
+      uuid: data.id,
+      welcome_message: data.welcomeMessage || "",
+      congratulations_message: data.congratulationsMessage || "",
+    },
+  });
 }

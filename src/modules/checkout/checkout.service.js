@@ -4,6 +4,10 @@ import { env } from "../../shared/config/env.js";
 import { calculateTax } from "./tax.service.js";
 import { capturePayPalOrder, createPayPalOrder, getPayPalOrder } from "./paypal.service.js";
 import { createNotification } from "../notification/notification.service.js";
+import {
+  emitCheckoutStatusToUser,
+  emitNotificationToUser,
+} from "../../shared/realtime/socket.js";
 
 const DEFAULT_CURRENCY = "PHP";
 const appBaseUrl = env.frontendUrl.replace(/\/$/, "");
@@ -20,6 +24,73 @@ function getCaptureInfo(captureResponse) {
     payerEmail: captureResponse?.payer?.email_address || null,
     payerId: captureResponse?.payer?.payer_id || null,
   };
+}
+
+function getDisplayName(user) {
+  const fullName = `${user?.firstName || ""} ${user?.lastName || ""}`.trim();
+  return fullName || user?.username || "Instructor";
+}
+
+async function createEnrollmentWithWelcomeNotification(tx, payload) {
+  const existingEnrollment = await tx.enrollment.findUnique({
+    where: {
+      userId_courseId: {
+        userId: payload.userId,
+        courseId: payload.courseId,
+      },
+    },
+    select: { id: true },
+  });
+
+  if (existingEnrollment) {
+    return existingEnrollment;
+  }
+
+  const enrollment = await tx.enrollment.create({
+    data: {
+      userId: payload.userId,
+      courseId: payload.courseId,
+      orderId: payload.orderId,
+      orderItemId: payload.orderItemId,
+      status: "ACTIVE",
+    },
+  });
+
+  const course = await tx.course.findUnique({
+    where: { id: payload.courseId },
+    select: {
+      id: true,
+      educatorId: true,
+      title: true,
+      welcomeMessage: true,
+      educator: {
+        select: { firstName: true, lastName: true, username: true },
+      },
+    },
+  });
+
+  if (course?.educatorId) {
+    await tx.notification.create({
+      data: {
+        userId: course.educatorId,
+        type: "ENROLLMENT",
+        title: "New student enrollment",
+        message: `A new learner enrolled in your course "${course.title}".`,
+        metadata: {
+          notificationKind: "COURSE_NEW_ENROLLMENT",
+          courseId: course.id,
+          courseTitle: course.title,
+          learnerId: payload.userId,
+        },
+      },
+    });
+    emitNotificationToUser(course.educatorId, {
+      type: "ENROLLMENT",
+      title: "New student enrollment",
+    });
+  }
+
+  return enrollment;
 }
 
 async function finalizeCompletedPayPalOrderByProviderOrderId(providerOrderId, originalError) {
@@ -83,21 +154,11 @@ async function finalizeCapturedPaymentByProviderOrderId(providerOrderId, capture
     });
 
     for (const item of payment.order.items) {
-      await tx.enrollment.upsert({
-        where: {
-          userId_courseId: {
-            userId: payment.order.userId,
-            courseId: item.courseId,
-          },
-        },
-        update: {},
-        create: {
-          userId: payment.order.userId,
-          courseId: item.courseId,
-          orderId: payment.orderId,
-          orderItemId: item.id,
-          status: "ACTIVE",
-        },
+      await createEnrollmentWithWelcomeNotification(tx, {
+        userId: payment.order.userId,
+        courseId: item.courseId,
+        orderId: payment.orderId,
+        orderItemId: item.id,
       });
     }
 
@@ -131,11 +192,83 @@ async function finalizeCapturedPaymentByProviderOrderId(providerOrderId, capture
     });
   }
 
+  emitCheckoutStatusToUser(result.payment.order.userId, {
+    providerOrderId,
+    orderId: result.order.id,
+    state: "PAID",
+    paymentStatus: "CAPTURED",
+    orderStatus: result.order.status,
+    paypalStatus: captureResponse?.status || "COMPLETED",
+  });
+
   return {
     order: result.order,
     wasAlreadyCaptured,
     paypalCapture: captureResponse,
   };
+}
+
+function resolveCheckoutState({ paymentStatus, orderStatus, paypalStatus }) {
+  if (paymentStatus === "CAPTURED" || orderStatus === "PAID") return "PAID";
+  if (
+    paymentStatus === "FAILED" ||
+    orderStatus === "FAILED" ||
+    orderStatus === "CANCELLED" ||
+    paypalStatus === "VOIDED"
+  ) {
+    return "FAILED";
+  }
+  return "PENDING";
+}
+
+async function syncCreatedPayPalOrderRecord(providerOrderId, paypalOrderPayload = null) {
+  if (!providerOrderId) return null;
+
+  const payment = await prisma.payment.findFirst({
+    where: { providerOrderId },
+    include: {
+      order: {
+        select: {
+          id: true,
+          userId: true,
+          status: true,
+        },
+      },
+    },
+  });
+  if (!payment) return null;
+
+  const currentRaw = payment.rawResponse && typeof payment.rawResponse === "object"
+    ? payment.rawResponse
+    : {};
+  const nextRaw = paypalOrderPayload && typeof paypalOrderPayload === "object"
+    ? { ...currentRaw, ...paypalOrderPayload }
+    : currentRaw;
+
+  await prisma.payment.update({
+    where: { id: payment.id },
+    data: {
+      status: payment.status === "CAPTURED" ? payment.status : "CREATED",
+      rawResponse: nextRaw,
+    },
+  });
+
+  if (payment.order?.userId) {
+    emitCheckoutStatusToUser(payment.order.userId, {
+      providerOrderId,
+      orderId: payment.order.id,
+      state: resolveCheckoutState({
+        paymentStatus: payment.status === "CAPTURED" ? "CAPTURED" : "CREATED",
+        orderStatus: payment.order.status,
+        paypalStatus: nextRaw?.status || "CREATED",
+      }),
+      paymentStatus: payment.status === "CAPTURED" ? "CAPTURED" : "CREATED",
+      orderStatus: payment.order.status,
+      paypalStatus: nextRaw?.status || "CREATED",
+    });
+  }
+
+  return payment;
 }
 
 async function getPlatformFeePercent() {
@@ -243,6 +376,62 @@ async function resolveCheckoutItems(userId, payload) {
   };
 }
 
+async function findExistingPendingCheckout(userId, courseIds = []) {
+  if (!Array.isArray(courseIds) || courseIds.length === 0) return null;
+
+  const payment = await prisma.payment.findFirst({
+    where: {
+      status: "CREATED",
+      order: {
+        userId,
+        status: "CREATED",
+        items: {
+          some: {
+            courseId: { in: courseIds },
+          },
+        },
+      },
+    },
+    include: {
+      order: {
+        include: {
+          items: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (!payment) return null;
+
+  const pendingCourseIds = payment.order.items.map((item) => item.courseId);
+  const overlappingCourseIds = courseIds.filter((courseId) =>
+    pendingCourseIds.includes(courseId),
+  );
+  if (!overlappingCourseIds.length) return null;
+
+  await prisma.cartItem.deleteMany({
+    where: {
+      cart: { userId },
+      courseId: { in: overlappingCourseIds },
+    },
+  });
+
+  const paypalPayload =
+    payment.rawResponse && typeof payment.rawResponse === "object"
+      ? payment.rawResponse
+      : null;
+
+  return {
+    reused: true,
+    orderId: payment.orderId,
+    providerOrderId: payment.providerOrderId,
+    paypal: paypalPayload,
+    pendingCourseIds,
+    overlappingCourseIds,
+  };
+}
+
 export async function createCheckoutOrder(userId, payload) {
   const checkoutContext = await resolveCheckoutItems(userId, payload);
   const checkoutItems = checkoutContext.items;
@@ -255,6 +444,19 @@ export async function createCheckoutOrder(userId, payload) {
   });
   if (existingEnrollments.length > 0) {
     throw new ApiError(400, "Cannot buy an already enrolled course");
+  }
+
+  const existingPendingCheckout = await findExistingPendingCheckout(
+    userId,
+    courseIds,
+  );
+  if (existingPendingCheckout) {
+    return {
+      ...existingPendingCheckout,
+      reusedCheckout: true,
+      message:
+        "You already have a checkout in progress for one or more selected courses.",
+    };
   }
 
   const subtotal = checkoutItems.reduce(
@@ -329,21 +531,11 @@ export async function createCheckoutOrder(userId, payload) {
           },
         });
 
-        await tx.enrollment.upsert({
-          where: {
-            userId_courseId: {
-              userId,
-              courseId: item.courseId,
-            },
-          },
-          update: {},
-          create: {
-            userId,
-            courseId: item.courseId,
-            orderId: order.id,
-            orderItemId: orderItem.id,
-            status: "ACTIVE",
-          },
+        await createEnrollmentWithWelcomeNotification(tx, {
+          userId,
+          courseId: item.courseId,
+          orderId: order.id,
+          orderItemId: orderItem.id,
         });
       }
 
@@ -507,6 +699,8 @@ export async function createCheckoutOrder(userId, payload) {
       });
     }
 
+    await removeCoursesFromCartByUserId(tx, userId, courseIds);
+
     return {
       orderId: order.id,
       providerOrderId: providerOrder.id,
@@ -561,7 +755,103 @@ export async function captureCheckoutOrder(userId, providerOrderId) {
   }
 }
 
+export async function getCheckoutOrderStatus(userId, providerOrderId) {
+  const payment = await prisma.payment.findFirst({
+    where: { providerOrderId },
+    include: {
+      order: {
+        include: {
+          items: true,
+        },
+      },
+    },
+  });
+
+  if (!payment) {
+    throw new ApiError(404, "Payment not found");
+  }
+  if (userId && payment.order.userId !== userId) {
+    throw new ApiError(404, "Payment not found");
+  }
+
+  if (payment.status === "CAPTURED" || payment.order.status === "PAID") {
+    return {
+      state: "PAID",
+      paymentStatus: payment.status,
+      orderStatus: payment.order.status,
+      paypalStatus: "COMPLETED",
+      order: payment.order,
+      statusSource: "database",
+    };
+  }
+
+  let paypalOrder = null;
+  try {
+    paypalOrder = await getPayPalOrder(providerOrderId);
+    await syncCreatedPayPalOrderRecord(providerOrderId, paypalOrder);
+  } catch (error) {
+    const isInvalidProviderOrder =
+      error?.response?.data?.name === "INVALID_RESOURCE_ID";
+    if (isInvalidProviderOrder) {
+      throw new ApiError(404, "Payment not found");
+    }
+    const rawPaypalStatus =
+      payment.rawResponse && typeof payment.rawResponse === "object"
+        ? payment.rawResponse?.status || null
+        : null;
+    return {
+      state: resolveCheckoutState({
+        paymentStatus: payment.status,
+        orderStatus: payment.order.status,
+        paypalStatus: rawPaypalStatus,
+      }),
+      paymentStatus: payment.status,
+      orderStatus: payment.order.status,
+      paypalStatus: rawPaypalStatus,
+      order: payment.order,
+      statusSource: "database",
+    };
+  }
+
+  const captureId = paypalOrder?.purchase_units?.[0]?.payments?.captures?.[0]?.id || null;
+  if (paypalOrder?.status === "COMPLETED" && captureId) {
+    const finalized = await finalizeCapturedPaymentByProviderOrderId(
+      providerOrderId,
+      paypalOrder,
+    );
+    return {
+      state: "PAID",
+      paymentStatus: "CAPTURED",
+      orderStatus: finalized?.order?.status || "PAID",
+      paypalStatus: "COMPLETED",
+      order: finalized.order,
+      wasAlreadyCaptured: finalized.wasAlreadyCaptured,
+      statusSource: "paypal",
+    };
+  }
+
+  return {
+    state: resolveCheckoutState({
+      paymentStatus: payment.status,
+      orderStatus: payment.order.status,
+      paypalStatus: paypalOrder?.status || null,
+    }),
+    paymentStatus: payment.status,
+    orderStatus: payment.order.status,
+    paypalStatus: paypalOrder?.status || null,
+    order: payment.order,
+    statusSource: "paypal",
+  };
+}
+
 export async function handlePayPalWebhook(event) {
+  if (event.event_type === "CHECKOUT.ORDER.CREATED") {
+    const providerOrderId = event.resource?.id;
+    if (providerOrderId) {
+      await syncCreatedPayPalOrderRecord(providerOrderId, event.resource);
+    }
+  }
+
   if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
     const providerOrderId = event.resource?.id;
     if (providerOrderId) {
@@ -610,6 +900,30 @@ export async function handlePayPalWebhook(event) {
         where: { providerOrderId: orderId },
         data: { status: "FAILED" },
       });
+
+      const deniedPayment = await prisma.payment.findFirst({
+        where: { providerOrderId: orderId },
+        include: {
+          order: {
+            select: {
+              id: true,
+              userId: true,
+              status: true,
+            },
+          },
+        },
+      });
+
+      if (deniedPayment?.order?.userId) {
+        emitCheckoutStatusToUser(deniedPayment.order.userId, {
+          providerOrderId: orderId,
+          orderId: deniedPayment.order.id,
+          state: "FAILED",
+          paymentStatus: "FAILED",
+          orderStatus: deniedPayment.order.status,
+          paypalStatus: "DENIED",
+        });
+      }
     }
   }
 

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
+import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
   approvePayoutController,
@@ -38,6 +39,12 @@ router.get(
   "/my",
   authenticate,
   authorize("EDUCATOR"),
+  cacheGetResponse({
+    prefix: "payouts:my",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["payouts"],
+  }),
   asyncHandler(listMyPayoutsController),
 );
 
@@ -45,6 +52,12 @@ router.get(
   "/admin",
   authenticate,
   authorize("ADMIN"),
+  cacheGetResponse({
+    prefix: "payouts:admin",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["payouts"],
+  }),
   asyncHandler(listAllPayoutsController),
 );
 router.post(

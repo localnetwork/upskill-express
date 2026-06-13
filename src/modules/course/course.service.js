@@ -187,11 +187,23 @@ async function normalizeCoursePayload(payload) {
   const categoryId = await resolveCategoryId(payload);
   const levelInput = payload.levelId || payload.instructional_level || null;
   const levelId = await resolveLevelId(levelInput);
+  const normalizeOptionalMessage = (value) => {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    const normalized = String(value).trim();
+    return normalized.length ? normalized : null;
+  };
 
   return {
     title: payload.title,
     subtitle: payload.subtitle,
     description: payload.description,
+    welcomeMessage: normalizeOptionalMessage(
+      payload.welcomeMessage ?? payload.welcome_message,
+    ),
+    congratulationsMessage: normalizeOptionalMessage(
+      payload.congratulationsMessage ?? payload.congratulations_message,
+    ),
     categoryId,
     levelId,
     priceTierId: payload.priceTierId || payload.price_tier || null,
@@ -237,6 +249,7 @@ export async function updateCourse(userId, courseId, payload) {
   if (!course) {
     throw new ApiError(404, "Course not found");
   }
+
   if (course.educatorId !== userId) {
     throw new ApiError(403, "You can only update your own course");
   }
@@ -299,6 +312,53 @@ export async function updateCourse(userId, courseId, payload) {
       cover_image: coverImage,
       promo_video: promoVideo,
     };
+  });
+}
+
+export async function updateCourseMessages(userId, courseId, payload) {
+  const course = await prisma.course.findFirst({
+    where: { id: courseId, deletedAt: null },
+  });
+
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+  if (course.educatorId !== userId) {
+    throw new ApiError(403, "You can only update your own course");
+  }
+
+  const normalizeOptionalMessage = (value) => {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    const normalized = String(value).trim();
+    return normalized.length ? normalized : null;
+  };
+
+  const welcomeMessage = normalizeOptionalMessage(
+    payload.welcomeMessage ?? payload.welcome_message,
+  );
+  const congratulationsMessage = normalizeOptionalMessage(
+    payload.congratulationsMessage ?? payload.congratulations_message,
+  );
+
+  if (welcomeMessage === undefined && congratulationsMessage === undefined) {
+    throw new ApiError(
+      400,
+      "At least one of welcomeMessage or congratulationsMessage is required",
+    );
+  }
+
+  return prisma.course.update({
+    where: { id: courseId },
+    data: {
+      ...(welcomeMessage !== undefined ? { welcomeMessage } : {}),
+      ...(congratulationsMessage !== undefined ? { congratulationsMessage } : {}),
+    },
+    select: {
+      id: true,
+      welcomeMessage: true,
+      congratulationsMessage: true,
+    },
   });
 }
 
@@ -573,6 +633,8 @@ function mapCourseDetails(course, goals) {
   return {
     ...course,
     uuid: course.id,
+    welcome_message: course.welcomeMessage || "",
+    congratulations_message: course.congratulationsMessage || "",
     cover_image: mapLegacyMedia(
       pickLatestMediaByTypes(course.media, COVER_MEDIA_TYPES),
     ),

@@ -4,6 +4,7 @@ import { Router } from "express";
 import { prisma } from "../../shared/database/prisma.js";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
+import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { upload } from "../../shared/middleware/upload.middleware.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getObjectFromR2, isR2Enabled, isR2StoragePath } from "../../shared/storage/r2.js";
@@ -11,6 +12,15 @@ import { updateLessonProgress } from "../progress/progress.service.js";
 
 const router = Router();
 const QUIZ_ATTEMPT_KEY_PREFIX = "quiz_attempt::";
+
+router.use(
+  cacheGetResponse({
+    prefix: "legacy:get",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["legacy", "courses", "users", "orders", "payouts", "notifications"],
+  }),
+);
 
 function mediaPath(file) {
   if (!file) return null;

@@ -18,6 +18,11 @@ import adminRoutes from "./src/modules/admin/admin.routes.js";
 import wishlistRoutes from "./src/modules/wishlist/wishlist.routes.js";
 import certificationRoutes from "./src/modules/certification/certification.routes.js";
 import legacyRoutes from "./src/modules/legacy/legacy.routes.js";
+import {
+  cacheGetResponse,
+  cacheInvalidationOnMutation,
+} from "./src/shared/middleware/cache.middleware.js";
+import { createRateLimiter } from "./src/shared/middleware/rate-limit.middleware.js";
 import { errorHandler, notFound } from "./src/shared/middleware/error.middleware.js";
 import { env } from "./src/shared/config/env.js";
 import { prisma } from "./src/shared/database/prisma.js";
@@ -26,6 +31,17 @@ const app = express();
 app.use(cors({ origin: env.corsOrigin }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cacheInvalidationOnMutation());
+app.use(
+  "/api",
+  createRateLimiter({
+    keyPrefix: "rl:api",
+    windowSeconds: 60,
+    maxRequests: 240,
+    by: "ip",
+    message: "Too many API requests. Please try again in a minute.",
+  }),
+);
 app.use("/uploads", express.static(path.resolve(env.uploadDir)));
 
 app.get("/health", (_req, res) => {
@@ -51,7 +67,14 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/certifications", certificationRoutes);
 app.use("/api", legacyRoutes);
-app.get("/api/course-price-tiers", async (_req, res, next) => {
+app.get(
+  "/api/course-price-tiers",
+  cacheGetResponse({
+    prefix: "course-price-tiers",
+    ttlSeconds: 600,
+    tags: ["course-price-tiers"],
+  }),
+  async (_req, res, next) => {
   try {
     const tiers = await prisma.coursePriceTier.findMany({
       orderBy: { price: "asc" },
@@ -66,9 +89,17 @@ app.get("/api/course-price-tiers", async (_req, res, next) => {
   } catch (error) {
     return next(error);
   }
-});
+},
+);
 
-app.get("/api/course-levels", async (_req, res, next) => {
+app.get(
+  "/api/course-levels",
+  cacheGetResponse({
+    prefix: "course-levels",
+    ttlSeconds: 600,
+    tags: ["course-levels"],
+  }),
+  async (_req, res, next) => {
   try {
     const levels = await prisma.courseLevel.findMany({
       orderBy: [{ weight: "asc" }, { createdAt: "asc" }],
@@ -83,7 +114,8 @@ app.get("/api/course-levels", async (_req, res, next) => {
   } catch (error) {
     return next(error);
   }
-});
+},
+);
 
 app.use(notFound);
 app.use(errorHandler);

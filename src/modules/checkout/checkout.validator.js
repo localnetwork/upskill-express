@@ -10,3 +10,7 @@ export const createCheckoutValidator = z.object({
 export const captureCheckoutValidator = z.object({
   providerOrderId: z.string().min(3),
 });
+
+export const checkoutStatusValidator = z.object({
+  providerOrderId: z.string().min(3),
+});

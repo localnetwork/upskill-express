@@ -152,6 +152,8 @@ model Course {
   subtitle            String?
   slug                String               @unique
   description         String?
+  welcomeMessage      String?
+  congratulationsMessage String?
   language            String?              @default("en")
   workflowStatus      CourseWorkflowStatus @default(DRAFT)
   isPublished         Boolean              @default(false)

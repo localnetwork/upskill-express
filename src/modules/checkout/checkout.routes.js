@@ -3,8 +3,17 @@ import { authenticate, authenticateOptional } from "../../shared/middleware/auth
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
-import { captureCheckoutController, createCheckoutController, webhookController } from "./checkout.controller.js";
-import { captureCheckoutValidator, createCheckoutValidator } from "./checkout.validator.js";
+import {
+  captureCheckoutController,
+  createCheckoutController,
+  getCheckoutStatusController,
+  webhookController,
+} from "./checkout.controller.js";
+import {
+  captureCheckoutValidator,
+  checkoutStatusValidator,
+  createCheckoutValidator,
+} from "./checkout.validator.js";
 
 const router = Router();
 
@@ -21,6 +30,13 @@ router.post(
   authenticateOptional,
   validate(captureCheckoutValidator),
   asyncHandler(captureCheckoutController),
+);
+
+router.get(
+  "/status/:providerOrderId",
+  authenticate,
+  validate(checkoutStatusValidator, "params"),
+  asyncHandler(getCheckoutStatusController),
 );
 
 router.post("/webhook/paypal", asyncHandler(webhookController));
