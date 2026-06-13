@@ -485,6 +485,12 @@ async function sendMediaStoragePath(storagePath, res) {
     throw new ApiError(404, "Video file not found");
   }
 
+  res.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Disposition", "inline");
+
   if (isR2Enabled() && isR2StoragePath(storagePath)) {
     const object = await getObjectFromR2(storagePath);
     if (!object.body) {
@@ -1249,6 +1255,11 @@ router.post(
 
 router.get("/stream.php", authenticate, async (req, res, next) => {
   try {
+    const fetchDest = String(req.get("sec-fetch-dest") || "").toLowerCase();
+    if (fetchDest === "document") {
+      throw new ApiError(403, "Direct page access is not allowed");
+    }
+
     const queryId = req.query.id;
     if (!queryId) {
       throw new ApiError(400, "Missing media id");
