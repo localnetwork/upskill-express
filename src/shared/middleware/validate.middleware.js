@@ -10,7 +10,14 @@ export function validate(schema, target = "body") {
         }),
       );
     }
-    req[target] = result.data;
+    if (target === "query" && req.query && typeof req.query === "object") {
+      for (const key of Object.keys(req.query)) {
+        delete req.query[key];
+      }
+      Object.assign(req.query, result.data);
+    } else {
+      req[target] = result.data;
+    }
     return next();
   };
 }

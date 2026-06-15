@@ -117,6 +117,7 @@ model User {
   wishlists             Wishlist[]
   enrollments           Enrollment[]
   reviews               Review[]
+  reviewLikes           ReviewLike[]
   courseProgressRecords CourseProgress[]
   lessonProgress        LessonProgress[]
   notifications         Notification[]
@@ -507,10 +508,25 @@ model Review {
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   course      Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
   enrollment  Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  reviewLikes ReviewLike[]
 
   @@unique([userId, courseId])
   @@index([courseId, rating])
   @@map("reviews")
+}
+
+model ReviewLike {
+  id        String   @id @default(cuid())
+  reviewId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  review    Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, userId])
+  @@index([userId, createdAt])
+  @@map("review_likes")
 }
 
 model CourseProgress {

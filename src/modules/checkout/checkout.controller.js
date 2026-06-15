@@ -45,6 +45,15 @@ export async function getCheckoutStatusController(req, res) {
 }
 
 export async function webhookController(req, res) {
+  console.log("[PayPal Webhook] Endpoint hit", {
+    eventType: req.body?.event_type || null,
+    eventId: req.body?.id || null,
+    providerOrderId:
+      req.body?.resource?.id ||
+      req.body?.resource?.supplementary_data?.related_ids?.order_id ||
+      null,
+    transmissionId: req.headers?.["paypal-transmission-id"] || null,
+  });
   const data = await handlePayPalWebhook(req.body);
   return res.status(202).json({ message: "Webhook accepted", data });
 }

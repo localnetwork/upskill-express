@@ -74,6 +74,99 @@ function safeParseJson(value) {
   }
 }
 
+const ARTICLE_WORDS_PER_MINUTE = 220;
+const QUIZ_BASE_SECONDS = 30;
+const QUIZ_SECONDS_PER_QUESTION = 75;
+const CODING_WORDS_PER_MINUTE = 180;
+const CODING_BASE_SECONDS = 180;
+const CODING_SECONDS_PER_CODE_LINE = 20;
+
+function stripHtml(value = "") {
+  return String(value || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function countWords(value = "") {
+  const text = stripHtml(value);
+  if (!text) return 0;
+  return text.split(" ").filter(Boolean).length;
+}
+
+function estimateReadingSecondsByWords(words, wordsPerMinute, minimumSeconds = 0) {
+  if (!words || words <= 0 || wordsPerMinute <= 0) return minimumSeconds;
+  const computedSeconds = Math.ceil((words / wordsPerMinute) * 60);
+  return Math.max(minimumSeconds, computedSeconds);
+}
+
+function normalizeQuizQuestions(input) {
+  const parsed = safeParseJson(input);
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.questions)) return parsed.questions;
+  return [];
+}
+
+function countStarterCodeLines(input) {
+  const parsed = safeParseJson(input);
+  if (!parsed) return 0;
+  if (typeof parsed === "string") {
+    return parsed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).length;
+  }
+
+  const starterCode = parsed?.starter_code;
+  if (!starterCode) return 0;
+  if (typeof starterCode === "string") {
+    return starterCode.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).length;
+  }
+  if (typeof starterCode === "object") {
+    return Object.values(starterCode).reduce((sum, codeByLanguage) => {
+      const lineCount = String(codeByLanguage || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean).length;
+      return sum + lineCount;
+    }, 0);
+  }
+
+  return 0;
+}
+
+function estimateLessonDurationSeconds(lesson) {
+  const explicitDuration = Number(lesson?.durationInSeconds || 0);
+  if (explicitDuration > 0) return explicitDuration;
+
+  const lessonType = String(lesson?.type || "").toUpperCase();
+
+  if (lessonType === "RESOURCE" || lessonType === "ASSIGNMENT") {
+    const articleWords = countWords(lesson?.assignmentText || lesson?.description || "");
+    return estimateReadingSecondsByWords(articleWords, ARTICLE_WORDS_PER_MINUTE, 60);
+  }
+
+  if (lessonType === "QUIZ") {
+    const questions = normalizeQuizQuestions(lesson?.quizQuestions);
+    if (!questions.length) return 60;
+    return QUIZ_BASE_SECONDS + questions.length * QUIZ_SECONDS_PER_QUESTION;
+  }
+
+  if (lessonType === "CODING_EXERCISE") {
+    const instructionWords = countWords(
+      `${lesson?.codingInstructions || ""} ${lesson?.description || ""}`,
+    );
+    const readingSeconds = estimateReadingSecondsByWords(
+      instructionWords,
+      CODING_WORDS_PER_MINUTE,
+      90,
+    );
+    const starterCodeLines = countStarterCodeLines(lesson?.codingStarterCode);
+    const implementationSeconds = starterCodeLines * CODING_SECONDS_PER_CODE_LINE;
+    return Math.max(300, CODING_BASE_SECONDS + readingSeconds + implementationSeconds);
+  }
+
+  return 0;
+}
+
 function getCourseInclude() {
   return {
     educator: {
@@ -958,7 +1051,7 @@ export async function getCourseRoute(slug, userId) {
         uuid: lesson.id,
         title: lesson.title,
         curriculum_resource_type: lesson.type.toLowerCase(),
-        estimated_duration: lesson.durationInSeconds || 0,
+        estimated_duration: estimateLessonDurationSeconds(lesson),
         curriculum_description: lesson.description || "",
       })),
     })),
@@ -1014,6 +1107,22 @@ export async function getCourseForLearner(userId, slug) {
     include: {
       course: {
         include: {
+          educator: {
+            select: {
+              id: true,
+              username: true,
+              firstName: true,
+              lastName: true,
+              headline: true,
+              biography: true,
+            },
+          },
+          level: {
+            select: {
+              id: true,
+              title: true,
+            },
+          },
           sections: {
             orderBy: { position: "asc" },
             include: {
@@ -1057,6 +1166,23 @@ export async function getCourseForLearner(userId, slug) {
       title: enrollment.course.title,
       subtitle: enrollment.course.subtitle,
       description: enrollment.course.description,
+      instructional_level: enrollment.course.level
+        ? {
+            id: enrollment.course.level.id,
+            title: enrollment.course.level.title,
+          }
+        : { id: null, title: "All Levels" },
+      author: {
+        data: {
+          id: enrollment.course.educator?.id || null,
+          username: enrollment.course.educator?.username || null,
+          firstname: enrollment.course.educator?.firstName || "",
+          lastname: enrollment.course.educator?.lastName || "",
+          headline: enrollment.course.educator?.headline || "",
+          biography: enrollment.course.educator?.biography || "",
+          user_picture: null,
+        },
+      },
       goals,
       sections: enrollment.course.sections.map((section) => ({
         id: section.id,
@@ -1083,7 +1209,7 @@ export async function getCourseForLearner(userId, slug) {
                   ? "article"
                   : "null",
             curriculum_description: lesson.description || "",
-            estimated_duration: lesson.durationInSeconds || 0,
+            estimated_duration: estimateLessonDurationSeconds(lesson),
             asset:
               lesson.type === "QUIZ"
                 ? {
