@@ -65,7 +65,7 @@ router.get(
   authenticate,
   authorize("LEARNER"),
   cacheGetResponse({
-    prefix: "courses:learn",
+    prefix: "courses:learn:v2",
     ttlSeconds: 60,
     varyByUser: true,
     tags: ["courses", "progress", "enrollments"],

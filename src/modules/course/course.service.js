@@ -1129,11 +1129,6 @@ export async function getCourseForLearner(userId, slug) {
               lessons: {
                 orderBy: { position: "asc" },
                 include: {
-                  media: {
-                    where: { mediaType: "VIDEO" },
-                    orderBy: { createdAt: "desc" },
-                    take: 1,
-                  },
                   progress: {
                     where: { userId },
                     orderBy: { updatedAt: "desc" },
@@ -1225,10 +1220,10 @@ export async function getCourseForLearner(userId, slug) {
                       expected_output: parsedStarterCode?.expected_output || {},
                       languages: parsedStarterCode?.languages || [],
                     }
-                : lesson.videoUrl || lesson.media?.[0]
+                : lesson.videoUrl || lesson.type === "VIDEO"
                 ? {
-                    id: lesson.media?.[0]?.id || lesson.id,
-                    path: lesson.videoUrl || lesson.media?.[0]?.storagePath || null,
+                    id: lesson.id,
+                    path: `/stream.php?id=${encodeURIComponent(lesson.id)}`,
                   }
                 : lesson.assignmentText
                   ? { id: lesson.id, content: lesson.assignmentText }

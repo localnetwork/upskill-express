@@ -520,7 +520,21 @@ async function sendMediaStoragePath(storagePath, res) {
   }
 
   if (/^https?:\/\//i.test(storagePath)) {
-    res.redirect(storagePath);
+    const upstream = await fetch(storagePath);
+    if (!upstream.ok || !upstream.body) {
+      throw new ApiError(404, "Video file not found");
+    }
+
+    const upstreamContentType = upstream.headers.get("content-type");
+    const upstreamContentLength = upstream.headers.get("content-length");
+    if (upstreamContentType) {
+      res.setHeader("Content-Type", upstreamContentType);
+    }
+    if (upstreamContentLength) {
+      res.setHeader("Content-Length", upstreamContentLength);
+    }
+
+    Readable.fromWeb(upstream.body).pipe(res);
     return;
   }
 
