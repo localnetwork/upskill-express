@@ -1,7 +1,9 @@
 import path from "path";
 import { Readable } from "stream";
+import jwt from "jsonwebtoken";
 import { Router } from "express";
 import { prisma } from "../../shared/database/prisma.js";
+import { env } from "../../shared/config/env.js";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
@@ -481,11 +483,15 @@ async function resolveMediaSourceByQueryId(id) {
   return null;
 }
 
-async function sendMediaStoragePath(storagePath, res) {
+async function sendMediaStoragePath(storagePath, req, res) {
   if (!storagePath) {
     throw new ApiError(404, "Video file not found");
   }
 
+  const rangeHeader = String(req.get("range") || "").trim();
+  if (rangeHeader) {
+    res.setHeader("Accept-Ranges", "bytes");
+  }
   res.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
@@ -493,13 +499,26 @@ async function sendMediaStoragePath(storagePath, res) {
   res.setHeader("Content-Disposition", "inline");
 
   if (isR2Enabled() && isR2StoragePath(storagePath)) {
-    const object = await getObjectFromR2(storagePath);
+    const object = await getObjectFromR2(storagePath, {
+      range: rangeHeader || undefined,
+    });
     if (!object.body) {
       throw new ApiError(404, "Video file not found");
     }
+    if (object.acceptRanges) {
+      res.setHeader("Accept-Ranges", object.acceptRanges);
+    } else {
+      res.setHeader("Accept-Ranges", "bytes");
+    }
     res.setHeader("Content-Type", object.contentType);
+    if (object.contentRange) {
+      res.setHeader("Content-Range", object.contentRange);
+    }
     if (object.contentLength) {
       res.setHeader("Content-Length", String(object.contentLength));
+    }
+    if (object.statusCode === 206 || object.contentRange) {
+      res.status(206);
     }
     if (typeof object.body.pipe === "function") {
       object.body.pipe(res);
@@ -521,18 +540,33 @@ async function sendMediaStoragePath(storagePath, res) {
   }
 
   if (/^https?:\/\//i.test(storagePath)) {
-    const upstream = await fetch(storagePath);
+    const upstream = await fetch(storagePath, {
+      headers: rangeHeader ? { Range: rangeHeader } : undefined,
+    });
     if (!upstream.ok || !upstream.body) {
       throw new ApiError(404, "Video file not found");
     }
 
+    const upstreamAcceptRanges = upstream.headers.get("accept-ranges");
     const upstreamContentType = upstream.headers.get("content-type");
     const upstreamContentLength = upstream.headers.get("content-length");
+    const upstreamContentRange = upstream.headers.get("content-range");
+    if (upstreamAcceptRanges) {
+      res.setHeader("Accept-Ranges", upstreamAcceptRanges);
+    } else if (rangeHeader) {
+      res.setHeader("Accept-Ranges", "bytes");
+    }
     if (upstreamContentType) {
       res.setHeader("Content-Type", upstreamContentType);
     }
     if (upstreamContentLength) {
       res.setHeader("Content-Length", upstreamContentLength);
+    }
+    if (upstreamContentRange) {
+      res.setHeader("Content-Range", upstreamContentRange);
+    }
+    if (upstream.status === 206 || upstreamContentRange) {
+      res.status(206);
     }
 
     Readable.fromWeb(upstream.body).pipe(res);
@@ -541,6 +575,76 @@ async function sendMediaStoragePath(storagePath, res) {
 
   const absolutePath = path.resolve(storagePath.replace(/^\//, ""));
   res.sendFile(absolutePath);
+}
+
+function extractOriginFromHeader(value) {
+  if (!value || value === "null") return "";
+  try {
+    return new URL(String(value)).origin;
+  } catch (_error) {
+    return "";
+  }
+}
+
+function assertPlaybackStreamRequest(req) {
+  const fetchDest = String(req.get("sec-fetch-dest") || "").toLowerCase();
+  const streamIntent = String(req.get("x-upskill-stream-intent") || "").toLowerCase();
+  const isMediaFetchDest = fetchDest === "video" || fetchDest === "audio";
+
+  if (!isMediaFetchDest && streamIntent !== "playback") {
+    throw new ApiError(403, "Invalid stream context");
+  }
+
+  const expectedOrigin = extractOriginFromHeader(env.frontendUrl);
+  if (!expectedOrigin) {
+    throw new ApiError(500, "Frontend origin is not configured");
+  }
+
+  const requestOrigin = extractOriginFromHeader(req.get("origin"));
+  const refererOrigin = extractOriginFromHeader(req.get("referer"));
+  const effectiveOrigin = requestOrigin || refererOrigin;
+
+  if (!effectiveOrigin || effectiveOrigin !== expectedOrigin) {
+    throw new ApiError(403, "Untrusted stream origin");
+  }
+}
+
+function signStreamPlaybackToken({ userId, mediaId }) {
+  return jwt.sign(
+    {
+      sub: String(userId),
+      mediaId: String(mediaId),
+      type: "stream-playback",
+    },
+    env.jwtAccessSecret,
+    { expiresIn: "6h" },
+  );
+}
+
+function verifyStreamPlaybackToken(token) {
+  try {
+    const payload = jwt.verify(String(token), env.jwtAccessSecret);
+    if (payload?.type !== "stream-playback") {
+      throw new ApiError(403, "Invalid stream token");
+    }
+    return payload;
+  } catch (_error) {
+    throw new ApiError(403, "Invalid or expired stream token");
+  }
+}
+
+async function assertUserCanAccessMedia(userId, mediaSource) {
+  if (mediaSource.courseId) {
+    const allowed = await canAccessCourseMedia(userId, mediaSource.courseId);
+    if (!allowed) {
+      throw new ApiError(403, "Not allowed to access this media");
+    }
+    return;
+  }
+
+  if (mediaSource.userId && mediaSource.userId !== userId) {
+    throw new ApiError(403, "Not allowed to access this media");
+  }
 }
 
 router.get("/user/:slug", async (req, res, next) => {
@@ -1275,12 +1379,9 @@ router.post(
   },
 );
 
-router.get("/stream.php", authenticate, async (req, res, next) => {
+router.get("/stream-token.php", authenticate, async (req, res, next) => {
   try {
-    const fetchDest = String(req.get("sec-fetch-dest") || "").toLowerCase();
-    if (fetchDest === "document") {
-      throw new ApiError(403, "Direct page access is not allowed");
-    }
+    assertPlaybackStreamRequest(req);
 
     const queryId = req.query.id;
     if (!queryId) {
@@ -1292,16 +1393,53 @@ router.get("/stream.php", authenticate, async (req, res, next) => {
       throw new ApiError(404, "Media not found");
     }
 
-    if (mediaSource.courseId) {
-      const allowed = await canAccessCourseMedia(req.user.id, mediaSource.courseId);
-      if (!allowed) {
-        throw new ApiError(403, "Not allowed to access this media");
-      }
-    } else if (mediaSource.userId && mediaSource.userId !== req.user.id) {
-      throw new ApiError(403, "Not allowed to access this media");
+    await assertUserCanAccessMedia(req.user.id, mediaSource);
+
+    const token = signStreamPlaybackToken({
+      userId: req.user.id,
+      mediaId: queryId,
+    });
+
+    return res.json({
+      data: {
+        token,
+        expiresInSeconds: 21600,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/stream.php", async (req, res, next) => {
+  try {
+    const fetchDest = String(req.get("sec-fetch-dest") || "").toLowerCase();
+    if (fetchDest === "document") {
+      throw new ApiError(403, "Direct page access is not allowed");
+    }
+    assertPlaybackStreamRequest(req);
+
+    const queryId = req.query.id;
+    const streamToken = String(req.query.st || "").trim();
+    if (!queryId) {
+      throw new ApiError(400, "Missing media id");
+    }
+    if (!streamToken) {
+      throw new ApiError(403, "Missing stream token");
     }
 
-    await sendMediaStoragePath(mediaSource.storagePath, res);
+    const streamPayload = verifyStreamPlaybackToken(streamToken);
+    if (String(streamPayload.mediaId) !== String(queryId)) {
+      throw new ApiError(403, "Stream token does not match media");
+    }
+
+    const mediaSource = await resolveMediaSourceByQueryId(queryId);
+    if (!mediaSource) {
+      throw new ApiError(404, "Media not found");
+    }
+    await assertUserCanAccessMedia(String(streamPayload.sub), mediaSource);
+
+    await sendMediaStoragePath(mediaSource.storagePath, req, res);
     return;
   } catch (error) {
     return next(error);

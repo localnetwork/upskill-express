@@ -152,17 +152,19 @@ export async function uploadLocalFileToR2(localFilePath, objectKey, contentType)
   };
 }
 
-export async function getObjectFromR2(storagePath) {
+export async function getObjectFromR2(storagePath, options = {}) {
   const key = extractR2ObjectKeyFromStoragePath(storagePath);
   if (!key) {
     throw new Error("R2 object key is required");
   }
 
+  const range = String(options.range || "").trim();
   const client = getR2Client();
   const output = await client.send(
     new GetObjectCommand({
       Bucket: env.cfBucket,
       Key: key,
+      ...(range ? { Range: range } : {}),
     }),
   );
 
@@ -171,6 +173,9 @@ export async function getObjectFromR2(storagePath) {
     body: output.Body,
     contentType: output.ContentType || "application/octet-stream",
     contentLength: output.ContentLength || undefined,
+    contentRange: output.ContentRange || "",
+    acceptRanges: output.AcceptRanges || "",
+    statusCode: output.$metadata?.httpStatusCode || 200,
   };
 }
 
