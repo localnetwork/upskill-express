@@ -2,6 +2,7 @@ import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { createNotification } from "../notification/notification.service.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
+import { getAdminActivityReport } from "../analytics/analytics.service.js";
 
 export async function approveCourse(adminId, courseId, note) {
   const course = await prisma.course.findFirst({
@@ -99,6 +100,10 @@ export async function getRevenueReport() {
     paidOrders,
     totals: totals._sum,
   };
+}
+
+export async function getAdminActivityAnalytics(query = {}) {
+  return getAdminActivityReport(query);
 }
 
 export async function listAdminCourses(query = {}) {

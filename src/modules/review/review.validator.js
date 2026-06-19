@@ -15,6 +15,10 @@ export const reviewLikeParamsValidator = z.object({
   reviewId: z.string().min(1),
 });
 
+export const instructorCourseReviewsParamsValidator = z.object({
+  slug: z.string().min(1),
+});
+
 export const listInstructorReviewsValidator = z.object({
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),

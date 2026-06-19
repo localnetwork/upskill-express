@@ -2,6 +2,7 @@ import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { createNotification } from "../notification/notification.service.js";
+import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 function normalizeReviewSort(sort) {
   const normalized = String(sort || "recent").toLowerCase();
@@ -115,6 +116,14 @@ export async function createReview(userId, payload) {
     title: "New course review",
     message: `Your course "${enrollment.course.title}" has a new review.`,
     metadata: { courseId: payload.courseId, rating: payload.rating },
+  });
+
+  await recordActivityEvent({
+    eventType: "LEARNING_REVIEW_CREATED",
+    userId,
+    courseId: payload.courseId,
+    metadata: { rating: payload.rating },
+    dedupeWindowSeconds: 5,
   });
 
   return review;
@@ -384,6 +393,8 @@ export async function listInstructorReviews(userId, query = {}) {
         course: {
           educatorId: userId,
           deletedAt: null,
+          ...(courseId ? { id: courseId } : {}),
+          ...(courseSlug ? { slug: courseSlug } : {}),
         },
       },
       _avg: { rating: true },

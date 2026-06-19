@@ -1,6 +1,7 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { createNotification } from "../notification/notification.service.js";
+import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 async function getEnrollmentForLesson(userId, lessonId) {
   const lesson = await prisma.lesson.findUnique({
@@ -183,6 +184,17 @@ export async function updateLessonProgress(userId, payload) {
       },
     });
   }
+
+  await recordActivityEvent({
+    eventType: isNowCompleted ? "LEARNING_COURSE_COMPLETED" : "LEARNING_LESSON_PROGRESS",
+    userId,
+    courseId: enrollment.courseId,
+    metadata: {
+      lessonId: payload.lessonId,
+      progressPct,
+    },
+    dedupeWindowSeconds: isNowCompleted ? 5 : 30,
+  });
 
   return prisma.courseProgress.findUnique({
     where: { enrollmentId: enrollment.id },

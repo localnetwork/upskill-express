@@ -802,7 +802,7 @@ export async function getCourseForManagement(user, slug) {
   return mapCourseDetails(course, goals);
 }
 
-export async function getCourseStudentsForManagement(user, slug, query = {}) {
+async function resolveCourseForManagementAccess(user, slug) {
   const course = await prisma.course.findFirst({
     where: {
       OR: [{ slug }, { id: slug }],
@@ -824,6 +824,12 @@ export async function getCourseStudentsForManagement(user, slug, query = {}) {
   if (!isOwner && !isAdmin) {
     throw new ApiError(403, "Forbidden");
   }
+
+  return course;
+}
+
+export async function getCourseStudentsForManagement(user, slug, query = {}) {
+  const course = await resolveCourseForManagementAccess(user, slug);
 
   const { page, limit, skip } = getPagination(query);
   const search = String(query.search || query.q || "")
@@ -950,6 +956,230 @@ export async function getCourseStudentsForManagement(user, slug, query = {}) {
   };
 }
 
+export async function getCourseStatisticsForManagement(user, slug) {
+  const course = await resolveCourseForManagementAccess(user, slug);
+  const activityEventModel = prisma.activityEvent || null;
+
+  const activeEnrollmentWhere = {
+    courseId: course.id,
+    status: { in: ["ACTIVE", "COMPLETED"] },
+  };
+
+  const startOfMonth = new Date();
+  startOfMonth.setDate(1);
+  startOfMonth.setHours(0, 0, 0, 0);
+
+  const enrollmentTrendStart = new Date(startOfMonth);
+  enrollmentTrendStart.setMonth(enrollmentTrendStart.getMonth() - 5);
+
+  const [
+    totalStudents,
+    enrollmentsThisMonth,
+    completedStudents,
+    progressRows,
+    reviewAggregate,
+    ratingBuckets,
+    revenueAggregate,
+    monthlyRevenueAggregate,
+    enrollmentTrendRows,
+    totalImpressions,
+    totalPageViews,
+    uniqueImpressionUsers,
+    uniqueImpressionSessions,
+    uniquePageViewUsers,
+    uniquePageViewSessions,
+  ] = await Promise.all([
+    prisma.enrollment.count({ where: activeEnrollmentWhere }),
+    prisma.enrollment.count({
+      where: {
+        ...activeEnrollmentWhere,
+        enrolledAt: { gte: startOfMonth },
+      },
+    }),
+    prisma.enrollment.count({
+      where: {
+        ...activeEnrollmentWhere,
+        OR: [{ status: "COMPLETED" }, { completedAt: { not: null } }],
+      },
+    }),
+    prisma.enrollment.findMany({
+      where: activeEnrollmentWhere,
+      select: {
+        courseProgress: {
+          select: { progressPct: true },
+        },
+      },
+    }),
+    prisma.review.aggregate({
+      where: { courseId: course.id },
+      _avg: { rating: true },
+      _count: { rating: true },
+    }),
+    prisma.review.groupBy({
+      by: ["rating"],
+      where: { courseId: course.id },
+      _count: { rating: true },
+    }),
+    prisma.orderItem.aggregate({
+      where: {
+        courseId: course.id,
+        order: { status: "PAID" },
+      },
+      _sum: { educatorEarning: true },
+    }),
+    prisma.orderItem.aggregate({
+      where: {
+        courseId: course.id,
+        order: { status: "PAID" },
+        createdAt: { gte: startOfMonth },
+      },
+      _sum: { educatorEarning: true },
+    }),
+    prisma.enrollment.findMany({
+      where: {
+        ...activeEnrollmentWhere,
+        enrolledAt: { gte: enrollmentTrendStart },
+      },
+      select: { enrolledAt: true },
+    }),
+    activityEventModel
+      ? activityEventModel.count({
+          where: {
+            courseId: course.id,
+            eventType: "COURSE_IMPRESSION",
+          },
+        })
+      : Promise.resolve(0),
+    activityEventModel
+      ? activityEventModel.count({
+          where: {
+            courseId: course.id,
+            eventType: "COURSE_PAGE_VIEW",
+          },
+        })
+      : Promise.resolve(0),
+    activityEventModel
+      ? activityEventModel.findMany({
+          where: {
+            courseId: course.id,
+            eventType: "COURSE_IMPRESSION",
+            userId: { not: null },
+          },
+          distinct: ["userId"],
+          select: { userId: true },
+        })
+      : Promise.resolve([]),
+    activityEventModel
+      ? activityEventModel.findMany({
+          where: {
+            courseId: course.id,
+            eventType: "COURSE_IMPRESSION",
+            sessionKey: { not: null },
+          },
+          distinct: ["sessionKey"],
+          select: { sessionKey: true },
+        })
+      : Promise.resolve([]),
+    activityEventModel
+      ? activityEventModel.findMany({
+          where: {
+            courseId: course.id,
+            eventType: "COURSE_PAGE_VIEW",
+            userId: { not: null },
+          },
+          distinct: ["userId"],
+          select: { userId: true },
+        })
+      : Promise.resolve([]),
+    activityEventModel
+      ? activityEventModel.findMany({
+          where: {
+            courseId: course.id,
+            eventType: "COURSE_PAGE_VIEW",
+            sessionKey: { not: null },
+          },
+          distinct: ["sessionKey"],
+          select: { sessionKey: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const averageProgressPct = totalStudents
+    ? Number(
+        (
+          progressRows.reduce(
+            (sum, row) => sum + Number(row.courseProgress?.progressPct || 0),
+            0,
+          ) / totalStudents
+        ).toFixed(2),
+      )
+    : 0;
+  const completionRatePct = totalStudents
+    ? Number(((completedStudents / totalStudents) * 100).toFixed(2))
+    : 0;
+  const totalReviews = Number(reviewAggregate?._count?.rating || 0);
+
+  const rating_distribution = [5, 4, 3, 2, 1].map((ratingValue) => {
+    const bucket = ratingBuckets.find((row) => row.rating === ratingValue);
+    const count = Number(bucket?._count?.rating || 0);
+    return {
+      rating: ratingValue,
+      count,
+      percentage: totalReviews ? Number(((count / totalReviews) * 100).toFixed(2)) : 0,
+    };
+  });
+
+  const monthFormatter = new Intl.DateTimeFormat("en-US", { month: "short" });
+  const monthly_enrollments = Array.from({ length: 6 }).map((_, index) => {
+    const date = new Date(enrollmentTrendStart);
+    date.setMonth(enrollmentTrendStart.getMonth() + index);
+    const month = date.getMonth();
+    const year = date.getFullYear();
+    const count = enrollmentTrendRows.filter(
+      (row) =>
+        row.enrolledAt.getMonth() === month &&
+        row.enrolledAt.getFullYear() === year,
+    ).length;
+
+    return {
+      month,
+      year,
+      label: `${monthFormatter.format(date)} ${year}`,
+      count,
+    };
+  });
+
+  return {
+    overview: {
+      total_students: totalStudents,
+      enrollments_this_month: enrollmentsThisMonth,
+      completed_students: completedStudents,
+      completion_rate_pct: completionRatePct,
+      average_progress_pct: averageProgressPct,
+      average_rating: Number(reviewAggregate?._avg?.rating || 0),
+      total_reviews: totalReviews,
+      total_revenue: Number(revenueAggregate?._sum?.educatorEarning || 0),
+      revenue_this_month: Number(monthlyRevenueAggregate?._sum?.educatorEarning || 0),
+      total_impressions: totalImpressions,
+      total_page_views: totalPageViews,
+      unique_impression_visitors: Math.max(
+        uniqueImpressionUsers.length,
+        uniqueImpressionSessions.length,
+      ),
+      unique_page_view_visitors: Math.max(
+        uniquePageViewUsers.length,
+        uniquePageViewSessions.length,
+      ),
+    },
+    distribution: {
+      rating_distribution,
+    },
+    trends: {
+      monthly_enrollments,
+    },
+  };
+}
+
 export async function listAuthoredCourses(userId, query) {
   const { page, limit, skip } = getPagination(query);
   const resolvedLevelId = await resolveLevelId(query.instructional_level || query.levelId);
@@ -971,7 +1201,56 @@ export async function listAuthoredCourses(userId, query) {
     prisma.course.count({ where }),
   ]);
 
-  return toPagedResult(rows, total, page, limit);
+  const courseIds = rows.map((row) => row.id);
+  if (!courseIds.length) {
+    return toPagedResult(rows, total, page, limit);
+  }
+
+  const startOfMonth = new Date();
+  startOfMonth.setDate(1);
+  startOfMonth.setHours(0, 0, 0, 0);
+
+  const [monthlyEnrollments, ratingAggregates] = await Promise.all([
+    prisma.enrollment.groupBy({
+      by: ["courseId"],
+      where: {
+        courseId: { in: courseIds },
+        status: { in: ["ACTIVE", "COMPLETED"] },
+        enrolledAt: { gte: startOfMonth },
+      },
+      _count: { _all: true },
+    }),
+    prisma.review.groupBy({
+      by: ["courseId"],
+      where: { courseId: { in: courseIds } },
+      _avg: { rating: true },
+      _count: { rating: true },
+    }),
+  ]);
+
+  const monthlyByCourseId = new Map(
+    monthlyEnrollments.map((row) => [row.courseId, Number(row?._count?._all || 0)]),
+  );
+  const ratingsByCourseId = new Map(
+    ratingAggregates.map((row) => [
+      row.courseId,
+      {
+        average_rating: Number(row?._avg?.rating || 0),
+        total_reviews: Number(row?._count?.rating || 0),
+      },
+    ]),
+  );
+
+  const withStats = rows.map((row) => ({
+    ...row,
+    stats: {
+      enrollments_this_month: monthlyByCourseId.get(row.id) || 0,
+      average_rating: ratingsByCourseId.get(row.id)?.average_rating || 0,
+      total_reviews: ratingsByCourseId.get(row.id)?.total_reviews || 0,
+    },
+  }));
+
+  return toPagedResult(withStats, total, page, limit);
 }
 
 export async function getCourseRoute(slug, userId) {

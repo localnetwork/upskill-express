@@ -26,6 +26,14 @@ export async function listInstructorReviewsController(req, res) {
   return res.json({ message: "Instructor reviews fetched", ...data });
 }
 
+export async function listInstructorCourseReviewsController(req, res) {
+  const data = await listInstructorReviews(req.user.id, {
+    ...req.query,
+    courseSlug: req.params.slug,
+  });
+  return res.json({ message: "Course reviews fetched", ...data });
+}
+
 export async function toggleReviewLikeController(req, res) {
   const data = await toggleReviewLike(req.user.id, req.params.reviewId);
   return res.json({ message: data.liked ? "Review liked" : "Review unliked", data });

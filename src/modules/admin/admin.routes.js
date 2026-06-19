@@ -5,6 +5,7 @@ import { validate } from "../../shared/middleware/validate.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
+  activityReportController,
   approveCourseController,
   listAdminCoursesController,
   rejectCourseController,
@@ -27,6 +28,16 @@ router.get(
 );
 router.post("/courses/:courseId/approve", validate(reviewCourseValidator), asyncHandler(approveCourseController));
 router.post("/courses/:courseId/reject", validate(reviewCourseValidator), asyncHandler(rejectCourseController));
+router.get(
+  "/reports/activity",
+  cacheGetResponse({
+    prefix: "admin:activity-report",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["admin-revenue", "activity", "courses"],
+  }),
+  asyncHandler(activityReportController),
+);
 router.get(
   "/reports/revenue",
   cacheGetResponse({

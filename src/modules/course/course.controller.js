@@ -3,6 +3,7 @@ import {
   createCourse,
   deleteDraftCourse,
   getCourseForManagement,
+  getCourseStatisticsForManagement,
   getCourseForLearner,
   getCourseRoute,
   getCourseBySlug,
@@ -153,6 +154,14 @@ export async function getCourseStudentsForManagementController(req, res) {
       total: data.pagination.total,
       total_pages: data.pagination.totalPages,
     },
+  });
+}
+
+export async function getCourseStatisticsForManagementController(req, res) {
+  const data = await getCourseStatisticsForManagement(req.user, req.params.slug);
+  return res.json({
+    message: "Course statistics fetched",
+    data,
   });
 }
 

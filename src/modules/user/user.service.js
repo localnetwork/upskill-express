@@ -3,6 +3,7 @@ import { comparePassword, hashPassword } from "../../shared/utils/security.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { countMany, findById, findByUsername, findMany, updateById } from "./user.repository.js";
+import { listUserActivityEvents, recordActivityEvent } from "../analytics/analytics.service.js";
 
 function getOptional(payload, key) {
   return payload[key] === undefined ? undefined : payload[key];
@@ -84,6 +85,16 @@ export async function updateCurrentUser(userId, payload) {
     passwordHash,
   });
 
+  await recordActivityEvent({
+    eventType: "ACCOUNT_PROFILE_UPDATED",
+    userId,
+    pagePath: "/profile/basic-information",
+    metadata: {
+      changedFields: Object.keys(payload || {}),
+    },
+    dedupeWindowSeconds: 5,
+  });
+
   return mapUser(updated);
 }
 
@@ -126,4 +137,8 @@ export async function softDeleteUser(userId) {
   }
   await updateById(userId, { deletedAt: new Date(), isActive: false });
   return { success: true };
+}
+
+export async function listCurrentUserActivity(userId, query = {}) {
+  return listUserActivityEvents(userId, query);
 }

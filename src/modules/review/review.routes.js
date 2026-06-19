@@ -7,12 +7,14 @@ import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
   createReviewController,
   getReviewEligibilityController,
+  listInstructorCourseReviewsController,
   listCourseReviewsController,
   listInstructorReviewsController,
   toggleReviewLikeController,
 } from "./review.controller.js";
 import {
   createReviewValidator,
+  instructorCourseReviewsParamsValidator,
   listInstructorReviewsValidator,
   reviewLikeParamsValidator,
   reviewCourseParamsValidator,
@@ -43,6 +45,20 @@ router.get(
     tags: (req) => ["reviews", `reviews:course:${req.params.courseId}`],
   }),
   asyncHandler(getReviewEligibilityController),
+);
+router.get(
+  "/instructor/courses/:slug",
+  authenticate,
+  authorize("EDUCATOR"),
+  validate(instructorCourseReviewsParamsValidator, "params"),
+  validate(listInstructorReviewsValidator, "query"),
+  cacheGetResponse({
+    prefix: "reviews:instructor:course",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: (req) => ["reviews", "courses", `courses:${req.params.slug}:reviews`],
+  }),
+  asyncHandler(listInstructorCourseReviewsController),
 );
 router.get(
   "/instructor",

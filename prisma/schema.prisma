@@ -82,6 +82,21 @@ enum PayoutStatus {
   FAILED
 }
 
+enum ActivityEventType {
+  AUTH_REGISTER
+  AUTH_LOGIN
+  ACCOUNT_PROFILE_UPDATED
+  LEARNING_LESSON_PROGRESS
+  LEARNING_COURSE_COMPLETED
+  LEARNING_REVIEW_CREATED
+  COMMERCE_CART_ADD
+  COMMERCE_WISHLIST_ADD
+  COMMERCE_CHECKOUT_CREATED
+  COMMERCE_PURCHASE_COMPLETED
+  COURSE_IMPRESSION
+  COURSE_PAGE_VIEW
+}
+
 model User {
   id                    String    @id @default(cuid())
   username              String    @unique
@@ -128,6 +143,7 @@ model User {
   submittedCourses      CourseSubmission[]
   taxTransactions       TaxTransaction[]
   createdMedia          Media[]
+  activityEvents        ActivityEvent[]
 
   @@index([deletedAt])
   @@map("users")
@@ -266,6 +282,7 @@ model Course {
   progress            CourseProgress[]
   media               Media[]
   submissions         CourseSubmission[]
+  activityEvents      ActivityEvent[]
 
   @@index([educatorId, workflowStatus])
   @@index([categoryId])
@@ -585,6 +602,27 @@ model Notification {
 
   @@index([userId, readAt, createdAt])
   @@map("notifications")
+}
+
+model ActivityEvent {
+  id         String            @id @default(cuid())
+  eventType  ActivityEventType
+  userId     String?
+  courseId   String?
+  pagePath   String?
+  sessionKey String?
+  metadata   Json?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  user       User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  course     Course?           @relation(fields: [courseId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([courseId, createdAt])
+  @@index([eventType, createdAt])
+  @@index([sessionKey, createdAt])
+  @@map("activity_events")
 }
 
 model PayoutAccount {

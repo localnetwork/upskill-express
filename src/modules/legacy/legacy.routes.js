@@ -9,6 +9,7 @@ import { upload } from "../../shared/middleware/upload.middleware.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getObjectFromR2, isR2Enabled, isR2StoragePath } from "../../shared/storage/r2.js";
 import { updateLessonProgress } from "../progress/progress.service.js";
+import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 const router = Router();
 const QUIZ_ATTEMPT_KEY_PREFIX = "quiz_attempt::";
@@ -686,6 +687,13 @@ router.put("/profile", authenticate, async (req, res, next) => {
     });
 
     const extended = normalizeExtendedProfile(updatedUser);
+    await recordActivityEvent({
+      eventType: "ACCOUNT_PROFILE_UPDATED",
+      userId: req.user.id,
+      pagePath: "/profile/basic-information",
+      metadata: { source: "legacy-profile-route" },
+      dedupeWindowSeconds: 5,
+    });
     return res.json({
       message: "Profile updated",
       data: {

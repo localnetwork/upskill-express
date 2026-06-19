@@ -1,6 +1,7 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
+import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 function wishlistModel() {
   if (!prisma.wishlist) {
@@ -116,6 +117,14 @@ export async function addToWishlist(userId, courseId) {
     },
     create: { userId, courseId },
     update: {},
+  });
+
+  await recordActivityEvent({
+    eventType: "COMMERCE_WISHLIST_ADD",
+    userId,
+    courseId,
+    pagePath: "/my-courses/wishlist",
+    dedupeWindowSeconds: 5,
   });
 
   return { success: true };

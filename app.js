@@ -17,21 +17,25 @@ import payoutRoutes from "./src/modules/payout/payout.routes.js";
 import adminRoutes from "./src/modules/admin/admin.routes.js";
 import wishlistRoutes from "./src/modules/wishlist/wishlist.routes.js";
 import certificationRoutes from "./src/modules/certification/certification.routes.js";
+import analyticsRoutes from "./src/modules/analytics/analytics.routes.js";
 import legacyRoutes from "./src/modules/legacy/legacy.routes.js";
 import {
   cacheGetResponse,
   cacheInvalidationOnMutation,
 } from "./src/shared/middleware/cache.middleware.js";
+import { createDdosProtection } from "./src/shared/middleware/ddos.middleware.js";
 import { createRateLimiter } from "./src/shared/middleware/rate-limit.middleware.js";
 import { errorHandler, notFound } from "./src/shared/middleware/error.middleware.js";
 import { env } from "./src/shared/config/env.js";
 import { prisma } from "./src/shared/database/prisma.js";
 
 const app = express();
+const ddosProtection = createDdosProtection();
 app.use(cors({ origin: env.corsOrigin }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cacheInvalidationOnMutation());
+app.use("/api", ddosProtection);
 app.use(
   "/api",
   createRateLimiter({
@@ -66,6 +70,7 @@ app.use("/api/payouts", payoutRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/certifications", certificationRoutes);
+app.use("/api/analytics", analyticsRoutes);
 app.use("/api", legacyRoutes);
 app.get(
   "/api/course-price-tiers",

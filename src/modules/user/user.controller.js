@@ -1,6 +1,7 @@
 import {
   changePassword,
   getCurrentUser,
+  listCurrentUserActivity,
   listUsers,
   softDeleteUser,
   updateCurrentUser,
@@ -14,6 +15,11 @@ export async function meController(req, res) {
 export async function updateMeController(req, res) {
   const data = await updateCurrentUser(req.user.id, req.body);
   return res.json({ message: "Profile updated", data });
+}
+
+export async function listMyActivityController(req, res) {
+  const data = await listCurrentUserActivity(req.user.id, req.query);
+  return res.json({ message: "Activity fetched", ...data });
 }
 
 export async function changePasswordController(req, res) {

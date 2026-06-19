@@ -59,6 +59,9 @@ The server uses `PORT` from `.env` (runtime fallback: `3000`).
 | `NODE_ENV` | `development` |
 | `PORT` | `3000` (runtime fallback) |
 | `CORS_ORIGIN` | `*` |
+| `DDOS_MAX_REQUESTS_PER_SEC` | `10` |
+| `DDOS_CHECK_INTERVAL_MS` | `1000` |
+| `DDOS_BAN_SECONDS` | `300` |
 | `JWT_ACCESS_SECRET` | `access-secret` (set a secure value) |
 | `JWT_REFRESH_SECRET` | `refresh-secret` (set a secure value) |
 | `JWT_ACCESS_TTL` | `15m` |

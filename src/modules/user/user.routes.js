@@ -10,6 +10,7 @@ import {
   changePasswordController,
   deleteUserController,
   listUsersController,
+  listMyActivityController,
   meController,
   updateMeController,
 } from "./user.controller.js";
@@ -28,6 +29,17 @@ router.get(
   asyncHandler(meController),
 );
 router.patch("/me", authenticate, validate(updateUserValidator), asyncHandler(updateMeController));
+router.get(
+  "/me/activity",
+  authenticate,
+  cacheGetResponse({
+    prefix: "users:me:activity",
+    ttlSeconds: 30,
+    varyByUser: true,
+    tags: ["users", "activity"],
+  }),
+  asyncHandler(listMyActivityController),
+);
 router.post(
   "/me/change-password",
   authenticate,

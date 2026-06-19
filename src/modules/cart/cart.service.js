@@ -1,5 +1,6 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
+import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 async function getOrCreateCart(userId) {
   const cart = await prisma.cart.findUnique({ where: { userId } });
@@ -73,6 +74,14 @@ export async function addToCart(userId, courseId) {
       cartId: cart.id,
       courseId,
     },
+  });
+
+  await recordActivityEvent({
+    eventType: "COMMERCE_CART_ADD",
+    userId,
+    courseId,
+    pagePath: "/cart",
+    dedupeWindowSeconds: 5,
   });
 
   return getCart(userId);

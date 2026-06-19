@@ -4,6 +4,7 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../../sha
 import { comparePassword, compareToken, hashPassword, hashToken, randomToken } from "../../shared/utils/security.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { createUser, findUserByEmail, findUserById, findUserByUsername, updateUser } from "./auth.repository.js";
+import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 function getRoles(user) {
   return (user.roles || []).map((item) => item.role.name);
@@ -102,6 +103,13 @@ export async function register(payload) {
   const refreshTokenHash = await hashToken(refreshToken);
   await updateUser(user.id, { refreshTokenHash });
 
+  await recordActivityEvent({
+    eventType: "AUTH_REGISTER",
+    userId: user.id,
+    metadata: { role: roleName },
+    dedupeWindowSeconds: 5,
+  });
+
   return {
     accessToken,
     refreshToken,
@@ -138,6 +146,12 @@ export async function login(payload) {
   const refreshTokenHash = await hashToken(refreshToken);
 
   await updateUser(user.id, { refreshTokenHash });
+
+  await recordActivityEvent({
+    eventType: "AUTH_LOGIN",
+    userId: user.id,
+    dedupeWindowSeconds: 5,
+  });
 
   return {
     accessToken,

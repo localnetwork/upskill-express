@@ -9,6 +9,7 @@ import {
   deleteDraftCourseController,
   getCourseForManagementController,
   getCourseStudentsForManagementController,
+  getCourseStatisticsForManagementController,
   getCourseForLearnerController,
   getCourseRouteController,
   getCourseBySlugController,
@@ -93,6 +94,17 @@ router.get(
     tags: ["courses", "enrollments", "progress"],
   }),
   asyncHandler(getCourseStudentsForManagementController),
+);
+router.get(
+  "/:slug/statistics",
+  authenticate,
+  cacheGetResponse({
+    prefix: "courses:statistics",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["courses", "enrollments", "reviews", "orders"],
+  }),
+  asyncHandler(getCourseStatisticsForManagementController),
 );
 router.get(
   "/:slug",

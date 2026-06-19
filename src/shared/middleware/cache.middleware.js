@@ -186,6 +186,10 @@ function getInvalidationTagsFromRequest(req) {
     }
   }
 
+  if (path.startsWith("/api/analytics")) {
+    push("activity", "courses", "admin-revenue");
+  }
+
   if (path === "/api/users/me" && ["PUT", "PATCH"].includes(method)) {
     push("courses", "users", "user-profile");
   }
