@@ -94,7 +94,7 @@ export async function invalidateCacheByTags(tags = []) {
 export function cacheGetResponse(options = {}) {
   const {
     prefix = "api-cache",
-    ttlSeconds = 60,
+    ttlSeconds = 10000,
     varyByUser = false,
     tags = [],
   } = options;
@@ -115,14 +115,12 @@ export function cacheGetResponse(options = {}) {
     try {
       const cached = await redis.get(key);
       if (cached && typeof cached === "object") {
-        return res
-          .status(Number(cached.statusCode || 200))
-          .json(
-            enrichResponsePayload(cached.payload, {
-              isCached: true,
-              lastCached: cached.cachedAt || null,
-            }),
-          );
+        return res.status(Number(cached.statusCode || 200)).json(
+          enrichResponsePayload(cached.payload, {
+            isCached: true,
+            lastCached: cached.cachedAt || null,
+          }),
+        );
       }
     } catch (_error) {}
 
@@ -207,7 +205,13 @@ function getInvalidationTagsFromRequest(req) {
   }
 
   if (path.startsWith("/api/progress")) {
-    push("progress", "courses", "enrollments", "notifications", "certifications");
+    push(
+      "progress",
+      "courses",
+      "enrollments",
+      "notifications",
+      "certifications",
+    );
   }
 
   if (path.startsWith("/api/notifications")) {

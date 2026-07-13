@@ -1,6 +1,7 @@
 import path from "path";
 import { Readable } from "stream";
 import jwt from "jsonwebtoken";
+import { randomUUID } from "crypto";
 import { Router } from "express";
 import { prisma } from "../../shared/database/prisma.js";
 import { env } from "../../shared/config/env.js";
@@ -15,6 +16,17 @@ import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 const router = Router();
 const QUIZ_ATTEMPT_KEY_PREFIX = "quiz_attempt::";
+const codingSubmissionStore = new Map();
+const JUDGE0_BASE_URL = String(process.env.JUDGE0_BASE_URL || "https://ce.judge0.com").replace(/\/+$/, "");
+const JUDGE0_LANGUAGE_IDS = {
+  javascript: 63,
+  typescript: 74,
+  python: 71,
+  java: 62,
+  php: 68,
+  go: 60,
+  csharp: 51,
+};
 
 router.use(
   cacheGetResponse({
@@ -110,6 +122,22 @@ function mapLessonToLegacyCurriculum(lesson) {
                 parsedCodingStarterCode?.starter_code || parsedCodingStarterCode || {},
               expected_output: parsedCodingStarterCode?.expected_output || {},
               languages: parsedCodingStarterCode?.languages || [],
+              test_cases: parsedCodingStarterCode?.test_cases || {},
+              step_challenges:
+                parsedCodingStarterCode?.step_challenges &&
+                typeof parsedCodingStarterCode.step_challenges === "object"
+                  ? parsedCodingStarterCode.step_challenges
+                  : {},
+              checklist: Array.isArray(parsedCodingStarterCode?.checklist)
+                ? parsedCodingStarterCode.checklist
+                    .map((item) => String(item || "").trim())
+                    .filter(Boolean)
+                : [],
+              hints: Array.isArray(parsedCodingStarterCode?.hints)
+                ? parsedCodingStarterCode.hints
+                    .map((item) => String(item || "").trim())
+                    .filter(Boolean)
+                : [],
             }
           : lesson.videoUrl
             ? { path: lesson.videoUrl }
@@ -192,6 +220,361 @@ async function ensureLearnerOwnsQuizLesson(userId, lessonId) {
   }
 
   return { lesson, enrollment };
+}
+
+async function ensureLearnerOwnsCodingLesson(userId, lessonId) {
+  const lesson = await prisma.lesson.findUnique({
+    where: { id: String(lessonId) },
+    include: {
+      course: true,
+    },
+  });
+
+  if (!lesson || !lesson.course || lesson.course.deletedAt) {
+    throw new ApiError(404, "Lesson not found");
+  }
+
+  const enrollment = await prisma.enrollment.findFirst({
+    where: {
+      userId,
+      courseId: lesson.courseId,
+      status: "ACTIVE",
+    },
+  });
+
+  if (!enrollment) {
+    throw new ApiError(403, "Not enrolled in this course");
+  }
+
+  if (lesson.type !== "CODING_EXERCISE") {
+    throw new ApiError(400, "This lesson is not a coding exercise");
+  }
+
+  return { lesson, enrollment };
+}
+
+function normalizeCodingAsset(rawValue) {
+  const parsed = parseJsonOrDefault(rawValue, {});
+  if (!parsed || typeof parsed !== "object") {
+    return {
+      languages: ["javascript"],
+      starter_code: {},
+      expected_output: {},
+      test_cases: {},
+      step_challenges: {},
+      checklist: [],
+      hints: [],
+    };
+  }
+
+  return {
+    languages: Array.isArray(parsed.languages) && parsed.languages.length ? parsed.languages : ["javascript"],
+    starter_code: parsed.starter_code && typeof parsed.starter_code === "object" ? parsed.starter_code : {},
+    expected_output: parsed.expected_output && typeof parsed.expected_output === "object" ? parsed.expected_output : {},
+    test_cases: parsed.test_cases && typeof parsed.test_cases === "object" ? parsed.test_cases : {},
+    step_challenges:
+      parsed.step_challenges && typeof parsed.step_challenges === "object"
+        ? parsed.step_challenges
+        : {},
+    checklist: Array.isArray(parsed.checklist)
+      ? parsed.checklist.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    hints: Array.isArray(parsed.hints)
+      ? parsed.hints.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+  };
+}
+
+function normalizeCodingStepsForLanguage(asset, language) {
+  const fromAsset = Array.isArray(asset.step_challenges?.[language])
+    ? asset.step_challenges[language]
+    : [];
+
+  return fromAsset
+    .map((item, index) => {
+      const fallbackExpected = item?.expected_output ?? item?.expectedOutput ?? "";
+      const fallbackMode = String(item?.validation_mode || item?.validationMode || "").toUpperCase();
+      const normalizedMode =
+        fallbackMode === "EXACT_CODE"
+          ? "EXACT_CODE"
+          : fallbackMode === "RUN_OUTPUT"
+            ? "RUN_OUTPUT"
+            : "CODE_INCLUDES";
+
+      const validators = Array.isArray(item?.validators)
+        ? item.validators
+            .map((validator, validatorIndex) => ({
+              id: String(validator?.id || `step-${index + 1}-validator-${validatorIndex + 1}`),
+              name: String(validator?.name || `Check ${validatorIndex + 1}`),
+              mode: String(validator?.mode || normalizedMode || "CODE_INCLUDES").toUpperCase(),
+              input: String(validator?.input || ""),
+              expectedOutput: String(
+                validator?.expected_output !== undefined
+                  ? validator.expected_output
+                  : validator?.expectedOutput || fallbackExpected,
+              ),
+              visibility:
+                String(validator?.visibility || "VISIBLE").toUpperCase() === "HIDDEN"
+                  ? "HIDDEN"
+                  : "VISIBLE",
+              comparisonMode:
+                String(validator?.comparison_mode || validator?.comparisonMode || "EXACT").toUpperCase() ===
+                "INCLUDES"
+                  ? "INCLUDES"
+                  : String(validator?.comparison_mode || validator?.comparisonMode || "EXACT").toUpperCase() ===
+                      "REGEX"
+                    ? "REGEX"
+                    : "EXACT",
+            }))
+            .filter((validator) => validator.expectedOutput !== "")
+        : [];
+
+      const fallbackValidators =
+        validators.length > 0
+          ? validators
+          : [
+              {
+                id: `step-${index + 1}-default-validator`,
+                name: "Step check",
+                mode: normalizedMode,
+                input: String(item?.input || ""),
+                expectedOutput: String(fallbackExpected),
+                visibility:
+                  String(item?.visibility || "VISIBLE").toUpperCase() === "HIDDEN"
+                    ? "HIDDEN"
+                    : "VISIBLE",
+                comparisonMode:
+                  String(item?.comparison_mode || item?.comparisonMode || "EXACT").toUpperCase() === "INCLUDES"
+                    ? "INCLUDES"
+                    : String(item?.comparison_mode || item?.comparisonMode || "EXACT").toUpperCase() === "REGEX"
+                      ? "REGEX"
+                      : "EXACT",
+              },
+            ].filter((validator) => validator.expectedOutput !== "");
+
+      return {
+        id: String(item?.id || `${language}-step-${index + 1}`),
+        stepNumber: Number(item?.step_number || item?.stepNumber || index + 1),
+        title: String(item?.title || `Step ${index + 1}`),
+        instruction: String(item?.instruction || item?.instructions || ""),
+        starterCode: String(item?.starter_code || item?.starterCode || ""),
+        validators: fallbackValidators,
+      };
+    })
+    .filter((item) => item.validators.length > 0)
+    .sort((a, b) => a.stepNumber - b.stepNumber);
+}
+
+function normalizeCodingTestsForLanguage(asset, language) {
+  const fromAsset = Array.isArray(asset.test_cases?.[language]) ? asset.test_cases[language] : [];
+  const normalized = fromAsset
+    .map((testCase, index) => ({
+      id: String(testCase.id || `${language}-tc-${index + 1}`),
+      name: String(testCase.name || `Test #${index + 1}`),
+      input: String(testCase.input || ""),
+      expectedOutput: String(
+        testCase.expected_output !== undefined ? testCase.expected_output : testCase.expectedOutput || "",
+      ),
+      visibility: String(testCase.visibility || "VISIBLE").toUpperCase() === "HIDDEN" ? "HIDDEN" : "VISIBLE",
+      comparisonMode:
+        String(testCase.comparison_mode || testCase.comparisonMode || "EXACT").toUpperCase() === "INCLUDES"
+          ? "INCLUDES"
+          : String(testCase.comparison_mode || testCase.comparisonMode || "EXACT").toUpperCase() === "REGEX"
+            ? "REGEX"
+            : "EXACT",
+    }))
+    .filter((item) => item.expectedOutput !== "");
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const fallbackExpected = String(asset.expected_output?.[language] || "");
+  if (!fallbackExpected) return [];
+  return [
+    {
+      id: `${language}-default-1`,
+      name: "Default output check",
+      input: "",
+      expectedOutput: fallbackExpected,
+      visibility: "VISIBLE",
+      comparisonMode: "EXACT",
+    },
+  ];
+}
+
+function compareCodingOutput(actualOutput, expectedOutput, comparisonMode) {
+  const actual = String(actualOutput || "").trim();
+  const expected = String(expectedOutput || "").trim();
+
+  if (comparisonMode === "INCLUDES") {
+    return actual.includes(expected);
+  }
+  if (comparisonMode === "REGEX") {
+    try {
+      return new RegExp(expected).test(actual);
+    } catch (_error) {
+      return false;
+    }
+  }
+  return actual === expected;
+}
+
+function compareCodingSource(sourceCode, expectedOutput, mode, comparisonMode) {
+  const source = String(sourceCode || "").trim();
+  const expected = String(expectedOutput || "").trim();
+
+  if (mode === "EXACT_CODE") {
+    return source === expected;
+  }
+
+  if (comparisonMode === "INCLUDES" || mode === "CODE_INCLUDES") {
+    return source.includes(expected);
+  }
+
+  if (comparisonMode === "REGEX") {
+    try {
+      return new RegExp(expected).test(source);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  return source === expected;
+}
+
+async function executeJudge0Code({ language, sourceCode, stdin }) {
+  const languageId = JUDGE0_LANGUAGE_IDS[String(language || "").toLowerCase()];
+  if (!languageId) {
+    throw new ApiError(400, `Unsupported language: ${language}`);
+  }
+
+  const response = await fetch(`${JUDGE0_BASE_URL}/submissions?wait=true`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      language_id: languageId,
+      source_code: sourceCode,
+      stdin: stdin || "",
+    }),
+  });
+
+  if (!response.ok) {
+    throw new ApiError(502, "Coding runner unavailable");
+  }
+
+  const payload = await response.json();
+  const stdout = String(payload.stdout || "");
+  const stderr = String(payload.stderr || "");
+  const compileOutput = String(payload.compile_output || "");
+  const statusDescription = String(payload.status?.description || "");
+  const actualOutput = stdout || compileOutput || stderr || statusDescription;
+
+  return {
+    actualOutput,
+    stderr,
+    compileOutput,
+    statusDescription,
+    runtimeSeconds: Number(payload.time || 0),
+    memoryKb: Number(payload.memory || 0),
+    hasExecutionError: Boolean(stderr || compileOutput),
+  };
+}
+
+function getCodingSubmissionStatus(submissionId) {
+  const existing = codingSubmissionStore.get(submissionId);
+  if (!existing) {
+    throw new ApiError(404, "Coding submission not found");
+  }
+  return existing;
+}
+
+async function processCodingSubmission(submissionId) {
+  const submission = getCodingSubmissionStatus(submissionId);
+  submission.status = "RUNNING";
+  submission.updatedAt = new Date().toISOString();
+
+  try {
+    const { lesson } = await ensureLearnerOwnsCodingLesson(submission.userId, submission.lessonId);
+    const asset = normalizeCodingAsset(lesson.codingStarterCode);
+    const tests = normalizeCodingTestsForLanguage(asset, submission.language);
+    if (!tests.length) {
+      throw new ApiError(400, "No test cases configured for this language");
+    }
+
+    const resultItems = [];
+    for (const testCase of tests) {
+      const run = await executeJudge0Code({
+        language: submission.language,
+        sourceCode: submission.sourceCode,
+        stdin: testCase.input,
+      });
+      const passed = !run.hasExecutionError && compareCodingOutput(run.actualOutput, testCase.expectedOutput, testCase.comparisonMode);
+      resultItems.push({
+        id: testCase.id,
+        name: testCase.name,
+        input: testCase.input,
+        expectedOutput: testCase.expectedOutput,
+        actualOutput: run.actualOutput,
+        visibility: testCase.visibility,
+        comparisonMode: testCase.comparisonMode,
+        passed,
+        runtimeSeconds: run.runtimeSeconds,
+        memoryKb: run.memoryKb,
+        statusDescription: run.statusDescription,
+        stderr: run.stderr,
+        compileOutput: run.compileOutput,
+      });
+    }
+
+    const allPassed = resultItems.every((item) => item.passed);
+    const visibleResults = resultItems
+      .filter((item) => item.visibility === "VISIBLE")
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        input: item.input,
+        expectedOutput: item.expectedOutput,
+        actualOutput: item.actualOutput,
+        comparisonMode: item.comparisonMode,
+        passed: item.passed,
+        runtimeSeconds: item.runtimeSeconds,
+        memoryKb: item.memoryKb,
+        statusDescription: item.statusDescription,
+        stderr: item.stderr,
+        compileOutput: item.compileOutput,
+      }));
+    const hidden = resultItems.filter((item) => item.visibility === "HIDDEN");
+
+    submission.status = "COMPLETED";
+    submission.summary = {
+      allPassed,
+      totalTests: resultItems.length,
+      passedTests: resultItems.filter((item) => item.passed).length,
+      visibleResults,
+      hiddenSummary: {
+        total: hidden.length,
+        passed: hidden.filter((item) => item.passed).length,
+      },
+    };
+    submission.updatedAt = new Date().toISOString();
+
+    if (submission.mode === "SUBMIT" && allPassed) {
+      await updateLessonProgress(submission.userId, {
+        lessonId: lesson.id,
+        progressPct: 100,
+        isCompleted: true,
+        lastPosition: 0,
+      });
+    }
+  } catch (error) {
+    submission.status = "FAILED";
+    submission.updatedAt = new Date().toISOString();
+    submission.error = error instanceof ApiError ? error.message : "Failed to run coding submission";
+  }
 }
 
 function getQuizAttemptSettingKey(userId, lessonId) {
@@ -1171,6 +1554,274 @@ router.post("/course-curriculums/add-progress", authenticate, async (req, res, n
     return next(error);
   }
 });
+
+router.post("/course-curriculums/:lessonId/coding-submissions", authenticate, authorize("LEARNER"), async (req, res, next) => {
+  try {
+    const { lesson } = await ensureLearnerOwnsCodingLesson(req.user.id, req.params.lessonId);
+    const language = String(req.body.language || "").trim().toLowerCase();
+    const sourceCode = String(req.body.sourceCode || "");
+    const mode = String(req.body.mode || "RUN").toUpperCase() === "SUBMIT" ? "SUBMIT" : "RUN";
+
+    if (!language || !JUDGE0_LANGUAGE_IDS[language]) {
+      throw new ApiError(400, "Unsupported coding language");
+    }
+    if (!sourceCode.trim()) {
+      throw new ApiError(400, "Source code is required");
+    }
+
+    const submissionId = randomUUID();
+    codingSubmissionStore.set(submissionId, {
+      id: submissionId,
+      lessonId: lesson.id,
+      userId: req.user.id,
+      language,
+      sourceCode,
+      mode,
+      status: "QUEUED",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      summary: null,
+      error: null,
+    });
+
+    setTimeout(() => {
+      processCodingSubmission(submissionId).catch(() => {});
+    }, 0);
+
+    return res.status(202).json({
+      data: {
+        submissionId,
+        status: "QUEUED",
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/course-curriculums/:lessonId/coding-step-check", authenticate, authorize("LEARNER"), async (req, res, next) => {
+  try {
+    const { lesson } = await ensureLearnerOwnsCodingLesson(req.user.id, req.params.lessonId);
+    const language = String(req.body.language || "").trim().toLowerCase();
+    const sourceCode = String(req.body.sourceCode || "");
+    const requestedStepNumber = Number(req.body.stepNumber || 1);
+
+    if (!language) {
+      throw new ApiError(400, "Language is required");
+    }
+    if (!sourceCode.trim()) {
+      throw new ApiError(400, "Source code is required");
+    }
+    if (!Number.isFinite(requestedStepNumber) || requestedStepNumber < 1) {
+      throw new ApiError(400, "Valid step number is required");
+    }
+
+    const asset = normalizeCodingAsset(lesson.codingStarterCode);
+    const steps = normalizeCodingStepsForLanguage(asset, language);
+    if (!steps.length) {
+      throw new ApiError(400, "No step challenges configured for this language");
+    }
+
+    const activeStep = steps.find((item) => item.stepNumber === requestedStepNumber);
+    if (!activeStep) {
+      throw new ApiError(404, "Step challenge not found");
+    }
+
+    const results = [];
+    for (const validator of activeStep.validators) {
+      if (validator.mode === "RUN_OUTPUT") {
+        if (!JUDGE0_LANGUAGE_IDS[language]) {
+          throw new ApiError(
+            400,
+            `RUN_OUTPUT validation is not supported for ${language}. Use CODE_INCLUDES or EXACT_CODE.`,
+          );
+        }
+        const run = await executeJudge0Code({
+          language,
+          sourceCode,
+          stdin: validator.input,
+        });
+        const passed =
+          !run.hasExecutionError &&
+          compareCodingOutput(run.actualOutput, validator.expectedOutput, validator.comparisonMode);
+        results.push({
+          id: validator.id,
+          name: validator.name,
+          mode: validator.mode,
+          visibility: validator.visibility,
+          expectedOutput: validator.expectedOutput,
+          actualOutput: run.actualOutput,
+          passed,
+          stderr: run.stderr,
+          compileOutput: run.compileOutput,
+          statusDescription: run.statusDescription,
+        });
+      } else {
+        const passed = compareCodingSource(
+          sourceCode,
+          validator.expectedOutput,
+          validator.mode,
+          validator.comparisonMode,
+        );
+        results.push({
+          id: validator.id,
+          name: validator.name,
+          mode: validator.mode,
+          visibility: validator.visibility,
+          expectedOutput: validator.expectedOutput,
+          actualOutput: sourceCode,
+          passed,
+          stderr: "",
+          compileOutput: "",
+          statusDescription: passed ? "Matched source" : "Source mismatch",
+        });
+      }
+    }
+
+    const allPassed = results.every((item) => item.passed);
+    const currentStepIndex = steps.findIndex((item) => item.stepNumber === activeStep.stepNumber);
+    const nextStep = allPassed ? steps[currentStepIndex + 1] || null : activeStep;
+    const isFinalStep = currentStepIndex === steps.length - 1;
+    const lessonCompleted = allPassed && isFinalStep;
+
+    if (lessonCompleted) {
+      await updateLessonProgress(req.user.id, {
+        lessonId: lesson.id,
+        progressPct: 100,
+        isCompleted: true,
+        lastPosition: 0,
+      });
+    }
+
+    const visibleResults = results
+      .filter((item) => item.visibility === "VISIBLE")
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        mode: item.mode,
+        expectedOutput: item.expectedOutput,
+        actualOutput: item.actualOutput,
+        passed: item.passed,
+        statusDescription: item.statusDescription,
+      }));
+    const hiddenResults = results.filter((item) => item.visibility === "HIDDEN");
+
+    return res.json({
+      data: {
+        lessonId: lesson.id,
+        language,
+        step: {
+          id: activeStep.id,
+          stepNumber: activeStep.stepNumber,
+          title: activeStep.title,
+          instruction: activeStep.instruction,
+        },
+        summary: {
+          allPassed,
+          totalChecks: results.length,
+          passedChecks: results.filter((item) => item.passed).length,
+          visibleResults,
+          hiddenSummary: {
+            total: hiddenResults.length,
+            passed: hiddenResults.filter((item) => item.passed).length,
+          },
+        },
+        next: nextStep
+          ? {
+              stepNumber: nextStep.stepNumber,
+              title: nextStep.title,
+              instruction: nextStep.instruction,
+              starterCode: nextStep.starterCode,
+            }
+          : null,
+        lessonCompleted,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post(
+  "/course-curriculums/:lessonId/coding-submit",
+  authenticate,
+  authorize("LEARNER"),
+  async (req, res, next) => {
+    try {
+      const { lesson } = await ensureLearnerOwnsCodingLesson(req.user.id, req.params.lessonId);
+      const language = String(req.body.language || "").trim().toLowerCase();
+      const sourceCode = String(req.body.sourceCode || "");
+      const action = String(req.body.action || req.body.mode || "submit").toUpperCase();
+
+      if (!language) {
+        throw new ApiError(400, "Language is required");
+      }
+      if (!sourceCode.trim()) {
+        throw new ApiError(400, "Source code is required");
+      }
+
+      const submissionId = randomUUID();
+      const now = new Date().toISOString();
+      const submission = {
+        id: submissionId,
+        userId: req.user.id,
+        lessonId: req.params.lessonId,
+        language,
+        sourceCode,
+        mode: action === "RUN" ? "RUN" : "SUBMIT",
+        status: "QUEUED",
+        summary: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      codingSubmissionStore.set(submissionId, submission);
+      // Start processing asynchronously
+      setImmediate(() => {
+        try {
+          processCodingSubmission(submissionId);
+        } catch (_err) {
+          // swallow - processCodingSubmission handles its own errors
+        }
+      });
+
+      return res.status(202).json({ data: { submissionId, status: submission.status } });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.get(
+  "/course-curriculums/:lessonId/coding-submissions/:submissionId",
+  authenticate,
+  authorize("LEARNER"),
+  async (req, res, next) => {
+    try {
+      await ensureLearnerOwnsCodingLesson(req.user.id, req.params.lessonId);
+      const submission = getCodingSubmissionStatus(req.params.submissionId);
+      if (submission.userId !== req.user.id || submission.lessonId !== req.params.lessonId) {
+        throw new ApiError(403, "Not allowed to view this submission");
+      }
+
+      return res.json({
+        data: {
+          submissionId: submission.id,
+          status: submission.status,
+          mode: submission.mode,
+          language: submission.language,
+          summary: submission.summary,
+          error: submission.error,
+          createdAt: submission.createdAt,
+          updatedAt: submission.updatedAt,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.get("/course-curriculums/:lessonId/quiz-attempt", authenticate, authorize("LEARNER"), async (req, res, next) => {
   try {

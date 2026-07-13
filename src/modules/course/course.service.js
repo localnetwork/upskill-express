@@ -74,6 +74,40 @@ function safeParseJson(value) {
   }
 }
 
+function normalizeVisibleCodingTests(codingPayload) {
+  const testCasesByLanguage = codingPayload?.test_cases;
+  if (!testCasesByLanguage || typeof testCasesByLanguage !== "object") {
+    return {};
+  }
+
+  const output = {};
+  for (const [language, items] of Object.entries(testCasesByLanguage)) {
+    const normalized = Array.isArray(items)
+      ? items
+          .map((item, index) => ({
+            id: String(item?.id || `${language}-tc-${index + 1}`),
+            name: String(item?.name || `Test #${index + 1}`),
+            input: String(item?.input || ""),
+            expected_output: String(
+              item?.expected_output !== undefined ? item.expected_output : item?.expectedOutput || "",
+            ),
+            comparison_mode: String(item?.comparison_mode || item?.comparisonMode || "EXACT").toUpperCase(),
+            visibility: String(item?.visibility || "VISIBLE").toUpperCase(),
+          }))
+          .filter((item) => item.visibility !== "HIDDEN")
+      : [];
+    output[language] = normalized;
+  }
+  return output;
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
 const ARTICLE_WORDS_PER_MINUTE = 220;
 const QUIZ_BASE_SECONDS = 30;
 const QUIZ_SECONDS_PER_QUESTION = 75;
@@ -1498,6 +1532,14 @@ export async function getCourseForLearner(userId, slug) {
                         parsedStarterCode?.starter_code || parsedStarterCode || {},
                       expected_output: parsedStarterCode?.expected_output || {},
                       languages: parsedStarterCode?.languages || [],
+                      test_cases_visible: normalizeVisibleCodingTests(parsedStarterCode),
+                      step_challenges:
+                        parsedStarterCode?.step_challenges &&
+                        typeof parsedStarterCode.step_challenges === "object"
+                          ? parsedStarterCode.step_challenges
+                          : {},
+                      checklist: normalizeStringArray(parsedStarterCode?.checklist),
+                      hints: normalizeStringArray(parsedStarterCode?.hints),
                     }
                 : lesson.videoUrl || lesson.type === "VIDEO"
                 ? {
