@@ -9,8 +9,34 @@ function getOptional(payload, key) {
   return payload[key] === undefined ? undefined : payload[key];
 }
 
+function normalizeQueryString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeRoleFilter(rawRole) {
+  const normalizedRole = normalizeQueryString(rawRole).toUpperCase();
+  if (!normalizedRole || normalizedRole === "ALL") return null;
+
+  const allowedRoles = new Set(["ADMIN", "EDUCATOR", "LEARNER"]);
+  return allowedRoles.has(normalizedRole) ? normalizedRole : null;
+}
+
+function normalizeStatusFilter(rawStatus) {
+  const normalizedStatus = normalizeQueryString(rawStatus).toUpperCase();
+  if (!normalizedStatus || normalizedStatus === "ALL") return null;
+
+  const allowedStatuses = new Set(["ACTIVE", "SUSPENDED", "PENDING"]);
+  return allowedStatuses.has(normalizedStatus) ? normalizedStatus : null;
+}
+
 function mapUser(user) {
   const roles = user.roles?.map((role) => role.role.name) || [];
+  const status = !user.isActive
+    ? "Suspended"
+    : user.emailVerifiedAt
+      ? "Active"
+      : "Pending";
+
   return {
     id: user.id,
     email: user.email,
@@ -22,6 +48,7 @@ function mapUser(user) {
     isActive: user.isActive,
     is_suspended: !user.isActive,
     verified: Boolean(user.emailVerifiedAt),
+    status,
     headline: user.headline || "",
     biography: user.biography || "",
     link_website: user.link_website || "",
@@ -118,9 +145,13 @@ export async function changePassword(userId, oldPassword, newPassword) {
 
 export async function listUsers(query) {
   const { page, limit, skip } = getPagination(query);
+  const search = normalizeQueryString(query.search) || null;
+  const role = normalizeRoleFilter(query.role);
+  const status = normalizeStatusFilter(query.status);
+
   const [data, total] = await Promise.all([
-    findMany({ skip, limit, search: query.search || null }),
-    countMany(query.search || null),
+    findMany({ skip, limit, search, role, status }),
+    countMany({ search, role, status }),
   ]);
   return toPagedResult(
     data.map(mapUser),

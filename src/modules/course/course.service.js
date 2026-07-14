@@ -756,6 +756,16 @@ function mapCourseDetails(course, goals) {
     ? course.reviews.reduce((acc, review) => acc + review.rating, 0) /
       course.reviews.length
     : 0;
+  const totalVideoCount = course.sections.reduce(
+    (acc, section) =>
+      acc + section.lessons.filter((lesson) => lesson.type === "VIDEO").length,
+    0,
+  );
+  const totalArticleCount = course.sections.reduce(
+    (acc, section) =>
+      acc + section.lessons.filter((lesson) => lesson.type === "RESOURCE").length,
+    0,
+  );
 
   return {
     ...course,
@@ -779,6 +789,84 @@ function mapCourseDetails(course, goals) {
         }
       : null,
     category_ids: course.category ? [{ category_id: course.category.id }] : [],
+    author: {
+      data: {
+        id: course.educator?.id || null,
+        username: course.educator?.username || "",
+        firstname: course.educator?.firstName || "",
+        lastname: course.educator?.lastName || "",
+        headline: course.educator?.headline || "",
+        biography: course.educator?.biography || "",
+        user_picture: null,
+      },
+    },
+    sections: course.sections.map((section) => ({
+      id: section.id,
+      uuid: section.id,
+      title: section.title,
+      curriculums: section.lessons.map((lesson) => {
+        const parsedQuizQuestions = safeParseJson(lesson.quizQuestions);
+        const parsedStarterCode = safeParseJson(lesson.codingStarterCode);
+
+        return {
+          id: lesson.id,
+          uuid: lesson.id,
+          title: lesson.title,
+          curriculum_resource_type:
+            lesson.type === "QUIZ"
+              ? "quiz"
+              : lesson.type === "CODING_EXERCISE"
+                ? "coding_exercise"
+                : lesson.videoUrl || lesson.type === "VIDEO"
+                  ? "video"
+                  : lesson.assignmentText || lesson.type === "RESOURCE"
+                    ? "article"
+                    : "null",
+          estimated_duration: estimateLessonDurationSeconds(lesson),
+          curriculum_description: lesson.description || "",
+          asset:
+            lesson.type === "QUIZ"
+              ? {
+                  questions: Array.isArray(parsedQuizQuestions)
+                    ? parsedQuizQuestions
+                    : parsedQuizQuestions?.questions || [],
+                }
+              : lesson.type === "CODING_EXERCISE"
+                ? {
+                    instructions: lesson.codingInstructions || "",
+                    starter_code:
+                      parsedStarterCode?.starter_code || parsedStarterCode || {},
+                    expected_output: parsedStarterCode?.expected_output || {},
+                    languages: parsedStarterCode?.languages || [],
+                    test_cases_visible: normalizeVisibleCodingTests(parsedStarterCode),
+                    step_challenges:
+                      parsedStarterCode?.step_challenges &&
+                      typeof parsedStarterCode.step_challenges === "object"
+                        ? parsedStarterCode.step_challenges
+                        : {},
+                    checklist: normalizeStringArray(parsedStarterCode?.checklist),
+                    hints: normalizeStringArray(parsedStarterCode?.hints),
+                  }
+                : lesson.videoUrl || lesson.type === "VIDEO"
+                  ? {
+                      id: lesson.id,
+                      path: `/stream.php?id=${encodeURIComponent(lesson.id)}`,
+                    }
+                  : lesson.assignmentText
+                    ? { id: lesson.id, content: lesson.assignmentText }
+                    : null,
+        };
+      }),
+    })),
+    resources_count: {
+      section_count: course.sections.length,
+      curriculum_count: course.sections.reduce(
+        (acc, section) => acc + section.lessons.length,
+        0,
+      ),
+      video_count: totalVideoCount,
+      article_count: totalArticleCount,
+    },
     goals,
     averageRating: Number(avgRating.toFixed(2)),
     reviewsCount: course.reviews.length,
@@ -792,7 +880,16 @@ export async function getCourseForManagement(user, slug) {
       deletedAt: null,
     },
     include: {
-      educator: { select: { id: true, username: true } },
+      educator: {
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          headline: true,
+          biography: true,
+        },
+      },
       category: true,
       level: true,
       priceTier: true,
@@ -1287,12 +1384,22 @@ export async function listAuthoredCourses(userId, query) {
   return toPagedResult(withStats, total, page, limit);
 }
 
-export async function getCourseRoute(slug, userId) {
+function canViewCourseRoute(course, actor) {
+  if (!course || course.deletedAt) return false;
+  if (course.workflowStatus === "PUBLISHED") return true;
+
+  if (!actor?.id) return false;
+  if (Array.isArray(actor.roles) && actor.roles.includes("ADMIN")) return true;
+  if (course.educatorId === actor.id) return true;
+
+  return false;
+}
+
+export async function getCourseRoute(slug, actor = null) {
   const course = await prisma.course.findFirst({
     where: {
       slug,
       deletedAt: null,
-      workflowStatus: "PUBLISHED",
     },
     include: {
       educator: { select: { id: true, username: true, firstName: true, lastName: true } },
@@ -1320,19 +1427,22 @@ export async function getCourseRoute(slug, userId) {
   if (!course) {
     throw new ApiError(404, "Course not found");
   }
+  if (!canViewCourseRoute(course, actor)) {
+    throw new ApiError(404, "Course not found");
+  }
 
-  const [isEnrolled, isInCart, isInWishlist] = userId
+  const [isEnrolled, isInCart, isInWishlist] = actor?.id
     ? await Promise.all([
-        prisma.enrollment.findFirst({ where: { userId, courseId: course.id } }),
+        prisma.enrollment.findFirst({ where: { userId: actor.id, courseId: course.id } }),
         prisma.cartItem.findFirst({
           where: {
             courseId: course.id,
-            cart: { userId },
+            cart: { userId: actor.id },
           },
         }),
         prisma.wishlist.findFirst({
           where: {
-            userId,
+            userId: actor.id,
             courseId: course.id,
           },
         }),
@@ -1401,6 +1511,7 @@ export async function getCourseRoute(slug, userId) {
     promo_video: promoVideo,
     cover_image: coverImage,
     goals,
+    workflow_status: course.workflowStatus,
     is_enrolled: Boolean(isEnrolled),
     is_in_cart: Boolean(isInCart),
     is_in_wishlist: Boolean(isInWishlist),

@@ -180,7 +180,7 @@ export async function listAuthoredCoursesController(req, res) {
 }
 
 export async function getCourseRouteController(req, res) {
-  const data = await getCourseRoute(req.params.slug, req.user?.id);
+  const data = await getCourseRoute(req.params.slug, req.user || null);
   return res.json({ ...data, uuid: data.id });
 }
 

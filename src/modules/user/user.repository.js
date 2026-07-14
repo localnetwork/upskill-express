@@ -1,5 +1,43 @@
 import { prisma } from "../../shared/database/prisma.js";
 
+function buildUserListWhere({ search, role, status } = {}) {
+  const where = {
+    deletedAt: null,
+  };
+
+  if (search) {
+    where.OR = [
+      { id: { contains: search, mode: "insensitive" } },
+      { email: { contains: search, mode: "insensitive" } },
+      { username: { contains: search, mode: "insensitive" } },
+      { firstName: { contains: search, mode: "insensitive" } },
+      { lastName: { contains: search, mode: "insensitive" } },
+    ];
+  }
+
+  if (role) {
+    where.roles = {
+      some: {
+        role: {
+          name: role,
+        },
+      },
+    };
+  }
+
+  if (status === "ACTIVE") {
+    where.isActive = true;
+    where.emailVerifiedAt = { not: null };
+  } else if (status === "SUSPENDED") {
+    where.isActive = false;
+  } else if (status === "PENDING") {
+    where.isActive = true;
+    where.emailVerifiedAt = null;
+  }
+
+  return where;
+}
+
 export function findByEmail(email) {
   return prisma.user.findUnique({
     where: { email },
@@ -29,17 +67,9 @@ export function findById(id) {
   });
 }
 
-export function findMany({ skip, limit, search }) {
+export function findMany({ skip, limit, search, role, status }) {
   return prisma.user.findMany({
-    where: {
-      deletedAt: null,
-      OR: search
-        ? [
-            { email: { contains: search, mode: "insensitive" } },
-            { username: { contains: search, mode: "insensitive" } },
-          ]
-        : undefined,
-    },
+    where: buildUserListWhere({ search, role, status }),
     skip,
     take: limit,
     orderBy: { createdAt: "desc" },
@@ -51,17 +81,9 @@ export function findMany({ skip, limit, search }) {
   });
 }
 
-export function countMany(search) {
+export function countMany({ search, role, status }) {
   return prisma.user.count({
-    where: {
-      deletedAt: null,
-      OR: search
-        ? [
-            { email: { contains: search, mode: "insensitive" } },
-            { username: { contains: search, mode: "insensitive" } },
-          ]
-        : undefined,
-    },
+    where: buildUserListWhere({ search, role, status }),
   });
 }
 
