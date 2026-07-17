@@ -7,11 +7,16 @@ import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
   activityReportController,
   approveCourseController,
+  getPlatformSettingsController,
   listAdminCoursesController,
   rejectCourseController,
   revenueReportController,
+  updatePlatformSettingsController,
 } from "./admin.controller.js";
-import { reviewCourseValidator } from "./admin.validator.js";
+import {
+  reviewCourseValidator,
+  updatePlatformSettingsValidator,
+} from "./admin.validator.js";
 
 const router = Router();
 
@@ -47,6 +52,12 @@ router.get(
     tags: ["admin-revenue", "payouts", "orders"],
   }),
   asyncHandler(revenueReportController),
+);
+router.get("/platform-settings", asyncHandler(getPlatformSettingsController));
+router.put(
+  "/platform-settings",
+  validate(updatePlatformSettingsValidator),
+  asyncHandler(updatePlatformSettingsController),
 );
 
 export default router;

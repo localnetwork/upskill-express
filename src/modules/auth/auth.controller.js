@@ -1,4 +1,12 @@
-import { forgotPassword, login, refreshTokens, register, resetPassword, verifyEmail } from "./auth.service.js";
+import {
+  forgotPassword,
+  googleAuth,
+  login,
+  refreshTokens,
+  register,
+  resetPassword,
+  verifyEmail,
+} from "./auth.service.js";
 
 export async function registerController(req, res) {
   const result = await register(req.body);
@@ -12,6 +20,17 @@ export async function loginController(req, res) {
   const result = await login(req.body);
   return res.status(200).json({
     message: "Login successful",
+    data: result,
+  });
+}
+
+export async function googleAuthController(req, res) {
+  const result = await googleAuth(req.body);
+  return res.status(200).json({
+    message:
+      req.body.intent === "register"
+        ? "Google registration successful"
+        : "Google login successful",
     data: result,
   });
 }

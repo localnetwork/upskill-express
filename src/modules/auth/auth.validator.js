@@ -12,6 +12,12 @@ export const loginValidator = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
+export const googleAuthValidator = z.object({
+  idToken: z.string().min(1, "Google credential is required"),
+  intent: z.enum(["login", "register"]),
+  mode: z.enum(["student", "instructor"]).optional(),
+});
+
 export const refreshValidator = z.object({
   refreshToken: z.string().min(1),
 });

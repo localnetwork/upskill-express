@@ -25,7 +25,10 @@ import {
 } from "./src/shared/middleware/cache.middleware.js";
 import { createDdosProtection } from "./src/shared/middleware/ddos.middleware.js";
 import { createRateLimiter } from "./src/shared/middleware/rate-limit.middleware.js";
-import { errorHandler, notFound } from "./src/shared/middleware/error.middleware.js";
+import {
+  errorHandler,
+  notFound,
+} from "./src/shared/middleware/error.middleware.js";
 import { env } from "./src/shared/config/env.js";
 import { prisma } from "./src/shared/database/prisma.js";
 
@@ -35,7 +38,7 @@ app.use(cors({ origin: env.corsOrigin }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cacheInvalidationOnMutation());
-app.use("/api", ddosProtection);
+// app.use("/api", ddosProtection);
 app.use(
   "/api",
   createRateLimiter({
@@ -80,21 +83,21 @@ app.get(
     tags: ["course-price-tiers"],
   }),
   async (_req, res, next) => {
-  try {
-    const tiers = await prisma.coursePriceTier.findMany({
-      orderBy: { price: "asc" },
-    });
-    return res.json(
-      tiers.map((tier) => ({
-        id: tier.id,
-        title: tier.title,
-        price: String(tier.price),
-      })),
-    );
-  } catch (error) {
-    return next(error);
-  }
-},
+    try {
+      const tiers = await prisma.coursePriceTier.findMany({
+        orderBy: { price: "asc" },
+      });
+      return res.json(
+        tiers.map((tier) => ({
+          id: tier.id,
+          title: tier.title,
+          price: String(tier.price),
+        })),
+      );
+    } catch (error) {
+      return next(error);
+    }
+  },
 );
 
 app.get(
@@ -105,21 +108,21 @@ app.get(
     tags: ["course-levels"],
   }),
   async (_req, res, next) => {
-  try {
-    const levels = await prisma.courseLevel.findMany({
-      orderBy: [{ weight: "asc" }, { createdAt: "asc" }],
-    });
-    return res.json(
-      levels.map((level) => ({
-        id: level.id,
-        title: level.title,
-        weight: level.weight,
-      })),
-    );
-  } catch (error) {
-    return next(error);
-  }
-},
+    try {
+      const levels = await prisma.courseLevel.findMany({
+        orderBy: [{ weight: "asc" }, { createdAt: "asc" }],
+      });
+      return res.json(
+        levels.map((level) => ({
+          id: level.id,
+          title: level.title,
+          weight: level.weight,
+        })),
+      );
+    } catch (error) {
+      return next(error);
+    }
+  },
 );
 
 app.use(notFound);

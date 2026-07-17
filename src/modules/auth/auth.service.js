@@ -5,6 +5,8 @@ import { comparePassword, compareToken, hashPassword, hashToken, randomToken } f
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { createUser, findUserByEmail, findUserById, findUserByUsername, updateUser } from "./auth.repository.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import { env } from "../../shared/config/env.js";
+import axios from "axios";
 
 function getRoles(user) {
   return (user.roles || []).map((item) => item.role.name);
@@ -60,6 +62,75 @@ function normalizeRole(rawRole) {
   if (value === "2" || value === "EDUCATOR" || value === "INSTRUCTOR") return "EDUCATOR";
   if (value === "3" || value === "LEARNER" || value === "STUDENT") return "LEARNER";
   return "LEARNER";
+}
+
+function normalizeGoogleProfile(data) {
+  return {
+    email: String(data?.email || "").trim().toLowerCase(),
+    emailVerified: String(data?.email_verified || "").toLowerCase() === "true",
+    givenName: data?.given_name ? String(data.given_name).trim() : "",
+    familyName: data?.family_name ? String(data.family_name).trim() : "",
+    subject: data?.sub ? String(data.sub) : "",
+    audience: data?.aud ? String(data.aud) : "",
+  };
+}
+
+async function verifyGoogleIdToken(idToken) {
+  if (!env.googleClientId) {
+    throw new ApiError(500, "Missing GOOGLE_CLIENT_ID");
+  }
+
+  let response;
+  try {
+    response = await axios.get("https://oauth2.googleapis.com/tokeninfo", {
+      params: { id_token: idToken },
+      timeout: 10000,
+    });
+  } catch {
+    throw new ApiError(401, "Invalid Google credential");
+  }
+
+  const profile = normalizeGoogleProfile(response?.data || {});
+
+  if (!profile.email || !profile.subject) {
+    throw new ApiError(401, "Invalid Google credential");
+  }
+
+  if (!profile.emailVerified) {
+    throw new ApiError(401, "Google email is not verified");
+  }
+
+  if (profile.audience !== env.googleClientId) {
+    throw new ApiError(401, "Google credential does not match this app");
+  }
+
+  return profile;
+}
+
+function baseUsernameFromEmail(email) {
+  const localPart = String(email || "").split("@")[0] || "user";
+  const sanitized = localPart
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "")
+    .slice(0, 32);
+
+  if (sanitized.length >= 3) return sanitized;
+  return `user${Date.now().toString().slice(-6)}`;
+}
+
+async function generateUniqueUsername(email) {
+  const base = baseUsernameFromEmail(email);
+  const existingBase = await findUserByUsername(base);
+  if (!existingBase) return base;
+
+  for (let i = 0; i < 20; i += 1) {
+    const suffix = Math.floor(Math.random() * 9000 + 1000).toString();
+    const candidate = `${base.slice(0, 36)}${suffix}`;
+    const exists = await findUserByUsername(candidate);
+    if (!exists) return candidate;
+  }
+
+  throw new ApiError(500, "Unable to generate a unique username");
 }
 
 export async function register(payload) {
@@ -157,6 +228,90 @@ export async function login(payload) {
     accessToken,
     refreshToken,
     user: mapAuthUser(user),
+  };
+}
+
+export async function googleAuth(payload) {
+  const profile = await verifyGoogleIdToken(payload.idToken);
+  const roleName =
+    payload.mode === "instructor" ? "EDUCATOR" : "LEARNER";
+  const existingUser = await findUserByEmail(profile.email);
+
+  if (payload.intent === "login") {
+    if (!existingUser) {
+      throw new ApiError(
+        404,
+        "No account found for this Google email. Please register first.",
+      );
+    }
+    if (existingUser.deletedAt || !existingUser.isActive) {
+      throw new ApiError(403, "Account disabled");
+    }
+
+    const accessToken = signAccessToken(buildTokenPayload(existingUser));
+    const refreshToken = signRefreshToken(buildTokenPayload(existingUser));
+    const refreshTokenHash = await hashToken(refreshToken);
+    await updateUser(existingUser.id, { refreshTokenHash });
+
+    await recordActivityEvent({
+      eventType: "AUTH_LOGIN",
+      userId: existingUser.id,
+      metadata: { provider: "google" },
+      dedupeWindowSeconds: 5,
+    });
+
+    return {
+      accessToken,
+      refreshToken,
+      user: mapAuthUser(existingUser),
+    };
+  }
+
+  if (existingUser) {
+    throw new ApiError(
+      409,
+      "An account with this email already exists. Please log in with Google.",
+    );
+  }
+
+  const defaultRole = await ensureDefaultRole(roleName);
+  const username = await generateUniqueUsername(profile.email);
+  const passwordHash = await hashPassword(randomToken(40));
+
+  const user = await createUser({
+    email: profile.email,
+    username,
+    firstName: profile.givenName || null,
+    lastName: profile.familyName || null,
+    passwordHash,
+    verificationToken: null,
+    emailVerifiedAt: new Date(),
+    roles: {
+      create: [{ roleId: defaultRole.id }],
+    },
+  });
+
+  const tokenPayload = {
+    sub: user.id,
+    email: user.email,
+    roles: [roleName],
+  };
+  const accessToken = signAccessToken(tokenPayload);
+  const refreshToken = signRefreshToken(tokenPayload);
+  const refreshTokenHash = await hashToken(refreshToken);
+  await updateUser(user.id, { refreshTokenHash });
+
+  await recordActivityEvent({
+    eventType: "AUTH_REGISTER",
+    userId: user.id,
+    metadata: { role: roleName, provider: "google" },
+    dedupeWindowSeconds: 5,
+  });
+
+  return {
+    accessToken,
+    refreshToken,
+    user: mapAuthUser(user, [roleName]),
   };
 }
 

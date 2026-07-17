@@ -9,6 +9,8 @@ const envFilePath = path.resolve(
 
 dotenv.config({ path: envFilePath });
 
+const resolvedAutoPayoutIntervalMs = Number(process.env.AUTO_PAYOUT_INTERVAL_MS);
+
 export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: Number(process.env.PORT || 3000),
@@ -31,4 +33,12 @@ export const env = {
   cfEndpoint: process.env.CF_ENDPOINT || "",
   cfBucket: process.env.CF_BUCKET || "",
   cfPublicAccessUrl: process.env.CF_PUBLIC_ACCESS_URL || "",
+  googleClientId: process.env.GOOGLE_CLIENT_ID || "",
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+  autoPayoutEnabled:
+    String(process.env.AUTO_PAYOUT_ENABLED || "true").toLowerCase() === "true",
+  autoPayoutIntervalMs:
+    Number.isFinite(resolvedAutoPayoutIntervalMs) && resolvedAutoPayoutIntervalMs > 0
+      ? resolvedAutoPayoutIntervalMs
+      : 60 * 60 * 1000,
 };

@@ -6,7 +6,7 @@ export const connectPayoutAccountValidator = z.object({
 });
 
 export const requestPayoutValidator = z.object({
-  amount: z.number().positive().optional(),
+  amount: z.number().positive().min(500).optional(),
   note: z.string().optional(),
 });
 

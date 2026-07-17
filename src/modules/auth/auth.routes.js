@@ -5,6 +5,7 @@ import { createRateLimiter } from "../../shared/middleware/rate-limit.middleware
 import {
   emailVerificationValidator,
   forgotPasswordValidator,
+  googleAuthValidator,
   loginValidator,
   refreshValidator,
   registerValidator,
@@ -12,6 +13,7 @@ import {
 } from "./auth.validator.js";
 import {
   forgotPasswordController,
+  googleAuthController,
   loginController,
   refreshTokenController,
   registerController,
@@ -48,6 +50,12 @@ router.post(
   authStrictLimiter,
   validate(loginValidator),
   asyncHandler(loginController),
+);
+router.post(
+  "/google",
+  authStrictLimiter,
+  validate(googleAuthValidator),
+  asyncHandler(googleAuthController),
 );
 router.post(
   "/refresh",

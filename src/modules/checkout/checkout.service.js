@@ -10,12 +10,12 @@ import {
 } from "./paypal.service.js";
 import { createNotification } from "../notification/notification.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import { getPlatformCommerceSettings } from "../platform-settings/platform-settings.service.js";
 import {
   emitCheckoutStatusToUser,
   emitNotificationToUser,
 } from "../../shared/realtime/socket.js";
 
-const DEFAULT_CURRENCY = "PHP";
 const appBaseUrl = env.frontendUrl.replace(/\/$/, "");
 const checkoutOrderInclude = {
   items: {
@@ -164,8 +164,19 @@ async function finalizeCompletedPayPalOrderByProviderOrderId(
   originalError,
 ) {
   const paypalOrder = await getPayPalOrder(providerOrderId);
-  const isCompleted = paypalOrder?.status === "COMPLETED";
+  const normalizedStatus = String(paypalOrder?.status || "").toUpperCase();
+  const isCompleted = normalizedStatus === "COMPLETED";
   if (!isCompleted) {
+    if (["APPROVED", "CREATED", "SAVED"].includes(normalizedStatus)) {
+      await syncCreatedPayPalOrderRecord(providerOrderId, paypalOrder);
+      return null;
+    }
+
+    if (["VOIDED", "CANCELLED", "EXPIRED", "DECLINED"].includes(normalizedStatus)) {
+      await markCheckoutAsCancelledByProviderOrderId(providerOrderId, paypalOrder);
+      return null;
+    }
+
     throw originalError || new ApiError(400, "PayPal order is not completed");
   }
 
@@ -576,13 +587,6 @@ export async function cancelCheckoutOrder(userId, providerOrderId) {
   };
 }
 
-async function getPlatformFeePercent() {
-  const setting = await prisma.platformSetting.findUnique({
-    where: { key: "PLATFORM_FEE_PERCENT" },
-  });
-  return Number(setting?.value || 20);
-}
-
 async function resolveCoupon(code) {
   if (!code) return null;
   const coupon = await prisma.coupon.findFirst({
@@ -767,6 +771,10 @@ async function findExistingPendingCheckout(userId, courseIds = []) {
 }
 
 export async function createCheckoutOrder(userId, payload) {
+  const platformSettings = await getPlatformCommerceSettings();
+  const platformFeePercent = Number(platformSettings.platformFeePercent || 0);
+  const defaultCurrency = String(platformSettings.defaultCurrency || "PHP");
+
   const checkoutContext = await resolveCheckoutItems(userId, payload);
   const checkoutItems = checkoutContext.items;
   const courseIds = checkoutItems.map((item) => item.courseId);
@@ -806,12 +814,11 @@ export async function createCheckoutOrder(userId, payload) {
   const taxResult = await calculateTax({
     taxRegionCode: payload.taxRegionCode,
     taxableAmount,
+    taxPercentOverride: platformSettings.taxPercent,
   });
 
   const totalAmount = Number((taxableAmount + taxResult.taxAmount).toFixed(2));
   if (totalAmount <= 0) {
-    const platformFeePercent = await getPlatformFeePercent();
-
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
         data: {
@@ -822,7 +829,7 @@ export async function createCheckoutOrder(userId, payload) {
           discountAmount,
           taxAmount: taxResult.taxAmount,
           totalAmount,
-          currency: DEFAULT_CURRENCY,
+          currency: defaultCurrency,
           platformFeeAmount: 0,
           educatorEarnings: 0,
         },
@@ -891,7 +898,7 @@ export async function createCheckoutOrder(userId, payload) {
           taxableAmount,
           taxAmount: taxResult.taxAmount,
           totalAmount,
-          currency: DEFAULT_CURRENCY,
+          currency: defaultCurrency,
           breakdown: taxResult.breakdown,
         },
       });
@@ -949,13 +956,11 @@ export async function createCheckoutOrder(userId, payload) {
 
   const providerOrder = await createPayPalOrder({
     amount: totalAmount,
-    currency: DEFAULT_CURRENCY,
+    currency: defaultCurrency,
     referenceId: checkoutContext.referenceId,
     returnUrl: `${appBaseUrl}/checkout/success`,
     cancelUrl: `${appBaseUrl}/checkout/cancel`,
   });
-
-  const platformFeePercent = await getPlatformFeePercent();
 
   return prisma
     .$transaction(async (tx) => {
@@ -968,7 +973,7 @@ export async function createCheckoutOrder(userId, payload) {
           discountAmount,
           taxAmount: taxResult.taxAmount,
           totalAmount,
-          currency: DEFAULT_CURRENCY,
+          currency: defaultCurrency,
           platformFeeAmount: 0,
           educatorEarnings: 0,
         },
@@ -1040,7 +1045,7 @@ export async function createCheckoutOrder(userId, payload) {
           taxableAmount,
           taxAmount: taxResult.taxAmount,
           totalAmount,
-          currency: DEFAULT_CURRENCY,
+          currency: defaultCurrency,
           breakdown: taxResult.breakdown,
         },
       });
@@ -1448,6 +1453,7 @@ export async function handlePayPalWebhook(event) {
     );
     const providerOrderId = event.resource?.id;
     if (providerOrderId) {
+      await syncCreatedPayPalOrderRecord(providerOrderId, event.resource);
       try {
         const captureResponse = await capturePayPalOrder(providerOrderId);
         await finalizeCapturedPaymentByProviderOrderId(

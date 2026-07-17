@@ -1,6 +1,24 @@
 import { prisma } from "../../shared/database/prisma.js";
 
-export async function calculateTax({ taxRegionCode, taxableAmount }) {
+export async function calculateTax({ taxRegionCode, taxableAmount, taxPercentOverride }) {
+  const normalizedTaxPercent = Number(taxPercentOverride);
+  if (Number.isFinite(normalizedTaxPercent) && normalizedTaxPercent > 0) {
+    const taxAmount = Number(
+      ((Number(taxableAmount || 0) * normalizedTaxPercent) / 100).toFixed(2),
+    );
+    return {
+      region: null,
+      taxAmount,
+      breakdown: [
+        {
+          taxType: "PLATFORM_TAX",
+          ratePercent: Number(normalizedTaxPercent.toFixed(2)),
+          taxAmount,
+        },
+      ],
+    };
+  }
+
   if (!taxRegionCode) {
     return {
       region: null,

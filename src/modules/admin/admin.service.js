@@ -3,6 +3,10 @@ import { ApiError } from "../../shared/utils/ApiError.js";
 import { createNotification } from "../notification/notification.service.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { getAdminActivityReport } from "../analytics/analytics.service.js";
+import {
+  getPlatformCommerceSettings,
+  updatePlatformCommerceSettings,
+} from "../platform-settings/platform-settings.service.js";
 
 const COURSE_COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
 const COURSE_WORKFLOW_STATUSES = new Set([
@@ -242,4 +246,12 @@ export async function listAdminCourses(query = {}) {
   }));
 
   return toPagedResult(mappedRows, total, page, limit);
+}
+
+export async function getAdminPlatformSettings() {
+  return getPlatformCommerceSettings();
+}
+
+export async function updateAdminPlatformSettings(payload) {
+  return updatePlatformCommerceSettings(payload);
 }

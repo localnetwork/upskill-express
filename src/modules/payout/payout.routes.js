@@ -10,8 +10,10 @@ import {
   executePayoutController,
   listAllPayoutsController,
   listMyPayoutsController,
+  myPayoutSummaryController,
   rejectPayoutController,
   requestPayoutController,
+  runAutoPayoutController,
 } from "./payout.controller.js";
 import {
   connectPayoutAccountValidator,
@@ -34,6 +36,18 @@ router.post(
   authorize("EDUCATOR"),
   validate(requestPayoutValidator),
   asyncHandler(requestPayoutController),
+);
+router.get(
+  "/summary",
+  authenticate,
+  authorize("EDUCATOR"),
+  cacheGetResponse({
+    prefix: "payouts:summary",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["payouts"],
+  }),
+  asyncHandler(myPayoutSummaryController),
 );
 router.get(
   "/my",
@@ -59,6 +73,12 @@ router.get(
     tags: ["payouts"],
   }),
   asyncHandler(listAllPayoutsController),
+);
+router.post(
+  "/admin/auto-process",
+  authenticate,
+  authorize("ADMIN"),
+  asyncHandler(runAutoPayoutController),
 );
 router.post(
   "/admin/:payoutId/approve",

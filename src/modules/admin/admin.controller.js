@@ -1,9 +1,11 @@
 import {
   approveCourse,
+  getAdminPlatformSettings,
   getAdminActivityAnalytics,
   getRevenueReport,
   listAdminCourses,
   rejectCourse,
+  updateAdminPlatformSettings,
 } from "./admin.service.js";
 
 export async function approveCourseController(req, res) {
@@ -32,4 +34,14 @@ export async function listAdminCoursesController(req, res) {
     message: "Admin courses fetched",
     ...data,
   });
+}
+
+export async function getPlatformSettingsController(_req, res) {
+  const data = await getAdminPlatformSettings();
+  return res.json({ message: "Platform settings fetched", data });
+}
+
+export async function updatePlatformSettingsController(req, res) {
+  const data = await updateAdminPlatformSettings(req.body);
+  return res.json({ message: "Platform settings updated", data });
 }
