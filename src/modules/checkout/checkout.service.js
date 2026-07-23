@@ -10,12 +10,12 @@ import {
 } from "./paypal.service.js";
 import { createNotification } from "../notification/notification.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
-import { getPlatformCommerceSettings } from "../platform-settings/platform-settings.service.js";
 import {
   emitCheckoutStatusToUser,
   emitNotificationToUser,
 } from "../../shared/realtime/socket.js";
 
+const DEFAULT_CURRENCY = "PHP";
 const appBaseUrl = env.frontendUrl.replace(/\/$/, "");
 const checkoutOrderInclude = {
   items: {
@@ -164,19 +164,8 @@ async function finalizeCompletedPayPalOrderByProviderOrderId(
   originalError,
 ) {
   const paypalOrder = await getPayPalOrder(providerOrderId);
-  const normalizedStatus = String(paypalOrder?.status || "").toUpperCase();
-  const isCompleted = normalizedStatus === "COMPLETED";
+  const isCompleted = paypalOrder?.status === "COMPLETED";
   if (!isCompleted) {
-    if (["APPROVED", "CREATED", "SAVED"].includes(normalizedStatus)) {
-      await syncCreatedPayPalOrderRecord(providerOrderId, paypalOrder);
-      return null;
-    }
-
-    if (["VOIDED", "CANCELLED", "EXPIRED", "DECLINED"].includes(normalizedStatus)) {
-      await markCheckoutAsCancelledByProviderOrderId(providerOrderId, paypalOrder);
-      return null;
-    }
-
     throw originalError || new ApiError(400, "PayPal order is not completed");
   }
 
@@ -333,15 +322,63 @@ function canCancelCheckoutOrder({ paymentStatus, orderStatus, paypalStatus }) {
   );
 }
 
-async function getLatestCheckoutPayment(providerOrderId) {
-  return prisma.payment.findFirst({
-    where: { providerOrderId },
-    include: {
-      order: {
-        include: checkoutOrderInclude,
-      },
+async function getLatestCheckoutPayment(checkoutToken) {
+  const normalizedToken = String(checkoutToken || "").trim();
+  if (!normalizedToken) return null;
+
+  const payment = await prisma.payment.findFirst({
+    where: {
+      OR: [{ providerOrderId: normalizedToken }, { orderId: normalizedToken }],
     },
+    orderBy: { createdAt: "desc" },
   });
+  if (!payment) return null;
+
+  const order = await prisma.order.findUnique({
+    where: { id: payment.orderId },
+    include: checkoutOrderInclude,
+  });
+
+  return {
+    ...payment,
+    order: order || null,
+  };
+}
+
+async function getCheckoutPaymentByProviderOrderId(
+  providerOrderId,
+  { orderInclude = null, orderSelect = null } = {},
+) {
+  const normalizedProviderOrderId = String(providerOrderId || "").trim();
+  if (!normalizedProviderOrderId) return null;
+
+  const payment = await prisma.payment.findUnique({
+    where: { providerOrderId: normalizedProviderOrderId },
+  });
+  if (!payment) return null;
+
+  let order = null;
+  if (orderSelect) {
+    order = await prisma.order.findUnique({
+      where: { id: payment.orderId },
+      select: orderSelect,
+    });
+  } else if (orderInclude) {
+    order = await prisma.order.findUnique({
+      where: { id: payment.orderId },
+      include: orderInclude,
+    });
+  } else {
+    order = await prisma.order.findUnique({
+      where: { id: payment.orderId },
+      include: checkoutOrderInclude,
+    });
+  }
+
+  return {
+    ...payment,
+    order: order || null,
+  };
 }
 
 async function syncCreatedPayPalOrderRecord(
@@ -350,16 +387,11 @@ async function syncCreatedPayPalOrderRecord(
 ) {
   if (!providerOrderId) return null;
 
-  const payment = await prisma.payment.findFirst({
-    where: { providerOrderId },
-    include: {
-      order: {
-        select: {
-          id: true,
-          userId: true,
-          status: true,
-        },
-      },
+  const payment = await getCheckoutPaymentByProviderOrderId(providerOrderId, {
+    orderSelect: {
+      id: true,
+      userId: true,
+      status: true,
     },
   });
   if (!payment) return null;
@@ -373,7 +405,7 @@ async function syncCreatedPayPalOrderRecord(
       ? { ...currentRaw, ...paypalOrderPayload }
       : currentRaw;
 
-  await prisma.payment.update({
+  await prisma.payment.updateMany({
     where: { id: payment.id },
     data: {
       status: payment.status === "CAPTURED" ? payment.status : "CREATED",
@@ -405,16 +437,14 @@ async function markCheckoutAsCancelledByProviderOrderId(
 ) {
   if (!providerOrderId) return null;
 
-  const payment = await prisma.payment.findFirst({
-    where: { providerOrderId },
-    include: {
-      order: {
-        include: {
-          items: {
-            select: {
-              courseId: true,
-            },
-          },
+  const payment = await getCheckoutPaymentByProviderOrderId(providerOrderId, {
+    orderSelect: {
+      id: true,
+      userId: true,
+      status: true,
+      items: {
+        select: {
+          courseId: true,
         },
       },
     },
@@ -438,13 +468,16 @@ async function markCheckoutAsCancelledByProviderOrderId(
       : currentRaw;
 
   const restoredCartItemsCount = await prisma.$transaction(async (tx) => {
-    await tx.payment.update({
+    const paymentUpdateResult = await tx.payment.updateMany({
       where: { id: payment.id },
       data: {
         status: "FAILED",
         rawResponse: nextRaw,
       },
     });
+    if (!paymentUpdateResult.count) {
+      return 0;
+    }
 
     if (payment.order?.status === "CREATED") {
       await tx.order.update({
@@ -494,17 +527,13 @@ async function markCheckoutAsCancelledByProviderOrderId(
 }
 
 export async function cancelCheckoutOrder(userId, providerOrderId) {
-  const payment = await prisma.payment.findFirst({
-    where: { providerOrderId },
-    include: {
-      order: {
-        include: checkoutOrderInclude,
-      },
-    },
-  });
+  const payment = await getCheckoutPaymentByProviderOrderId(providerOrderId);
 
   if (!payment) {
     throw new ApiError(404, "Payment not found");
+  }
+  if (!payment.order) {
+    throw new ApiError(404, "Payment order not found");
   }
   if (userId && payment.order.userId !== userId) {
     throw new ApiError(404, "Payment not found");
@@ -558,16 +587,12 @@ export async function cancelCheckoutOrder(userId, providerOrderId) {
     cancellationPayload,
   );
 
-  const latestPayment = await prisma.payment.findFirst({
-    where: { providerOrderId },
-    include: {
-      order: {
-        include: checkoutOrderInclude,
-      },
-    },
-  });
+  const latestPayment = await getCheckoutPaymentByProviderOrderId(providerOrderId);
   if (!latestPayment) {
     throw new ApiError(404, "Payment not found");
+  }
+  if (!latestPayment.order) {
+    throw new ApiError(404, "Payment order not found");
   }
 
   return {
@@ -585,6 +610,13 @@ export async function cancelCheckoutOrder(userId, providerOrderId) {
     ),
     order: latestPayment.order,
   };
+}
+
+async function getPlatformFeePercent() {
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key: "PLATFORM_FEE_PERCENT" },
+  });
+  return Number(setting?.value || 20);
 }
 
 async function resolveCoupon(code) {
@@ -771,10 +803,6 @@ async function findExistingPendingCheckout(userId, courseIds = []) {
 }
 
 export async function createCheckoutOrder(userId, payload) {
-  const platformSettings = await getPlatformCommerceSettings();
-  const platformFeePercent = Number(platformSettings.platformFeePercent || 0);
-  const defaultCurrency = String(platformSettings.defaultCurrency || "PHP");
-
   const checkoutContext = await resolveCheckoutItems(userId, payload);
   const checkoutItems = checkoutContext.items;
   const courseIds = checkoutItems.map((item) => item.courseId);
@@ -814,11 +842,12 @@ export async function createCheckoutOrder(userId, payload) {
   const taxResult = await calculateTax({
     taxRegionCode: payload.taxRegionCode,
     taxableAmount,
-    taxPercentOverride: platformSettings.taxPercent,
   });
 
   const totalAmount = Number((taxableAmount + taxResult.taxAmount).toFixed(2));
   if (totalAmount <= 0) {
+    const platformFeePercent = await getPlatformFeePercent();
+
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
         data: {
@@ -829,7 +858,7 @@ export async function createCheckoutOrder(userId, payload) {
           discountAmount,
           taxAmount: taxResult.taxAmount,
           totalAmount,
-          currency: defaultCurrency,
+          currency: DEFAULT_CURRENCY,
           platformFeeAmount: 0,
           educatorEarnings: 0,
         },
@@ -898,7 +927,7 @@ export async function createCheckoutOrder(userId, payload) {
           taxableAmount,
           taxAmount: taxResult.taxAmount,
           totalAmount,
-          currency: defaultCurrency,
+          currency: DEFAULT_CURRENCY,
           breakdown: taxResult.breakdown,
         },
       });
@@ -956,11 +985,13 @@ export async function createCheckoutOrder(userId, payload) {
 
   const providerOrder = await createPayPalOrder({
     amount: totalAmount,
-    currency: defaultCurrency,
+    currency: DEFAULT_CURRENCY,
     referenceId: checkoutContext.referenceId,
-    returnUrl: `${appBaseUrl}/checkout/success`,
+    returnUrl: `${appBaseUrl}/checkout/payments`,
     cancelUrl: `${appBaseUrl}/checkout/cancel`,
   });
+
+  const platformFeePercent = await getPlatformFeePercent();
 
   return prisma
     .$transaction(async (tx) => {
@@ -973,7 +1004,7 @@ export async function createCheckoutOrder(userId, payload) {
           discountAmount,
           taxAmount: taxResult.taxAmount,
           totalAmount,
-          currency: defaultCurrency,
+          currency: DEFAULT_CURRENCY,
           platformFeeAmount: 0,
           educatorEarnings: 0,
         },
@@ -1045,7 +1076,7 @@ export async function createCheckoutOrder(userId, payload) {
           taxableAmount,
           taxAmount: taxResult.taxAmount,
           totalAmount,
-          currency: defaultCurrency,
+          currency: DEFAULT_CURRENCY,
           breakdown: taxResult.breakdown,
         },
       });
@@ -1091,17 +1122,13 @@ export async function createCheckoutOrder(userId, payload) {
 }
 
 export async function captureCheckoutOrder(userId, providerOrderId) {
-  const payment = await prisma.payment.findUnique({
-    where: { providerOrderId },
-    include: {
-      order: {
-        include: checkoutOrderInclude,
-      },
-    },
-  });
+  const payment = await getCheckoutPaymentByProviderOrderId(providerOrderId);
 
   if (!payment) {
     throw new ApiError(404, "Payment not found");
+  }
+  if (!payment.order) {
+    throw new ApiError(404, "Payment order not found");
   }
   if (userId && payment.order.userId !== userId) {
     throw new ApiError(404, "Payment not found");
@@ -1148,14 +1175,57 @@ export async function captureCheckoutOrder(userId, providerOrderId) {
   }
 }
 
-export async function getCheckoutOrderStatus(userId, providerOrderId) {
-  const payment = await getLatestCheckoutPayment(providerOrderId);
+export async function getCheckoutOrderStatus(userId, checkoutToken) {
+  const payment = await getLatestCheckoutPayment(checkoutToken);
 
   if (!payment) {
-    throw new ApiError(404, "Payment not found");
+    try {
+      const paypalOrder = await getPayPalOrder(String(checkoutToken || "").trim());
+      const paypalStatus = String(paypalOrder?.status || "").toUpperCase();
+      const approvalUrl = extractPayPalApprovalUrl(paypalOrder);
+      const state = resolveCheckoutState({
+        paymentStatus: "CREATED",
+        orderStatus: "CREATED",
+        paypalStatus,
+      });
+
+      return {
+        state,
+        paymentStatus: "UNKNOWN",
+        orderStatus: "UNKNOWN",
+        paypalStatus: paypalStatus || "UNKNOWN",
+        approvalUrl,
+        canCompletePayment:
+          state === "PENDING" &&
+          isUnpaidPayPalOrderStatus(paypalStatus) &&
+          Boolean(approvalUrl),
+        canCancelCheckout: false,
+        order: null,
+        statusSource: "paypal-unlinked",
+      };
+    } catch (error) {
+      const paypalErrorName = String(error?.response?.data?.name || "").toUpperCase();
+      const paypalStatusCode = Number(error?.response?.status || 0);
+      const isInvalidProviderOrder =
+        paypalErrorName === "INVALID_RESOURCE_ID" ||
+        paypalErrorName === "UNPROCESSABLE_ENTITY" ||
+        paypalStatusCode === 404 ||
+        paypalStatusCode === 422;
+      if (isInvalidProviderOrder) {
+        throw new ApiError(404, "Payment not found");
+      }
+      throw error;
+    }
+  }
+  if (!payment.order) {
+    throw new ApiError(404, "Payment order not found");
   }
   if (userId && payment.order.userId !== userId) {
     throw new ApiError(404, "Payment not found");
+  }
+  const providerOrderId = String(payment.providerOrderId || "").trim();
+  if (!providerOrderId) {
+    throw new ApiError(404, "Payment provider order not found");
   }
 
   if (payment.status === "CAPTURED" || payment.order.status === "PAID") {
@@ -1217,6 +1287,9 @@ export async function getCheckoutOrderStatus(userId, providerOrderId) {
         const latestPayment = await getLatestCheckoutPayment(providerOrderId);
         if (!latestPayment) {
           throw new ApiError(404, "Payment not found");
+        }
+        if (!latestPayment.order) {
+          throw new ApiError(404, "Payment order not found");
         }
         return {
           state:
@@ -1282,27 +1355,76 @@ export async function getCheckoutOrderStatus(userId, providerOrderId) {
     try {
       captured = await captureCheckoutOrder(userId || null, providerOrderId);
     } catch (captureError) {
-      if (captureError?.code !== "P2028") {
+      const paypalErrorName = String(
+        captureError?.response?.data?.name || "",
+      ).toUpperCase();
+      const paypalStatusCode = Number(captureError?.response?.status || 0);
+      const isTransactionRace = captureError?.code === "P2028";
+      const isCaptureContention =
+        paypalErrorName === "UNPROCESSABLE_ENTITY" ||
+        paypalErrorName === "RESOURCE_CONFLICT" ||
+        paypalStatusCode === 409 ||
+        paypalStatusCode === 422;
+      if (!isTransactionRace && !isCaptureContention) {
         throw captureError;
       }
-      const latestPayment = await getLatestCheckoutPayment(providerOrderId);
+
+      const latestPayment = await getCheckoutPaymentByProviderOrderId(providerOrderId);
       if (!latestPayment) {
         throw new ApiError(404, "Payment not found");
       }
+      if (!latestPayment.order) {
+        throw new ApiError(404, "Payment order not found");
+      }
+
+      let latestPaypalOrder = null;
+      try {
+        latestPaypalOrder = await getPayPalOrder(providerOrderId);
+      } catch (_paypalReadError) {
+        latestPaypalOrder = null;
+      }
+
+      const latestPaypalStatus = String(
+        latestPaypalOrder?.status || paypalStatus || "APPROVED",
+      ).toUpperCase();
+      const latestApprovalUrl =
+        extractPayPalApprovalUrl(latestPaypalOrder) ||
+        extractPayPalApprovalUrl(latestPayment.rawResponse);
+
+      if (
+        latestPayment.status === "CAPTURED" ||
+        latestPayment.order.status === "PAID" ||
+        latestPaypalStatus === "COMPLETED"
+      ) {
+        return {
+          state: "PAID",
+          paymentStatus: latestPayment.status,
+          orderStatus: latestPayment.order.status,
+          paypalStatus: latestPaypalStatus,
+          approvalUrl: null,
+          canCompletePayment: false,
+          canCancelCheckout: false,
+          order: latestPayment.order,
+          statusSource: "database",
+        };
+      }
+
       return {
-        state:
-          latestPayment.status === "CAPTURED" ||
-          latestPayment.order.status === "PAID"
-            ? "PAID"
-            : "PENDING",
+        state: "PENDING",
         paymentStatus: latestPayment.status,
         orderStatus: latestPayment.order.status,
-        paypalStatus: paypalStatus || "APPROVED",
-        approvalUrl: null,
-        canCompletePayment: false,
-        canCancelCheckout: false,
+        paypalStatus: latestPaypalStatus,
+        approvalUrl: latestApprovalUrl,
+        canCompletePayment:
+          isUnpaidPayPalOrderStatus(latestPaypalStatus) &&
+          Boolean(latestApprovalUrl),
+        canCancelCheckout: canCancelCheckoutOrder({
+          paymentStatus: latestPayment.status,
+          orderStatus: latestPayment.order.status,
+          paypalStatus: latestPaypalStatus,
+        }),
         order: latestPayment.order,
-        statusSource: "database",
+        statusSource: "paypal-capture-race",
       };
     }
     return {
@@ -1324,16 +1446,12 @@ export async function getCheckoutOrderStatus(userId, providerOrderId) {
       providerOrderId,
       paypalOrder,
     );
-    const latestPayment = await prisma.payment.findFirst({
-      where: { providerOrderId },
-      include: {
-        order: {
-          include: checkoutOrderInclude,
-        },
-      },
-    });
+    const latestPayment = await getCheckoutPaymentByProviderOrderId(providerOrderId);
     if (!latestPayment) {
       throw new ApiError(404, "Payment not found");
+    }
+    if (!latestPayment.order) {
+      throw new ApiError(404, "Payment order not found");
     }
     return {
       state: "FAILED",
@@ -1360,17 +1478,13 @@ export async function getCheckoutOrderStatus(userId, providerOrderId) {
         throw error;
       }
 
-      const latestPayment = await prisma.payment.findFirst({
-        where: { providerOrderId },
-        include: {
-          order: {
-            include: checkoutOrderInclude,
-          },
-        },
-      });
+      const latestPayment = await getCheckoutPaymentByProviderOrderId(providerOrderId);
 
       if (!latestPayment) {
         throw new ApiError(404, "Payment not found");
+      }
+      if (!latestPayment.order) {
+        throw new ApiError(404, "Payment order not found");
       }
 
       return {
@@ -1432,6 +1546,53 @@ export async function getCheckoutOrderStatus(userId, providerOrderId) {
   };
 }
 
+async function reconcileCheckoutCaptureState(providerOrderId, fallbackPayload = null) {
+  const normalizedProviderOrderId = String(providerOrderId || "").trim();
+  if (!normalizedProviderOrderId) return null;
+
+  let paypalOrder =
+    fallbackPayload && typeof fallbackPayload === "object" ? fallbackPayload : null;
+
+  const fallbackStatus = String(paypalOrder?.status || "").toUpperCase();
+  if (!paypalOrder || !fallbackStatus || fallbackStatus === "APPROVED") {
+    try {
+      paypalOrder = await getPayPalOrder(normalizedProviderOrderId);
+    } catch (error) {
+      const isInvalidProviderOrder =
+        error?.response?.data?.name === "INVALID_RESOURCE_ID";
+      if (isInvalidProviderOrder) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  const paypalStatus = String(paypalOrder?.status || "").toUpperCase();
+  if (paypalStatus === "COMPLETED") {
+    try {
+      await finalizeCapturedPaymentByProviderOrderId(
+        normalizedProviderOrderId,
+        paypalOrder,
+      );
+    } catch (error) {
+      const isTransactionRace = error?.code === "P2028";
+      const isMissingLocalPayment =
+        error instanceof ApiError && error.statusCode === 404;
+      if (!isTransactionRace && !isMissingLocalPayment) {
+        throw error;
+      }
+    }
+    return "COMPLETED";
+  }
+
+  if (paypalStatus === "APPROVED" || paypalStatus === "CREATED") {
+    await syncCreatedPayPalOrderRecord(normalizedProviderOrderId, paypalOrder);
+    return paypalStatus;
+  }
+
+  return paypalStatus || null;
+}
+
 export async function handlePayPalWebhook(event) {
   const eventType = String(event?.event_type || "").toUpperCase();
 
@@ -1453,7 +1614,6 @@ export async function handlePayPalWebhook(event) {
     );
     const providerOrderId = event.resource?.id;
     if (providerOrderId) {
-      await syncCreatedPayPalOrderRecord(providerOrderId, event.resource);
       try {
         const captureResponse = await capturePayPalOrder(providerOrderId);
         await finalizeCapturedPaymentByProviderOrderId(
@@ -1464,15 +1624,12 @@ export async function handlePayPalWebhook(event) {
         const isAlreadyProcessed =
           error?.response?.data?.name === "UNPROCESSABLE_ENTITY";
         const isTransactionRace = error?.code === "P2028";
-        if (!isAlreadyProcessed && !isTransactionRace) {
+        const isMissingLocalPayment =
+          error instanceof ApiError && error.statusCode === 404;
+        if (!isAlreadyProcessed && !isTransactionRace && !isMissingLocalPayment) {
           throw error;
         }
-        if (isAlreadyProcessed) {
-          await finalizeCompletedPayPalOrderByProviderOrderId(
-            providerOrderId,
-            error,
-          );
-        }
+        await reconcileCheckoutCaptureState(providerOrderId, event.resource);
       }
     }
   }
@@ -1499,10 +1656,23 @@ export async function handlePayPalWebhook(event) {
           },
         ],
       };
-      await finalizeCapturedPaymentByProviderOrderId(
-        providerOrderId,
-        normalizedCaptureResponse,
-      );
+      try {
+        await finalizeCapturedPaymentByProviderOrderId(
+          providerOrderId,
+          normalizedCaptureResponse,
+        );
+      } catch (error) {
+        const isMissingLocalPayment =
+          error instanceof ApiError && error.statusCode === 404;
+        const isTransactionRace = error?.code === "P2028";
+        if (!isMissingLocalPayment && !isTransactionRace) {
+          throw error;
+        }
+        await reconcileCheckoutCaptureState(providerOrderId, {
+          ...normalizedCaptureResponse,
+          status: "COMPLETED",
+        });
+      }
     }
   }
 
@@ -1518,16 +1688,11 @@ export async function handlePayPalWebhook(event) {
         data: { status: "FAILED" },
       });
 
-      const deniedPayment = await prisma.payment.findFirst({
-        where: { providerOrderId: orderId },
-        include: {
-          order: {
-            select: {
-              id: true,
-              userId: true,
-              status: true,
-            },
-          },
+      const deniedPayment = await getCheckoutPaymentByProviderOrderId(orderId, {
+        orderSelect: {
+          id: true,
+          userId: true,
+          status: true,
         },
       });
 
@@ -1593,12 +1758,7 @@ export async function handlePayPalWebhook(event) {
         if (!isAlreadyProcessed && !isTransactionRace) {
           throw error;
         }
-        if (isAlreadyProcessed) {
-          await finalizeCompletedPayPalOrderByProviderOrderId(
-            providerOrderId,
-            error,
-          );
-        }
+        await reconcileCheckoutCaptureState(providerOrderId, event.resource);
       }
     }
   }

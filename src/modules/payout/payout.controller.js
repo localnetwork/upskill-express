@@ -3,6 +3,7 @@ import {
   connectPayoutAccount,
   executePayout,
   getMyPayoutSummary,
+  handlePayPalPayoutWebhook,
   listAllPayouts,
   listMyPayouts,
   rejectPayout,
@@ -17,7 +18,7 @@ export async function connectPayoutAccountController(req, res) {
 
 export async function requestPayoutController(req, res) {
   const data = await requestPayout(req.user.id, req.body);
-  return res.status(201).json({ message: "Payout requested", data });
+  return res.status(201).json({ message: "Payout auto-approved and submitted", data });
 }
 
 export async function myPayoutSummaryController(req, res) {
@@ -53,4 +54,9 @@ export async function executePayoutController(req, res) {
 export async function runAutoPayoutController(_req, res) {
   const data = await runAutoPayoutNow("admin-manual-trigger");
   return res.json({ message: "Auto payout process completed", data });
+}
+
+export async function payoutWebhookController(req, res) {
+  const data = await handlePayPalPayoutWebhook(req.body, req.headers);
+  return res.status(202).json({ message: "Payout webhook accepted", data });
 }

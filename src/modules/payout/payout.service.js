@@ -9,6 +9,43 @@ import { getPlatformCommerceSettings } from "../platform-settings/platform-setti
 const MIN_PAYOUT_AMOUNT_PHP = 500;
 const PAYOUT_REVIEW_ESTIMATE_DAYS = 3;
 const PAYOUT_APPROVED_ESTIMATE_DAYS = 1;
+const PAYOUT_WITHDRAWAL_FEE_RATE = 0.02;
+const payoutRequestItemsInclude = {
+  items: {
+    include: {
+      orderItem: {
+        select: {
+          id: true,
+          createdAt: true,
+          educatorEarning: true,
+          totalAmount: true,
+          order: {
+            select: {
+              id: true,
+              createdAt: true,
+              user: {
+                select: {
+                  id: true,
+                  username: true,
+                  email: true,
+                  firstName: true,
+                  lastName: true,
+                },
+              },
+            },
+          },
+          course: {
+            select: {
+              id: true,
+              title: true,
+              slug: true,
+            },
+          },
+        },
+      },
+    },
+  },
+};
 
 function getMonthBounds(now = new Date()) {
   const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -40,7 +77,11 @@ function getWeekBounds(now = new Date()) {
 }
 
 function getDayBounds(now = new Date()) {
-  const startOfCurrentDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfCurrentDay = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  );
   const startOfNextDay = new Date(
     startOfCurrentDay.getFullYear(),
     startOfCurrentDay.getMonth(),
@@ -215,9 +256,7 @@ function buildPayoutEstimate({
 
   if (!hasVerifiedPayoutAccount) {
     const hasMinimumBalance = availableBalance >= minimumPayoutAmount;
-    const earliestRequestAt = hasMinimumBalance
-      ? now
-      : nextPayoutDate || now;
+    const earliestRequestAt = hasMinimumBalance ? now : nextPayoutDate || now;
     return {
       waitingOn: "ACCOUNT_VERIFICATION",
       earliestRequestAt,
@@ -354,6 +393,284 @@ async function createPayPalPayoutBatch({
   );
 
   return response?.data || {};
+}
+
+async function verifyPayPalWebhookSignature(headers, webhookEvent) {
+  if (!env.paypalWebhookId) {
+    throw new ApiError(500, "PAYPAL_WEBHOOK_ID is not configured");
+  }
+
+  const transmissionId = headers?.["paypal-transmission-id"];
+  const transmissionTime = headers?.["paypal-transmission-time"];
+  const certUrl = headers?.["paypal-cert-url"];
+  const authAlgo = headers?.["paypal-auth-algo"];
+  const transmissionSig = headers?.["paypal-transmission-sig"];
+
+  if (
+    !transmissionId ||
+    !transmissionTime ||
+    !certUrl ||
+    !authAlgo ||
+    !transmissionSig
+  ) {
+    throw new ApiError(400, "Missing PayPal webhook signature headers");
+  }
+
+  const accessToken = await getPayPalPayoutAccessToken();
+  const response = await axios.post(
+    `${env.paypalBaseUrl}/v1/notifications/verify-webhook-signature`,
+    {
+      transmission_id: transmissionId,
+      transmission_time: transmissionTime,
+      cert_url: certUrl,
+      auth_algo: authAlgo,
+      transmission_sig: transmissionSig,
+      webhook_id: env.paypalWebhookId,
+      webhook_event: webhookEvent,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    },
+  );
+
+  const verificationStatus = String(response?.data?.verification_status || "").toUpperCase();
+  if (verificationStatus !== "SUCCESS") {
+    throw new ApiError(401, "Invalid PayPal webhook signature");
+  }
+}
+
+function normalizePayoutWebhookEventType(eventType) {
+  return String(eventType || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ".")
+    .replace(/-/g, "-");
+}
+
+function extractWebhookPayoutIdentifiers(resource = {}) {
+  const senderItemId =
+    resource?.payout_item?.sender_item_id ||
+    resource?.sender_item_id ||
+    resource?.payout_item_id ||
+    null;
+  const payoutBatchId =
+    resource?.payout_batch_id ||
+    resource?.payout_item_fee?.payout_batch_id ||
+    resource?.payout_item?.payout_batch_id ||
+    resource?.payout_batch_header?.payout_batch_id ||
+    null;
+  return { senderItemId, payoutBatchId };
+}
+
+function mapWebhookEventToMutation(eventType, resource = {}) {
+  const normalized = normalizePayoutWebhookEventType(eventType);
+  const itemStatus = String(resource?.transaction_status || "").toUpperCase();
+  const explicitStatus = String(resource?.batch_status || "").toUpperCase();
+  const inferredStatus = itemStatus || explicitStatus || normalized.split(".").pop() || "UNKNOWN";
+
+  const paidEvents = new Set([
+    "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+    "PAYMENT.PAYOUTSBATCH.SUCCESS",
+  ]);
+  const processingEvents = new Set([
+    "PAYMENT.PAYOUTS-ITEM.HELD",
+    "PAYMENT.PAYOUTSBATCH.PROCESSING",
+  ]);
+  const failedEvents = new Set([
+    "PAYMENT.PAYOUTS-ITEM.BLOCKED",
+    "PAYMENT.PAYOUTS-ITEM.CANCELED",
+    "PAYMENT.PAYOUTS-ITEM.FAILED",
+    "PAYMENT.PAYOUTS-ITEM.REFUNDED",
+    "PAYMENT.PAYOUTS-ITEM.RETURNED",
+    "PAYMENT.PAYOUTS-ITEM.UNCLAIMED",
+    "PAYMENT.PAYOUTSBATCH.DENIED",
+  ]);
+
+  if (paidEvents.has(normalized)) {
+    return {
+      status: "EXECUTED",
+      reviewNote: null,
+      webhookStatus: inferredStatus,
+      shouldNotifyPaid: true,
+    };
+  }
+
+  if (processingEvents.has(normalized)) {
+    return {
+      status: "EXECUTED",
+      reviewNote: `PayPal batch status: ${inferredStatus}`,
+      webhookStatus: inferredStatus,
+      shouldNotifyPaid: false,
+    };
+  }
+
+  if (failedEvents.has(normalized)) {
+    return {
+      status: "FAILED",
+      reviewNote: `PayPal payout status: ${inferredStatus}`,
+      webhookStatus: inferredStatus,
+      shouldNotifyPaid: false,
+    };
+  }
+
+  return null;
+}
+
+export async function handlePayPalPayoutWebhook(event, headers = {}) {
+  await verifyPayPalWebhookSignature(headers, event);
+
+  const mutation = mapWebhookEventToMutation(event?.event_type, event?.resource);
+  if (!mutation) {
+    return { accepted: true, ignored: true };
+  }
+
+  const { senderItemId, payoutBatchId } = extractWebhookPayoutIdentifiers(
+    event?.resource || {},
+  );
+
+  let payout = null;
+  if (senderItemId) {
+    payout = await prisma.payoutRequest.findUnique({
+      where: { id: String(senderItemId) },
+    });
+  }
+  if (!payout && payoutBatchId) {
+    payout = await prisma.payoutRequest.findFirst({
+      where: { paypalBatchId: String(payoutBatchId) },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  if (!payout) {
+    return {
+      accepted: true,
+      ignored: true,
+      reason: "Payout request not found for webhook event",
+    };
+  }
+
+  const updatePayload = {
+    status: mutation.status,
+    reviewNote: mutation.reviewNote,
+    paypalBatchId: payout.paypalBatchId || payoutBatchId || null,
+    executedAt:
+      mutation.status === "EXECUTED" && !mutation.reviewNote
+        ? payout.executedAt || new Date()
+        : payout.executedAt,
+  };
+
+  const updated = await prisma.payoutRequest.update({
+    where: { id: payout.id },
+    data: updatePayload,
+  });
+
+  if (mutation.shouldNotifyPaid) {
+    await createNotification({
+      userId: updated.educatorId,
+      type: "PAYOUT",
+      title: "Payout paid",
+      message: `Your payout request ${updated.id} has been paid.`,
+      metadata: {
+        payoutRequestId: updated.id,
+        paypalBatchId: updated.paypalBatchId,
+        webhookStatus: mutation.webhookStatus,
+      },
+    });
+  }
+
+  if (mutation.status === "FAILED") {
+    await createNotification({
+      userId: updated.educatorId,
+      type: "PAYOUT",
+      title: "Payout failed",
+      message: `Your payout request ${updated.id} could not be completed.`,
+      metadata: {
+        payoutRequestId: updated.id,
+        paypalBatchId: updated.paypalBatchId,
+        webhookStatus: mutation.webhookStatus,
+      },
+    });
+  }
+
+  return { accepted: true, payoutRequestId: updated.id, status: updated.status };
+}
+
+async function getPayPalPayoutBatch(batchId) {
+  const accessToken = await getPayPalPayoutAccessToken();
+  const response = await axios.get(
+    `${env.paypalBaseUrl}/v1/payments/payouts/${batchId}?fields=items`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+  );
+  return response?.data || {};
+}
+
+function isBatchSettledAsPaid(batchPayload) {
+  const batchStatus = String(
+    batchPayload?.batch_header?.batch_status || "",
+  ).toUpperCase();
+  if (batchStatus === "SUCCESS") {
+    return true;
+  }
+
+  const items = Array.isArray(batchPayload?.items) ? batchPayload.items : [];
+  if (!items.length) {
+    return false;
+  }
+
+  return items.every(
+    (item) =>
+      String(item?.transaction_status || "").toUpperCase() === "SUCCESS",
+  );
+}
+
+async function refreshExecutedPayoutStatus(payout) {
+  if (String(payout?.status || "").toUpperCase() !== "EXECUTED") {
+    return payout;
+  }
+  if (!payout?.paypalBatchId) {
+    return payout;
+  }
+
+  try {
+    const batchPayload = await getPayPalPayoutBatch(payout.paypalBatchId);
+    const batchStatus = String(
+      batchPayload?.batch_header?.batch_status || "",
+    ).toUpperCase();
+    const settledAsPaid = isBatchSettledAsPaid(batchPayload);
+    const nextReviewNote =
+      settledAsPaid || !batchStatus ? null : `PayPal batch status: ${batchStatus}`;
+
+    if (payout.reviewNote === nextReviewNote) {
+      return payout;
+    }
+
+    return prisma.payoutRequest.update({
+      where: { id: payout.id },
+      data: {
+        reviewNote: nextReviewNote,
+      },
+      include: {
+        ...payoutRequestItemsInclude,
+        educator: {
+          select: { id: true, username: true, email: true },
+        },
+      },
+    });
+  } catch (error) {
+    console.error("[payout-status-refresh] failed", {
+      payoutRequestId: payout.id,
+      paypalBatchId: payout.paypalBatchId,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    return payout;
+  }
 }
 
 export async function connectPayoutAccount(userId, payload) {
@@ -515,6 +832,7 @@ export async function getMyPayoutSummary(educatorId) {
 
   return {
     minimumPayoutAmount: MIN_PAYOUT_AMOUNT_PHP,
+    withdrawalFeeRate: PAYOUT_WITHDRAWAL_FEE_RATE,
     currency: settings.defaultCurrency,
     payoutCycle: cycleWindow.payoutCycle,
     availableBalance: Number(availableBalance.toFixed(2)),
@@ -603,15 +921,24 @@ export async function requestPayout(educatorId, payload) {
     }
   }
 
-  const payoutAmount = Number(running.toFixed(2));
-  if (payoutAmount <= 0) {
+  const grossPayoutAmount = Number(running.toFixed(2));
+  if (grossPayoutAmount <= 0) {
     throw new ApiError(400, "No eligible earnings for requested amount");
   }
-  if (payoutAmount < MIN_PAYOUT_AMOUNT_PHP) {
+  if (grossPayoutAmount < MIN_PAYOUT_AMOUNT_PHP) {
     throw new ApiError(
       400,
       `Minimum payout is PHP ${MIN_PAYOUT_AMOUNT_PHP.toFixed(2)}`,
     );
+  }
+  const withdrawalFeeAmount = Number(
+    (grossPayoutAmount * PAYOUT_WITHDRAWAL_FEE_RATE).toFixed(2),
+  );
+  const payoutAmount = Number(
+    Math.max(grossPayoutAmount - withdrawalFeeAmount, 0).toFixed(2),
+  );
+  if (payoutAmount <= 0) {
+    throw new ApiError(400, "Payout amount is too low after withdrawal fee");
   }
 
   const request = await prisma.$transaction(async (tx) => {
@@ -620,6 +947,9 @@ export async function requestPayout(educatorId, payload) {
         educatorId,
         amount: payoutAmount,
         currency: settings.defaultCurrency,
+        status: "APPROVED",
+        reviewedAt: new Date(),
+        reviewNote: "Auto-approved payout request",
         note: payload.note || null,
         calculationSnapshot: {
           orderItemIds: selected.map((item) => item.id),
@@ -631,7 +961,11 @@ export async function requestPayout(educatorId, payload) {
             (sum, item) => sum + Number(item.platformFeeAmount),
             0,
           ),
-          educatorEarnings: payoutAmount,
+          educatorEarnings: grossPayoutAmount,
+          grossPayoutAmount,
+          withdrawalFeeRate: PAYOUT_WITHDRAWAL_FEE_RATE,
+          withdrawalFeeAmount,
+          netPayoutAmount: payoutAmount,
           minimumPayoutAmount: MIN_PAYOUT_AMOUNT_PHP,
           payoutRule:
             cycleWindow.payoutCycle === "ANYTIME"
@@ -654,7 +988,18 @@ export async function requestPayout(educatorId, payload) {
     return payout;
   });
 
-  return request;
+  try {
+    return await executePayout(request.id);
+  } catch (error) {
+    const latestRequest = await prisma.payoutRequest.findUnique({
+      where: { id: request.id },
+      include: payoutRequestItemsInclude,
+    });
+    if (latestRequest) {
+      return latestRequest;
+    }
+    throw error;
+  }
 }
 
 export async function runAutoPayoutProcessing(triggeredBy = "system") {
@@ -711,12 +1056,13 @@ export async function listMyPayouts(educatorId, query) {
       where,
       skip,
       take: limit,
-      include: { items: true },
+      include: payoutRequestItemsInclude,
       orderBy: { createdAt: "desc" },
     }),
     prisma.payoutRequest.count({ where }),
   ]);
-  return toPagedResult(rows, total, page, limit);
+  const refreshedRows = await Promise.all(rows.map(refreshExecutedPayoutStatus));
+  return toPagedResult(refreshedRows, total, page, limit);
 }
 
 export async function listAllPayouts(query) {
@@ -731,13 +1077,14 @@ export async function listAllPayouts(query) {
         educator: {
           select: { id: true, username: true, email: true },
         },
-        items: true,
+        ...payoutRequestItemsInclude,
       },
       orderBy: { createdAt: "desc" },
     }),
     prisma.payoutRequest.count({ where }),
   ]);
-  return toPagedResult(rows, total, page, limit);
+  const refreshedRows = await Promise.all(rows.map(refreshExecutedPayoutStatus));
+  return toPagedResult(refreshedRows, total, page, limit);
 }
 
 export async function approvePayout(adminId, payoutRequestId, reviewNote) {

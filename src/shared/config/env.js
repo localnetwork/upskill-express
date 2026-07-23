@@ -22,10 +22,13 @@ export const env = {
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || "refresh-secret",
   jwtAccessTtl: process.env.JWT_ACCESS_TTL || "15m",
   jwtRefreshTtl: process.env.JWT_REFRESH_TTL || "30d",
+  jwtPreAuthTtl: process.env.JWT_PRE_AUTH_TTL || "10m",
   paypalBaseUrl:
     process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com",
   paypalClientId: process.env.PAYPAL_CLIENT_ID || "",
   paypalClientSecret: process.env.PAYPAL_CLIENT_SECRET || "",
+  paypalWebhookId:
+    process.env.PAYPAL_WEBHOOK_ID || process.env.PAYPAL_PAYOUTS_WEBHOOK_ID || "",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   uploadDir: process.env.UPLOAD_DIR || "uploads",
   cfAccessKeyId: process.env.CF_ACCESS_KEY_ID || "",

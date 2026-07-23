@@ -1,6 +1,6 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
-import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../../shared/utils/jwt.js";
+import { signAccessToken, signPreAuthToken, signRefreshToken, verifyRefreshToken } from "../../shared/utils/jwt.js";
 import { comparePassword, compareToken, hashPassword, hashToken, randomToken } from "../../shared/utils/security.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { createUser, findUserByEmail, findUserById, findUserByUsername, updateUser } from "./auth.repository.js";
@@ -212,6 +212,14 @@ export async function login(payload) {
     throw new ApiError(403, "Account disabled");
   }
 
+  if (user.twoFactorEnabled && user.twoFactorSecret) {
+    return {
+      requires_2fa: true,
+      pre_auth_token: signPreAuthToken(buildTokenPayload(user)),
+      user: mapAuthUser(user),
+    };
+  }
+
   const accessToken = signAccessToken(buildTokenPayload(user));
   const refreshToken = signRefreshToken(buildTokenPayload(user));
   const refreshTokenHash = await hashToken(refreshToken);
@@ -246,6 +254,14 @@ export async function googleAuth(payload) {
     }
     if (existingUser.deletedAt || !existingUser.isActive) {
       throw new ApiError(403, "Account disabled");
+    }
+
+    if (existingUser.twoFactorEnabled && existingUser.twoFactorSecret) {
+      return {
+        requires_2fa: true,
+        pre_auth_token: signPreAuthToken(buildTokenPayload(existingUser)),
+        user: mapAuthUser(existingUser),
+      };
     }
 
     const accessToken = signAccessToken(buildTokenPayload(existingUser));

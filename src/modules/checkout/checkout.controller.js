@@ -10,7 +10,7 @@ export async function createCheckoutController(req, res) {
   const data = await createCheckoutOrder(req.user.id, req.body);
   const approvalLink = data?.paypal?.links?.find((link) => link.rel === "approve")?.href || null;
   const transactionRedirect = data?.providerOrderId
-    ? `/checkout/success?token=${encodeURIComponent(data.providerOrderId)}`
+    ? `/checkout/payments/${encodeURIComponent(data.providerOrderId)}`
     : null;
   const fallbackRedirect = data?.freeCheckout
     ? `/my-courses/learning?order_id=${data.orderId}`

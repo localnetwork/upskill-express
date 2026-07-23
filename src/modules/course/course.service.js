@@ -1473,9 +1473,40 @@ export async function getCourseRoute(slug, actor = null) {
         id: lesson.id,
         uuid: lesson.id,
         title: lesson.title,
-        curriculum_resource_type: lesson.type.toLowerCase(),
+        curriculum_resource_type:
+          lesson.type === "QUIZ"
+            ? "quiz"
+            : lesson.type === "CODING_EXERCISE"
+              ? "coding_exercise"
+              : lesson.videoUrl || lesson.type === "VIDEO"
+                ? "video"
+                : lesson.assignmentText || lesson.type === "RESOURCE"
+                  ? "article"
+                  : "null",
         estimated_duration: estimateLessonDurationSeconds(lesson),
         curriculum_description: lesson.description || "",
+        is_public_preview: Boolean(lesson.isPreview),
+        preview_asset: lesson.isPreview
+          ? lesson.type === "QUIZ"
+            ? {
+                questions: Array.isArray(safeParseJson(lesson.quizQuestions))
+                  ? safeParseJson(lesson.quizQuestions)
+                  : safeParseJson(lesson.quizQuestions)?.questions || [],
+              }
+            : lesson.type === "CODING_EXERCISE"
+              ? {
+                  instructions: lesson.codingInstructions || "",
+                }
+              : lesson.videoUrl || lesson.type === "VIDEO"
+                ? {
+                    path: `/stream.php?id=${encodeURIComponent(lesson.id)}`,
+                  }
+                : lesson.assignmentText || lesson.type === "RESOURCE"
+                  ? {
+                      content: lesson.assignmentText || lesson.description || "",
+                    }
+                  : null
+          : null,
       })),
     })),
     resources_count: {

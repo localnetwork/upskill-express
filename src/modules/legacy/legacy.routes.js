@@ -10,9 +10,19 @@ import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { upload } from "../../shared/middleware/upload.middleware.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
+import { signAccessToken, signRefreshToken, verifyPreAuthToken } from "../../shared/utils/jwt.js";
+import { hashToken } from "../../shared/utils/security.js";
+import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { getObjectFromR2, isR2Enabled, isR2StoragePath } from "../../shared/storage/r2.js";
 import { updateLessonProgress } from "../progress/progress.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import {
+  consumeBackupCode,
+  countBackupCodes,
+  createTwoFactorSetup,
+  generateBackupCodes,
+  verifyTotpToken,
+} from "../auth/two-factor.service.js";
 
 const router = Router();
 const QUIZ_ATTEMPT_KEY_PREFIX = "quiz_attempt::";
@@ -27,6 +37,51 @@ const JUDGE0_LANGUAGE_IDS = {
   go: 60,
   csharp: 51,
 };
+
+function getUserRoles(user) {
+  return (user.roles || []).map((item) => item.role.name);
+}
+
+function buildTokenPayload(user) {
+  return {
+    sub: user.id,
+    email: user.email,
+    roles: getUserRoles(user),
+  };
+}
+
+function mapAuthUser(user) {
+  const roles = getUserRoles(user);
+  const permissions = mapPermissionsFromRoles(roles);
+
+  return {
+    id: user.id,
+    email: user.email,
+    username: user.username,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    firstname: user.firstName,
+    lastname: user.lastName,
+    verified: Boolean(user.emailVerifiedAt),
+    isActive: user.isActive,
+    is_suspended: !user.isActive,
+    roles,
+    permissions,
+  };
+}
+
+async function findUserWithRolesById(id) {
+  return prisma.user.findUnique({
+    where: { id },
+    include: {
+      roles: {
+        include: {
+          role: true,
+        },
+      },
+    },
+  });
+}
 
 router.use(
   cacheGetResponse({
@@ -108,6 +163,8 @@ function mapLessonToLegacyCurriculum(lesson) {
     curriculum_description: lesson.description || "",
     curriculum_resource_type: mapLessonTypeToLegacyResource(lesson.type, lesson),
     estimated_duration: lesson.durationInSeconds || 0,
+    is_public_preview: Boolean(lesson.isPreview),
+    is_preview: Boolean(lesson.isPreview),
     asset:
       lesson.type === "QUIZ"
         ? {
@@ -866,6 +923,59 @@ async function resolveMediaSourceByQueryId(id) {
   return null;
 }
 
+async function resolvePublicPreviewMediaByQueryId(id) {
+  const lesson = await prisma.lesson.findUnique({
+    where: { id: String(id) },
+    select: {
+      isPreview: true,
+      type: true,
+      videoUrl: true,
+      media: {
+        where: { mediaType: "VIDEO" },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          storagePath: true,
+        },
+      },
+      course: {
+        select: {
+          workflowStatus: true,
+          isPublished: true,
+          deletedAt: true,
+        },
+      },
+    },
+  });
+
+  if (!lesson || !lesson.isPreview) {
+    return null;
+  }
+
+  if (lesson.type !== "VIDEO" && !lesson.videoUrl) {
+    return null;
+  }
+
+  if (!lesson.course || lesson.course.deletedAt) {
+    return null;
+  }
+
+  const isCoursePublic =
+    lesson.course.workflowStatus === "PUBLISHED" || lesson.course.isPublished === true;
+  if (!isCoursePublic) {
+    return null;
+  }
+
+  const storagePath = lesson.videoUrl || lesson.media?.[0]?.storagePath || null;
+  if (!storagePath) {
+    return null;
+  }
+
+  return {
+    storagePath,
+  };
+}
+
 async function sendMediaStoragePath(storagePath, req, res) {
   if (!storagePath) {
     throw new ApiError(404, "Video file not found");
@@ -1468,6 +1578,13 @@ router.post("/course-curriculums", authenticate, authorize("EDUCATOR"), async (r
                 : "RESOURCE",
         title: req.body.title,
         description: req.body.description || "",
+        isPreview:
+          req.body.is_public_preview === true ||
+          req.body.is_public_preview === "1" ||
+          req.body.is_preview === true ||
+          req.body.is_preview === "1" ||
+          req.body.published === true ||
+          req.body.published === "1",
         position:
           ((await prisma.lesson.findFirst({
             where: { sectionId: section.id },
@@ -1500,6 +1617,20 @@ router.put("/course-curriculums/:lessonId", authenticate, authorize("EDUCATOR"),
       title: req.body.title,
       description: req.body.description || "",
     };
+
+    if (
+      req.body.is_public_preview !== undefined ||
+      req.body.is_preview !== undefined ||
+      req.body.published !== undefined
+    ) {
+      data.isPreview =
+        req.body.is_public_preview === true ||
+        req.body.is_public_preview === "1" ||
+        req.body.is_preview === true ||
+        req.body.is_preview === "1" ||
+        req.body.published === true ||
+        req.body.published === "1";
+    }
 
     if (quizQuestions !== undefined) {
       data.quizQuestions = quizQuestions;
@@ -2075,8 +2206,14 @@ router.get("/stream.php", async (req, res, next) => {
     if (!queryId) {
       throw new ApiError(400, "Missing media id");
     }
+
     if (!streamToken) {
-      throw new ApiError(403, "Missing stream token");
+      const publicPreviewMedia = await resolvePublicPreviewMediaByQueryId(queryId);
+      if (!publicPreviewMedia) {
+        throw new ApiError(403, "Missing stream token");
+      }
+      await sendMediaStoragePath(publicPreviewMedia.storagePath, req, res);
+      return;
     }
 
     const streamPayload = verifyStreamPlaybackToken(streamToken);
@@ -2210,32 +2347,329 @@ router.get("/payout-accounts", authenticate, authorize("EDUCATOR"), async (req, 
   }
 });
 
-router.get("/2fa-status", authenticate, async (_req, res) => {
-  return res.json({ enabled: false, setup_required: false });
+router.get("/2fa-status", authenticate, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        twoFactorEnabled: true,
+        twoFactorTempSecret: true,
+        twoFactorBackupHashes: true,
+      },
+    });
+
+    if (!user) {
+      throw new ApiError(404, "User not found");
+    }
+
+    const backupCodesRemaining = countBackupCodes(user.twoFactorBackupHashes);
+
+    return res.json({
+      enabled: Boolean(user.twoFactorEnabled),
+      totp_enabled: Boolean(user.twoFactorEnabled),
+      setup_required: Boolean(!user.twoFactorEnabled && user.twoFactorTempSecret),
+      backup_codes_remaining: backupCodesRemaining,
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
-router.post("/setup-2fa", authenticate, async (_req, res) => {
-  return res.status(400).json({ message: "2FA is not enabled on this backend." });
+router.post("/setup-2fa", authenticate, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        email: true,
+        twoFactorEnabled: true,
+      },
+    });
+
+    if (!user) {
+      throw new ApiError(404, "User not found");
+    }
+    if (user.twoFactorEnabled) {
+      throw new ApiError(400, "Two-factor authentication is already enabled");
+    }
+
+    const setup = await createTwoFactorSetup(user.email);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        twoFactorTempSecret: setup.base32Secret,
+      },
+    });
+
+    return res.json({
+      qr_code: setup.qrCode,
+      secret: setup.base32Secret,
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
-router.post("/confirm-2fa", authenticate, async (_req, res) => {
-  return res.status(400).json({ message: "2FA is not enabled on this backend." });
+router.post("/confirm-2fa", authenticate, async (req, res, next) => {
+  try {
+    const code = String(req.body?.code || "").trim();
+    if (!/^\d{6}$/.test(code)) {
+      throw new ApiError(400, "A valid 6-digit code is required");
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        twoFactorEnabled: true,
+        twoFactorTempSecret: true,
+      },
+    });
+
+    if (!user) {
+      throw new ApiError(404, "User not found");
+    }
+    if (user.twoFactorEnabled) {
+      throw new ApiError(400, "Two-factor authentication is already enabled");
+    }
+    if (!user.twoFactorTempSecret) {
+      throw new ApiError(400, "Two-factor setup has not been initialized");
+    }
+
+    const valid = verifyTotpToken(user.twoFactorTempSecret, code);
+    if (!valid) {
+      throw new ApiError(400, "Invalid authenticator code");
+    }
+
+    const { rawCodes, hashedCodes } = await generateBackupCodes();
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        twoFactorEnabled: true,
+        twoFactorSecret: user.twoFactorTempSecret,
+        twoFactorTempSecret: null,
+        twoFactorBackupHashes: hashedCodes,
+      },
+    });
+
+    return res.json({
+      message: "Two-factor authentication enabled",
+      backup_codes: rawCodes,
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
-router.post("/verify-2fa", async (_req, res) => {
-  return res.status(400).json({ message: "2FA is not enabled on this backend." });
+router.post("/verify-2fa", async (req, res, next) => {
+  try {
+    const preAuthToken = String(req.body?.pre_auth_token || "").trim();
+    const code = String(req.body?.code || "").trim();
+    if (!preAuthToken) {
+      throw new ApiError(400, "pre_auth_token is required");
+    }
+    if (!/^\d{6}$/.test(code)) {
+      throw new ApiError(400, "A valid 6-digit code is required");
+    }
+
+    let payload;
+    try {
+      payload = verifyPreAuthToken(preAuthToken);
+    } catch (_error) {
+      throw new ApiError(401, "Invalid or expired pre-auth token");
+    }
+
+    const user = await findUserWithRolesById(payload.sub);
+    if (!user || user.deletedAt || !user.isActive) {
+      throw new ApiError(401, "Invalid login session");
+    }
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+      throw new ApiError(400, "Two-factor authentication is not enabled");
+    }
+
+    const valid = verifyTotpToken(user.twoFactorSecret, code);
+    if (!valid) {
+      throw new ApiError(401, "Invalid authenticator code");
+    }
+
+    const accessToken = signAccessToken(buildTokenPayload(user));
+    const refreshToken = signRefreshToken(buildTokenPayload(user));
+    const refreshTokenHash = await hashToken(refreshToken);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { refreshTokenHash },
+    });
+
+    await recordActivityEvent({
+      eventType: "AUTH_LOGIN",
+      userId: user.id,
+      metadata: { method: "2fa_totp" },
+      dedupeWindowSeconds: 5,
+    });
+
+    return res.json({
+      status: "success",
+      token: accessToken,
+      accessToken,
+      refreshToken,
+      user: mapAuthUser(user),
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
-router.post("/disable-2fa", authenticate, async (_req, res) => {
-  return res.status(400).json({ message: "2FA is not enabled on this backend." });
+router.post("/disable-2fa", authenticate, async (req, res, next) => {
+  try {
+    const code = String(req.body?.code || "").trim();
+    if (!/^\d{6}$/.test(code)) {
+      throw new ApiError(400, "A valid 6-digit code is required");
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        twoFactorEnabled: true,
+        twoFactorSecret: true,
+      },
+    });
+
+    if (!user) {
+      throw new ApiError(404, "User not found");
+    }
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+      throw new ApiError(400, "Two-factor authentication is not enabled");
+    }
+
+    const valid = verifyTotpToken(user.twoFactorSecret, code);
+    if (!valid) {
+      throw new ApiError(401, "Invalid authenticator code");
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        twoFactorEnabled: false,
+        twoFactorSecret: null,
+        twoFactorTempSecret: null,
+        twoFactorBackupHashes: null,
+      },
+    });
+
+    return res.json({
+      message: "Two-factor authentication disabled",
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
-router.post("/verify-backup-code", async (_req, res) => {
-  return res.status(400).json({ message: "2FA is not enabled on this backend." });
+router.post("/verify-backup-code", async (req, res, next) => {
+  try {
+    const preAuthToken = String(req.body?.pre_auth_token || "").trim();
+    const code = String(req.body?.code || "").trim();
+    if (!preAuthToken) {
+      throw new ApiError(400, "pre_auth_token is required");
+    }
+    if (!code) {
+      throw new ApiError(400, "Backup code is required");
+    }
+
+    let payload;
+    try {
+      payload = verifyPreAuthToken(preAuthToken);
+    } catch (_error) {
+      throw new ApiError(401, "Invalid or expired pre-auth token");
+    }
+
+    const user = await findUserWithRolesById(payload.sub);
+    if (!user || user.deletedAt || !user.isActive) {
+      throw new ApiError(401, "Invalid login session");
+    }
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+      throw new ApiError(400, "Two-factor authentication is not enabled");
+    }
+
+    const consumedResult = await consumeBackupCode(code, user.twoFactorBackupHashes);
+    if (!consumedResult.consumed) {
+      throw new ApiError(401, "Invalid or already used backup code");
+    }
+
+    const accessToken = signAccessToken(buildTokenPayload(user));
+    const refreshToken = signRefreshToken(buildTokenPayload(user));
+    const refreshTokenHash = await hashToken(refreshToken);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        refreshTokenHash,
+        twoFactorBackupHashes: consumedResult.nextHashes,
+      },
+    });
+
+    await recordActivityEvent({
+      eventType: "AUTH_LOGIN",
+      userId: user.id,
+      metadata: { method: "2fa_backup_code" },
+      dedupeWindowSeconds: 5,
+    });
+
+    return res.json({
+      status: "success",
+      token: accessToken,
+      accessToken,
+      refreshToken,
+      user: mapAuthUser(user),
+      backup_codes_remaining: consumedResult.nextHashes.length,
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
-router.post("/regenerate-backup-codes", authenticate, async (_req, res) => {
-  return res.status(400).json({ message: "2FA is not enabled on this backend." });
+router.post("/regenerate-backup-codes", authenticate, async (req, res, next) => {
+  try {
+    const code = String(req.body?.code || "").trim();
+    if (!/^\d{6}$/.test(code)) {
+      throw new ApiError(400, "A valid 6-digit code is required");
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        twoFactorEnabled: true,
+        twoFactorSecret: true,
+      },
+    });
+
+    if (!user) {
+      throw new ApiError(404, "User not found");
+    }
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+      throw new ApiError(400, "Two-factor authentication is not enabled");
+    }
+
+    const valid = verifyTotpToken(user.twoFactorSecret, code);
+    if (!valid) {
+      throw new ApiError(401, "Invalid authenticator code");
+    }
+
+    const { rawCodes, hashedCodes } = await generateBackupCodes();
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        twoFactorBackupHashes: hashedCodes,
+      },
+    });
+
+    return res.json({
+      message: "Backup codes regenerated",
+      backup_codes: rawCodes,
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 export default router;

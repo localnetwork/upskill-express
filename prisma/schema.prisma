@@ -120,6 +120,10 @@ model User {
   resetPasswordToken    String?
   resetPasswordTokenExp DateTime?
   refreshTokenHash      String?
+  twoFactorEnabled      Boolean   @default(false)
+  twoFactorSecret       String?
+  twoFactorTempSecret   String?
+  twoFactorBackupHashes Json?
   deletedAt             DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt

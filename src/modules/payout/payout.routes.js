@@ -11,6 +11,7 @@ import {
   listAllPayoutsController,
   listMyPayoutsController,
   myPayoutSummaryController,
+  payoutWebhookController,
   rejectPayoutController,
   requestPayoutController,
   runAutoPayoutController,
@@ -22,6 +23,8 @@ import {
 } from "./payout.validator.js";
 
 const router = Router();
+
+router.post("/webhook/paypal", asyncHandler(payoutWebhookController));
 
 router.post(
   "/account",
