@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   createCourse,
   deleteDraftCourse,
+  getCourseDiscoveryData,
   getCourseForManagement,
   getCourseStatisticsForManagement,
   getCourseForLearner,
@@ -124,6 +125,14 @@ export async function listCoursesController(req, res) {
     message: "Courses fetched",
     ...data,
     data: data.data.map(toLegacyCourseSummary),
+  });
+}
+
+export async function getCourseDiscoveryController(req, res) {
+  const data = await getCourseDiscoveryData(req.query);
+  return res.json({
+    message: "Course discovery fetched",
+    data,
   });
 }
 

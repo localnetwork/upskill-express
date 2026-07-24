@@ -7,6 +7,7 @@ import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import {
   createCourseController,
   deleteDraftCourseController,
+  getCourseDiscoveryController,
   getCourseForManagementController,
   getCourseStudentsForManagementController,
   getCourseStatisticsForManagementController,
@@ -105,6 +106,15 @@ router.get(
     tags: ["courses", "enrollments", "reviews", "orders"],
   }),
   asyncHandler(getCourseStatisticsForManagementController),
+);
+router.get(
+  "/discovery",
+  cacheGetResponse({
+    prefix: "courses:discovery",
+    ttlSeconds: 120,
+    tags: ["courses", "analytics", "categories"],
+  }),
+  asyncHandler(getCourseDiscoveryController),
 );
 router.get(
   "/:slug",
