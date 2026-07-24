@@ -315,11 +315,8 @@ function resolveCheckoutState({ paymentStatus, orderStatus, paypalStatus }) {
 
 function canCancelCheckoutOrder({ paymentStatus, orderStatus, paypalStatus }) {
   if (paymentStatus === "CAPTURED" || orderStatus === "PAID") return false;
-  const normalizedPaypalStatus = String(paypalStatus || "").toUpperCase();
-  if (["APPROVED", "COMPLETED"].includes(normalizedPaypalStatus)) return false;
-  return ["CREATED", "FAILED"].includes(
-    String(orderStatus || "").toUpperCase(),
-  );
+  const normalizedOrderStatus = String(orderStatus || "").toUpperCase();
+  return normalizedOrderStatus === "CREATED";
 }
 
 async function getLatestCheckoutPayment(checkoutToken) {
@@ -555,18 +552,9 @@ export async function cancelCheckoutOrder(userId, providerOrderId) {
   } catch (error) {
     const isInvalidProviderOrder =
       error?.response?.data?.name === "INVALID_RESOURCE_ID";
-    if (isInvalidProviderOrder) {
-      throw new ApiError(
-        409,
-        "Unable to verify PayPal order status. Cancellation is blocked to prevent cancelling a valid order.",
-      );
-    } else {
+    if (!isInvalidProviderOrder) {
       throw error;
     }
-  }
-
-  if (["APPROVED", "COMPLETED"].includes(paypalStatus)) {
-    throw new ApiError(409, "Approved checkout cannot be cancelled");
   }
 
   const normalizedCancellationStatus = [
@@ -988,7 +976,7 @@ export async function createCheckoutOrder(userId, payload) {
     currency: DEFAULT_CURRENCY,
     referenceId: checkoutContext.referenceId,
     returnUrl: `${appBaseUrl}/checkout/payments`,
-    cancelUrl: `${appBaseUrl}/checkout/cancel`,
+    cancelUrl: `${appBaseUrl}/checkout/payments`,
   });
 
   const platformFeePercent = await getPlatformFeePercent();
@@ -1594,174 +1582,148 @@ async function reconcileCheckoutCaptureState(providerOrderId, fallbackPayload = 
 }
 
 export async function handlePayPalWebhook(event) {
-  const eventType = String(event?.event_type || "").toUpperCase();
+  const normalizeWebhookEventType = (rawType) =>
+    String(rawType || "")
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, ".")
+      .replace(/\.+/g, ".")
+      .replace(/^\.|\.$/g, "");
 
-  if (eventType === "CHECKOUT.ORDER.CREATED") {
-    const providerOrderId = event.resource?.id;
-    console.log(
-      "Received PayPal webhook for CHECKOUT.ORDER.CREATED, providerOrderId:",
-      providerOrderId,
-    );
-    if (providerOrderId) {
-      await syncCreatedPayPalOrderRecord(providerOrderId, event.resource);
-    }
+  const normalizedEventType = normalizeWebhookEventType(event?.event_type);
+  const relatedOrderId = String(
+    event?.resource?.supplementary_data?.related_ids?.order_id || "",
+  ).trim();
+  const resourceOrderId = String(event?.resource?.id || "").trim();
+  const providerOrderId =
+    relatedOrderId ||
+    (normalizedEventType.startsWith("CHECKOUT.ORDER.") ||
+    normalizedEventType.startsWith("PAYMENT.ORDER.")
+      ? resourceOrderId
+      : "");
+
+  const isCreatedLikeEvent = new Set([
+    "CHECKOUT.ORDER.CREATED",
+    "CHECKOUT.ORDER.SAVED",
+    "PAYMENT.ORDER.CREATED",
+    "CHECKOUT.PAYMENT.RESOURCE.CREATED",
+    "CHECKOUT.PAYMENT.RESOURCE.UPDATED",
+    "CHECKOUT.PAYMENT.RESOURCE.PAYMENT.ON.HOLD",
+  ]).has(normalizedEventType);
+
+  const isApprovedEvent = new Set([
+    "CHECKOUT.ORDER.APPROVED",
+    "CHECKOUT.CHECKOUT.BUYER.APPROVED",
+  ]).has(normalizedEventType);
+
+  const isCompletedEvent = new Set([
+    "CHECKOUT.ORDER.COMPLETED",
+    "PAYMENT.CAPTURE.COMPLETED",
+    "CHECKOUT.PAYMENT.RESOURCE.PAYMENT.COMPLETED",
+  ]).has(normalizedEventType);
+
+  const isCancelledEvent =
+    new Set([
+      "CHECKOUT.ORDER.VOIDED",
+      "CHECKOUT.ORDER.CANCELLED",
+      "CHECKOUT.ORDER.EXPIRED",
+      "CHECKOUT.ORDER.DECLINED",
+      "PAYMENT.ORDER.CANCELLED",
+      "CHECKOUT.PAYMENT.RESOURCE.DELETED",
+      "PAYMENT.CAPTURE.DENIED",
+    ]).has(normalizedEventType) ||
+    normalizedEventType.endsWith(".VOIDED") ||
+    normalizedEventType.endsWith(".CANCELLED") ||
+    normalizedEventType.endsWith(".DECLINED");
+
+  if (isCreatedLikeEvent && providerOrderId) {
+    await syncCreatedPayPalOrderRecord(providerOrderId, event.resource);
+    return { accepted: true, action: "synced", eventType: normalizedEventType };
   }
 
-  if (eventType === "CHECKOUT.ORDER.APPROVED") {
-    console.log(
-      "Received PayPal webhook for CHECKOUT.ORDER.APPROVED, providerOrderId:",
-      event.resource?.id,
-    );
-    const providerOrderId = event.resource?.id;
-    if (providerOrderId) {
-      try {
-        const captureResponse = await capturePayPalOrder(providerOrderId);
-        await finalizeCapturedPaymentByProviderOrderId(
-          providerOrderId,
-          captureResponse,
-        );
-      } catch (error) {
-        const isAlreadyProcessed =
-          error?.response?.data?.name === "UNPROCESSABLE_ENTITY";
-        const isTransactionRace = error?.code === "P2028";
-        const isMissingLocalPayment =
-          error instanceof ApiError && error.statusCode === 404;
-        if (!isAlreadyProcessed && !isTransactionRace && !isMissingLocalPayment) {
-          throw error;
-        }
-        await reconcileCheckoutCaptureState(providerOrderId, event.resource);
-      }
-    }
-  }
-
-  if (eventType === "PAYMENT.CAPTURE.COMPLETED") {
-    console.log(
-      "Received PayPal webhook for PAYMENT.CAPTURE.COMPLETED, providerOrderId:",
-      event.resource?.supplementary_data?.related_ids?.order_id,
-    );
-    const providerOrderId =
-      event.resource?.supplementary_data?.related_ids?.order_id;
-    if (providerOrderId) {
-      const paymentsCapture = event.resource;
-      const normalizedCaptureResponse = {
-        payer: {
-          email_address: paymentsCapture?.payer?.email_address || null,
-          payer_id: paymentsCapture?.payer?.payer_id || null,
-        },
-        purchase_units: [
-          {
-            payments: {
-              captures: [paymentsCapture],
-            },
-          },
-        ],
-      };
-      try {
-        await finalizeCapturedPaymentByProviderOrderId(
-          providerOrderId,
-          normalizedCaptureResponse,
-        );
-      } catch (error) {
-        const isMissingLocalPayment =
-          error instanceof ApiError && error.statusCode === 404;
-        const isTransactionRace = error?.code === "P2028";
-        if (!isMissingLocalPayment && !isTransactionRace) {
-          throw error;
-        }
-        await reconcileCheckoutCaptureState(providerOrderId, {
-          ...normalizedCaptureResponse,
-          status: "COMPLETED",
-        });
-      }
-    }
-  }
-
-  if (eventType === "PAYMENT.CAPTURE.DENIED") {
-    console.log(
-      "Received PayPal webhook for PAYMENT.CAPTURE.DENIED, providerOrderId:",
-      event.resource?.supplementary_data?.related_ids?.order_id,
-    );
-    const orderId = event.resource?.supplementary_data?.related_ids?.order_id;
-    if (orderId) {
-      await prisma.payment.updateMany({
-        where: { providerOrderId: orderId },
-        data: { status: "FAILED" },
-      });
-
-      const deniedPayment = await getCheckoutPaymentByProviderOrderId(orderId, {
-        orderSelect: {
-          id: true,
-          userId: true,
-          status: true,
-        },
-      });
-
-      if (deniedPayment?.order?.userId) {
-        console.log(
-          "Emitting checkout status to user, userId:",
-          deniedPayment.order.userId,
-        );
-        emitCheckoutStatusToUser(deniedPayment.order.userId, {
-          providerOrderId: orderId,
-          orderId: deniedPayment.order.id,
-          state: "FAILED",
-          paymentStatus: "FAILED",
-          orderStatus: deniedPayment.order.status,
-          paypalStatus: "DENIED",
-        });
-      }
-    }
-  }
-
-  if (
-    eventType === "CHECKOUT.ORDER.VOIDED" ||
-    eventType === "CHECKOUT.ORDER.CANCELLED" ||
-    eventType === "CHECKOUT.ORDER.EXPIRED" ||
-    eventType === "CHECKOUT.ORDER.DECLINED"
-  ) {
-    console.log(
-      "Received PayPal webhook for CHECKOUT.ORDER.VOIDED/CANCELLED/EXPIRED/DECLINED, providerOrderId:",
-      event.resource?.id,
-    );
-    const providerOrderId = event.resource?.id;
-    if (providerOrderId) {
-      await markCheckoutAsCancelledByProviderOrderId(
+  if (isApprovedEvent && providerOrderId) {
+    try {
+      const captureResponse = await capturePayPalOrder(providerOrderId);
+      await finalizeCapturedPaymentByProviderOrderId(
         providerOrderId,
-        event.resource,
+        captureResponse,
+      );
+    } catch (error) {
+      const isAlreadyProcessed =
+        error?.response?.data?.name === "UNPROCESSABLE_ENTITY";
+      const isTransactionRace = error?.code === "P2028";
+      const isMissingLocalPayment =
+        error instanceof ApiError && error.statusCode === 404;
+      if (!isAlreadyProcessed && !isTransactionRace && !isMissingLocalPayment) {
+        throw error;
+      }
+      await reconcileCheckoutCaptureState(providerOrderId, event.resource);
+    }
+    return { accepted: true, action: "captured", eventType: normalizedEventType };
+  }
+
+  if (isCompletedEvent && providerOrderId) {
+    const paymentsCapture = event.resource;
+    const normalizedCaptureResponse = {
+      payer: {
+        email_address: paymentsCapture?.payer?.email_address || null,
+        payer_id: paymentsCapture?.payer?.payer_id || null,
+      },
+      purchase_units: [
+        {
+          payments: {
+            captures: [paymentsCapture],
+          },
+        },
+      ],
+      status: "COMPLETED",
+    };
+
+    try {
+      await finalizeCapturedPaymentByProviderOrderId(
+        providerOrderId,
+        normalizedEventType === "PAYMENT.CAPTURE.COMPLETED"
+          ? normalizedCaptureResponse
+          : event.resource,
+      );
+    } catch (error) {
+      const isAlreadyProcessed =
+        error?.response?.data?.name === "UNPROCESSABLE_ENTITY";
+      const isMissingLocalPayment =
+        error instanceof ApiError && error.statusCode === 404;
+      const isTransactionRace = error?.code === "P2028";
+      if (!isAlreadyProcessed && !isMissingLocalPayment && !isTransactionRace) {
+        throw error;
+      }
+      await reconcileCheckoutCaptureState(
+        providerOrderId,
+        normalizedEventType === "PAYMENT.CAPTURE.COMPLETED"
+          ? normalizedCaptureResponse
+          : event.resource,
       );
     }
+    return { accepted: true, action: "completed", eventType: normalizedEventType };
   }
 
-  if (eventType === "CHECKOUT.ORDER.SAVED") {
-    const providerOrderId = event.resource?.id;
-    if (providerOrderId) {
-      await syncCreatedPayPalOrderRecord(providerOrderId, event.resource);
-    }
+  if (isCancelledEvent && providerOrderId) {
+    const nextStatus = normalizedEventType.endsWith(".DECLINED")
+      ? "DECLINED"
+      : normalizedEventType.endsWith(".VOIDED")
+        ? "VOIDED"
+        : normalizedEventType.endsWith(".EXPIRED")
+          ? "EXPIRED"
+          : normalizedEventType === "PAYMENT.CAPTURE.DENIED"
+            ? "DECLINED"
+            : "CANCELLED";
+
+    await markCheckoutAsCancelledByProviderOrderId(providerOrderId, {
+      ...(event?.resource && typeof event.resource === "object"
+        ? event.resource
+        : {}),
+      status: nextStatus,
+    });
+    return { accepted: true, action: "cancelled", eventType: normalizedEventType };
   }
 
-  if (eventType === "CHECKOUT.ORDER.COMPLETED") {
-    console.log(
-      "Received PayPal webhook for CHECKOUT.ORDER.COMPLETED, providerOrderId:",
-      event.resource?.id,
-    );
-    const providerOrderId = event.resource?.id;
-    if (providerOrderId) {
-      try {
-        await finalizeCapturedPaymentByProviderOrderId(
-          providerOrderId,
-          event.resource,
-        );
-      } catch (error) {
-        const isAlreadyProcessed =
-          error?.response?.data?.name === "UNPROCESSABLE_ENTITY";
-        const isTransactionRace = error?.code === "P2028";
-        if (!isAlreadyProcessed && !isTransactionRace) {
-          throw error;
-        }
-        await reconcileCheckoutCaptureState(providerOrderId, event.resource);
-      }
-    }
-  }
-
-  return { accepted: true };
+  return { accepted: true, ignored: true, eventType: normalizedEventType };
 }

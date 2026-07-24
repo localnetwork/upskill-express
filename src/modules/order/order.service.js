@@ -9,6 +9,7 @@ const ALLOWED_ORDER_STATUSES = new Set([
   "REFUNDED",
   "CANCELLED",
 ]);
+const COURSE_COVER_MEDIA_TYPES = ["COVER_IMAGE", "IMAGE"];
 
 function toTrimmed(value) {
   return String(value || "").trim();
@@ -76,6 +77,44 @@ function buildOrderWhere(userId, query = {}, options = {}) {
   return where;
 }
 
+function pickLatestMediaByTypes(mediaList = [], types = []) {
+  return mediaList.find((item) => types.includes(item.mediaType)) || null;
+}
+
+function mapLegacyMedia(media) {
+  if (!media) return null;
+  return {
+    id: media.id,
+    path: media.storagePath,
+    title: media.originalName,
+  };
+}
+
+function mapOrderItemCourse(item) {
+  const media = Array.isArray(item?.course?.media) ? item.course.media : [];
+  const coverImage = mapLegacyMedia(
+    pickLatestMediaByTypes(media, COURSE_COVER_MEDIA_TYPES),
+  );
+
+  return {
+    ...item,
+    course: item?.course
+      ? {
+          ...item.course,
+          cover_image: coverImage,
+        }
+      : item?.course,
+  };
+}
+
+function mapOrderWithCourseImages(order) {
+  const items = Array.isArray(order?.items) ? order.items.map(mapOrderItemCourse) : [];
+  return {
+    ...order,
+    items,
+  };
+}
+
 export async function listMyOrders(userId, query) {
   const { page, limit, skip } = getPagination(query);
   const sort = normalizeSort(query?.sort);
@@ -96,6 +135,13 @@ export async function listMyOrders(userId, query) {
                 title: true,
                 slug: true,
                 educatorId: true,
+                media: {
+                  where: {
+                    mediaType: { in: COURSE_COVER_MEDIA_TYPES },
+                  },
+                  orderBy: { createdAt: "desc" },
+                  take: 1,
+                },
                 educator: {
                   select: {
                     id: true,
@@ -153,7 +199,12 @@ export async function listMyOrders(userId, query) {
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const paged = toPagedResult(rows, total, page, limit);
+  const paged = toPagedResult(
+    rows.map(mapOrderWithCourseImages),
+    total,
+    page,
+    limit,
+  );
   return {
     ...paged,
     filters: {
@@ -170,7 +221,25 @@ export async function getMyOrder(userId, orderId) {
     include: {
       items: {
         include: {
-          course: true,
+          course: {
+            include: {
+              media: {
+                where: {
+                  mediaType: { in: COURSE_COVER_MEDIA_TYPES },
+                },
+                orderBy: { createdAt: "desc" },
+                take: 1,
+              },
+              educator: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  username: true,
+                },
+              },
+            },
+          },
         },
       },
       payment: true,
@@ -180,5 +249,5 @@ export async function getMyOrder(userId, orderId) {
   if (!order) {
     throw new ApiError(404, "Order not found");
   }
-  return order;
+  return mapOrderWithCourseImages(order);
 }
