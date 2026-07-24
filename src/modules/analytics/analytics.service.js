@@ -36,6 +36,16 @@ function buildActivityTitle(eventType) {
       return "Signed in";
     case "ACCOUNT_PROFILE_UPDATED":
       return "Updated profile";
+    case "INSTRUCTOR_COURSE_CREATED":
+      return "Created a new course";
+    case "INSTRUCTOR_CURRICULUM_ADDED":
+      return "Added curriculum content";
+    case "INSTRUCTOR_CURRICULUM_UPDATED":
+      return "Updated curriculum content";
+    case "INSTRUCTOR_PAYOUT_REQUESTED":
+      return "Requested a payout";
+    case "INSTRUCTOR_ANNOUNCEMENT_POSTED":
+      return "Posted an announcement";
     case "LEARNING_LESSON_PROGRESS":
       return "Viewed a lesson";
     case "LEARNING_COURSE_COMPLETED":

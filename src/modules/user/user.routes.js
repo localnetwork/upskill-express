@@ -9,9 +9,11 @@ import { updateUserValidator } from "./user.validator.js";
 import {
   changePasswordController,
   deleteUserController,
+  listMyDevicesController,
   listUsersController,
   listMyActivityController,
   meController,
+  removeMyDeviceController,
   updateMeController,
 } from "./user.controller.js";
 
@@ -40,6 +42,8 @@ router.get(
   }),
   asyncHandler(listMyActivityController),
 );
+router.get("/me/devices", authenticate, asyncHandler(listMyDevicesController));
+router.delete("/me/devices/:deviceId", authenticate, asyncHandler(removeMyDeviceController));
 router.post(
   "/me/change-password",
   authenticate,

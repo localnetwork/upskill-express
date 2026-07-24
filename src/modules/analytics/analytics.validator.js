@@ -5,6 +5,11 @@ export const trackActivityEventValidator = z.object({
     "AUTH_REGISTER",
     "AUTH_LOGIN",
     "ACCOUNT_PROFILE_UPDATED",
+    "INSTRUCTOR_COURSE_CREATED",
+    "INSTRUCTOR_CURRICULUM_ADDED",
+    "INSTRUCTOR_CURRICULUM_UPDATED",
+    "INSTRUCTOR_PAYOUT_REQUESTED",
+    "INSTRUCTOR_ANNOUNCEMENT_POSTED",
     "LEARNING_LESSON_PROGRESS",
     "LEARNING_COURSE_COMPLETED",
     "LEARNING_REVIEW_CREATED",
@@ -22,4 +27,3 @@ export const trackActivityEventValidator = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
   dedupeWindowSeconds: z.coerce.number().int().min(0).max(300).optional(),
 });
-

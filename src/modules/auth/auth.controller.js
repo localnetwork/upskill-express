@@ -17,7 +17,7 @@ export async function registerController(req, res) {
 }
 
 export async function loginController(req, res) {
-  const result = await login(req.body);
+  const result = await login(req.body, { req });
   return res.status(200).json({
     message: "Login successful",
     data: result,
@@ -25,7 +25,7 @@ export async function loginController(req, res) {
 }
 
 export async function googleAuthController(req, res) {
-  const result = await googleAuth(req.body);
+  const result = await googleAuth(req.body, { req });
   return res.status(200).json({
     message:
       req.body.intent === "register"

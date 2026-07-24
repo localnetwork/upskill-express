@@ -5,8 +5,33 @@ import { comparePassword, compareToken, hashPassword, hashToken, randomToken } f
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { createUser, findUserByEmail, findUserById, findUserByUsername, updateUser } from "./auth.repository.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import { createNotification } from "../notification/notification.service.js";
 import { env } from "../../shared/config/env.js";
 import axios from "axios";
+import {
+  buildDeviceName,
+  getRequestIpAddress,
+  getRequestUserAgent,
+  registerTrustedDevice,
+  resolveDeviceLocationLabel,
+  resolveTrustedDeviceForLogin,
+} from "./trusted-device.service.js";
+
+async function notifyNewDeviceLogin(userId, { deviceName, locationLabel, ipAddress, provider }) {
+  await createNotification({
+    userId,
+    type: "SYSTEM",
+    title: "New device login detected",
+    message: `A new device signed in to your account from ${locationLabel || ipAddress || "an unknown location"}.`,
+    metadata: {
+      notificationKind: "SECURITY_NEW_DEVICE_LOGIN",
+      provider: provider || "password",
+      deviceName: deviceName || "Unknown device",
+      locationLabel: locationLabel || null,
+      ipAddress: ipAddress || null,
+    },
+  });
+}
 
 function getRoles(user) {
   return (user.roles || []).map((item) => item.role.name);
@@ -189,7 +214,7 @@ export async function register(payload) {
   };
 }
 
-export async function login(payload) {
+export async function login(payload, context = {}) {
   const identifier = payload.email || payload.username;
   if (!identifier) {
     throw new ApiError(400, "Email or username is required");
@@ -212,7 +237,18 @@ export async function login(payload) {
     throw new ApiError(403, "Account disabled");
   }
 
-  if (user.twoFactorEnabled && user.twoFactorSecret) {
+  const requestUserAgent = getRequestUserAgent(context.req);
+  const requestIpAddress = getRequestIpAddress(context.req);
+  const requestLocationLabel = resolveDeviceLocationLabel(
+    context.req,
+    payload?.locationLabel,
+  );
+  const trustedDevice = await resolveTrustedDeviceForLogin(
+    user.id,
+    payload?.trustedDeviceToken,
+  );
+
+  if (user.twoFactorEnabled && user.twoFactorSecret && !trustedDevice.trusted) {
     return {
       requires_2fa: true,
       pre_auth_token: signPreAuthToken(buildTokenPayload(user)),
@@ -225,21 +261,48 @@ export async function login(payload) {
   const refreshTokenHash = await hashToken(refreshToken);
 
   await updateUser(user.id, { refreshTokenHash });
+  const deviceName = payload?.deviceName || buildDeviceName(requestUserAgent);
+  const { trustedDeviceToken, isNewDevice } = await registerTrustedDevice(user.id, {
+    deviceIdentifier: payload?.deviceIdentifier,
+    deviceName,
+    userAgent: requestUserAgent,
+    ipAddress: requestIpAddress,
+    locationLabel: requestLocationLabel,
+  });
+
+  if (isNewDevice) {
+    await notifyNewDeviceLogin(user.id, {
+      deviceName,
+      locationLabel: requestLocationLabel,
+      ipAddress: requestIpAddress,
+      provider: "password",
+    });
+  }
 
   await recordActivityEvent({
     eventType: "AUTH_LOGIN",
     userId: user.id,
+    metadata: {
+      method:
+        user.twoFactorEnabled && user.twoFactorSecret
+          ? "trusted_device"
+          : "password",
+      device: deviceName,
+      location: requestLocationLabel,
+      ipAddress: requestIpAddress,
+    },
     dedupeWindowSeconds: 5,
   });
 
   return {
     accessToken,
     refreshToken,
+    trustedDeviceToken,
     user: mapAuthUser(user),
   };
 }
 
-export async function googleAuth(payload) {
+export async function googleAuth(payload, context = {}) {
   const profile = await verifyGoogleIdToken(payload.idToken);
   const roleName =
     payload.mode === "instructor" ? "EDUCATOR" : "LEARNER";
@@ -256,7 +319,18 @@ export async function googleAuth(payload) {
       throw new ApiError(403, "Account disabled");
     }
 
-    if (existingUser.twoFactorEnabled && existingUser.twoFactorSecret) {
+    const requestUserAgent = getRequestUserAgent(context.req);
+    const requestIpAddress = getRequestIpAddress(context.req);
+    const requestLocationLabel = resolveDeviceLocationLabel(
+      context.req,
+      payload?.locationLabel,
+    );
+    const trustedDevice = await resolveTrustedDeviceForLogin(
+      existingUser.id,
+      payload?.trustedDeviceToken,
+    );
+
+    if (existingUser.twoFactorEnabled && existingUser.twoFactorSecret && !trustedDevice.trusted) {
       return {
         requires_2fa: true,
         pre_auth_token: signPreAuthToken(buildTokenPayload(existingUser)),
@@ -268,17 +342,44 @@ export async function googleAuth(payload) {
     const refreshToken = signRefreshToken(buildTokenPayload(existingUser));
     const refreshTokenHash = await hashToken(refreshToken);
     await updateUser(existingUser.id, { refreshTokenHash });
+    const deviceName = payload?.deviceName || buildDeviceName(requestUserAgent);
+    const { trustedDeviceToken, isNewDevice } = await registerTrustedDevice(existingUser.id, {
+      deviceIdentifier: payload?.deviceIdentifier,
+      deviceName,
+      userAgent: requestUserAgent,
+      ipAddress: requestIpAddress,
+      locationLabel: requestLocationLabel,
+    });
+
+    if (isNewDevice) {
+      await notifyNewDeviceLogin(existingUser.id, {
+        deviceName,
+        locationLabel: requestLocationLabel,
+        ipAddress: requestIpAddress,
+        provider: "google",
+      });
+    }
 
     await recordActivityEvent({
       eventType: "AUTH_LOGIN",
       userId: existingUser.id,
-      metadata: { provider: "google" },
+      metadata: {
+        provider: "google",
+        method:
+          existingUser.twoFactorEnabled && existingUser.twoFactorSecret
+            ? "trusted_device"
+            : "google",
+        device: deviceName,
+        location: requestLocationLabel,
+        ipAddress: requestIpAddress,
+      },
       dedupeWindowSeconds: 5,
     });
 
     return {
       accessToken,
       refreshToken,
+      trustedDeviceToken,
       user: mapAuthUser(existingUser),
     };
   }

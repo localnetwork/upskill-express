@@ -10,13 +10,16 @@ import {
   listInstructorCourseReviewsController,
   listCourseReviewsController,
   listInstructorReviewsController,
+  replyToReviewController,
   toggleReviewLikeController,
 } from "./review.controller.js";
 import {
   createReviewValidator,
   instructorCourseReviewsParamsValidator,
   listInstructorReviewsValidator,
+  replyToReviewValidator,
   reviewLikeParamsValidator,
+  reviewReplyParamsValidator,
   reviewCourseParamsValidator,
 } from "./review.validator.js";
 
@@ -78,6 +81,14 @@ router.post(
   authenticate,
   validate(reviewLikeParamsValidator, "params"),
   asyncHandler(toggleReviewLikeController),
+);
+router.post(
+  "/:reviewId/reply",
+  authenticate,
+  authorize("EDUCATOR"),
+  validate(reviewReplyParamsValidator, "params"),
+  validate(replyToReviewValidator),
+  asyncHandler(replyToReviewController),
 );
 router.post(
   "/",

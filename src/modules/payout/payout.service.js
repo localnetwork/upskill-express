@@ -5,12 +5,16 @@ import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { createNotification } from "../notification/notification.service.js";
 import { env } from "../../shared/config/env.js";
 import { getPlatformCommerceSettings } from "../platform-settings/platform-settings.service.js";
+import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 const MIN_PAYOUT_AMOUNT_PHP = 500;
 const PAYOUT_REVIEW_ESTIMATE_DAYS = 3;
 const PAYOUT_APPROVED_ESTIMATE_DAYS = 1;
 const PAYOUT_WITHDRAWAL_FEE_RATE = 0.02;
 const payoutRequestItemsInclude = {
+  events: {
+    orderBy: { occurredAt: "asc" },
+  },
   items: {
     include: {
       orderItem: {
@@ -46,6 +50,22 @@ const payoutRequestItemsInclude = {
     },
   },
 };
+
+async function appendPayoutEvent(
+  payoutRequestId,
+  eventType,
+  payload = null,
+  occurredAt = new Date(),
+) {
+  return prisma.payoutRequestEvent.create({
+    data: {
+      payoutRequestId,
+      eventType,
+      occurredAt,
+      payload,
+    },
+  });
+}
 
 function getMonthBounds(now = new Date()) {
   const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -522,7 +542,8 @@ function mapWebhookEventToMutation(eventType, resource = {}) {
 export async function handlePayPalPayoutWebhook(event, headers = {}) {
   await verifyPayPalWebhookSignature(headers, event);
 
-  const mutation = mapWebhookEventToMutation(event?.event_type, event?.resource);
+  const normalizedEventType = normalizePayoutWebhookEventType(event?.event_type);
+  const mutation = mapWebhookEventToMutation(normalizedEventType, event?.resource);
   if (!mutation) {
     return { accepted: true, ignored: true };
   }
@@ -552,6 +573,7 @@ export async function handlePayPalPayoutWebhook(event, headers = {}) {
     };
   }
 
+  const occurredAt = event?.create_time ? new Date(event.create_time) : new Date();
   const updatePayload = {
     status: mutation.status,
     reviewNote: mutation.reviewNote,
@@ -566,6 +588,17 @@ export async function handlePayPalPayoutWebhook(event, headers = {}) {
     where: { id: payout.id },
     data: updatePayload,
   });
+  await appendPayoutEvent(
+    updated.id,
+    normalizedEventType,
+    {
+      eventId: event?.id || null,
+      webhookStatus: mutation.webhookStatus,
+      payoutBatchId: payoutBatchId || null,
+      resource: event?.resource || null,
+    },
+    Number.isNaN(occurredAt.getTime()) ? new Date() : occurredAt,
+  );
 
   if (mutation.shouldNotifyPaid) {
     await createNotification({
@@ -651,7 +684,7 @@ async function refreshExecutedPayoutStatus(payout) {
       return payout;
     }
 
-    return prisma.payoutRequest.update({
+    const updated = await prisma.payoutRequest.update({
       where: { id: payout.id },
       data: {
         reviewNote: nextReviewNote,
@@ -663,6 +696,18 @@ async function refreshExecutedPayoutStatus(payout) {
         },
       },
     });
+    if (settledAsPaid) {
+      await appendPayoutEvent(updated.id, "PAYMENT.PAYOUTSBATCH.SUCCESS", {
+        batchStatus,
+        source: "polling",
+      });
+    } else if (batchStatus) {
+      await appendPayoutEvent(updated.id, "PAYMENT.PAYOUTSBATCH.PROCESSING", {
+        batchStatus,
+        source: "polling",
+      });
+    }
+    return updated;
   } catch (error) {
     console.error("[payout-status-refresh] failed", {
       payoutRequestId: payout.id,
@@ -942,13 +987,14 @@ export async function requestPayout(educatorId, payload) {
   }
 
   const request = await prisma.$transaction(async (tx) => {
+    const now = new Date();
     const payout = await tx.payoutRequest.create({
       data: {
         educatorId,
         amount: payoutAmount,
         currency: settings.defaultCurrency,
         status: "APPROVED",
-        reviewedAt: new Date(),
+        reviewedAt: now,
         reviewNote: "Auto-approved payout request",
         note: payload.note || null,
         calculationSnapshot: {
@@ -984,8 +1030,42 @@ export async function requestPayout(educatorId, payload) {
         },
       });
     }
+    await tx.payoutRequestEvent.createMany({
+      data: [
+        {
+          payoutRequestId: payout.id,
+          eventType: "PAYOUT.REQUESTED",
+          occurredAt: now,
+          payload: {
+            payoutCycle: cycleWindow.payoutCycle,
+            autoApproved: true,
+          },
+        },
+        {
+          payoutRequestId: payout.id,
+          eventType: "PAYOUT.APPROVED",
+          occurredAt: now,
+          payload: {
+            autoApproved: true,
+            reviewNote: "Auto-approved payout request",
+          },
+        },
+      ],
+    });
 
     return payout;
+  });
+
+  await recordActivityEvent({
+    eventType: "INSTRUCTOR_PAYOUT_REQUESTED",
+    userId: educatorId,
+    pagePath: "/instructor/settings/payout",
+    metadata: {
+      payoutRequestId: request.id,
+      amount: request.amount,
+      currency: request.currency,
+      payoutCycle: cycleWindow.payoutCycle,
+    },
   });
 
   try {
@@ -1107,6 +1187,11 @@ export async function approvePayout(adminId, payoutRequestId, reviewNote) {
       reviewNote: reviewNote || null,
     },
   });
+  await appendPayoutEvent(updated.id, "PAYOUT.APPROVED", {
+    approvedById: adminId,
+    reviewNote: reviewNote || null,
+    autoApproved: false,
+  });
 
   await createNotification({
     userId: updated.educatorId,
@@ -1138,6 +1223,10 @@ export async function rejectPayout(adminId, payoutRequestId, reviewNote) {
       reviewedAt: new Date(),
       reviewNote: reviewNote || null,
     },
+  });
+  await appendPayoutEvent(updated.id, "PAYOUT.REJECTED", {
+    rejectedById: adminId,
+    reviewNote: reviewNote || null,
   });
 
   await createNotification({
@@ -1195,12 +1284,16 @@ export async function executePayout(payoutRequestId) {
     });
   } catch (error) {
     const providerMessage = getPayPalErrorMessage(error);
-    await prisma.payoutRequest.update({
+    const failed = await prisma.payoutRequest.update({
       where: { id: payoutRequestId },
       data: {
         status: "FAILED",
         reviewNote: providerMessage.slice(0, 500),
       },
+    });
+    await appendPayoutEvent(failed.id, "PAYMENT.PAYOUTS-ITEM.FAILED", {
+      providerMessage: providerMessage.slice(0, 500),
+      stage: "create-payout-batch",
     });
     throw new ApiError(502, `PayPal payout failed: ${providerMessage}`);
   }
@@ -1216,12 +1309,22 @@ export async function executePayout(payoutRequestId) {
       payoutResult?.name ||
       payoutResult?.message ||
       `PayPal payout batch was not accepted (${batchStatus || "UNKNOWN"})`;
-    await prisma.payoutRequest.update({
+    const failed = await prisma.payoutRequest.update({
       where: { id: payoutRequestId },
       data: {
         status: "FAILED",
         reviewNote: String(providerMessage).slice(0, 500),
       },
+    });
+    const failedEventType =
+      batchStatus === "DENIED"
+        ? "PAYMENT.PAYOUTSBATCH.DENIED"
+        : "PAYMENT.PAYOUTS-ITEM.FAILED";
+    await appendPayoutEvent(failed.id, failedEventType, {
+      batchStatus: batchStatus || "UNKNOWN",
+      providerMessage: String(providerMessage).slice(0, 500),
+      stage: "batch-accepted-check",
+      payoutBatchId: providerBatchId,
     });
     throw new ApiError(502, `PayPal payout failed: ${providerMessage}`);
   }
@@ -1237,6 +1340,15 @@ export async function executePayout(payoutRequestId) {
           ? `PayPal batch status: ${batchStatus}`
           : payout.reviewNote,
     },
+  });
+  const executionEventType =
+    batchStatus && batchStatus !== "SUCCESS"
+      ? "PAYMENT.PAYOUTSBATCH.PROCESSING"
+      : "PAYMENT.PAYOUTSBATCH.SUCCESS";
+  await appendPayoutEvent(updated.id, executionEventType, {
+    batchStatus: batchStatus || "UNKNOWN",
+    payoutBatchId: providerBatchId,
+    stage: "execute-payout",
   });
 
   await createNotification({

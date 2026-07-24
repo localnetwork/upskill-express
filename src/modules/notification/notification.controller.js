@@ -1,4 +1,4 @@
-import { listMyNotifications, markAsRead } from "./notification.service.js";
+import { getMyNotification, listMyNotifications, markAsRead } from "./notification.service.js";
 
 export async function listNotificationsController(req, res) {
   const data = await listMyNotifications(req.user.id, req.query);
@@ -8,4 +8,9 @@ export async function listNotificationsController(req, res) {
 export async function markNotificationReadController(req, res) {
   await markAsRead(req.user.id, req.params.notificationId);
   return res.json({ message: "Notification marked as read" });
+}
+
+export async function getNotificationController(req, res) {
+  const data = await getMyNotification(req.user.id, req.params.notificationId);
+  return res.json({ message: "Notification fetched", data });
 }

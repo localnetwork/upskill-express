@@ -10,12 +10,20 @@ export const loginValidator = z.object({
   email: z.string().email("Invalid email format").optional(),
   username: z.string().min(3).optional(),
   password: z.string().min(1, "Password is required"),
+  trustedDeviceToken: z.string().min(10).max(256).optional(),
+  deviceIdentifier: z.string().min(6).max(256).optional(),
+  deviceName: z.string().max(120).optional(),
+  locationLabel: z.string().max(120).optional(),
 });
 
 export const googleAuthValidator = z.object({
   idToken: z.string().min(1, "Google credential is required"),
   intent: z.enum(["login", "register"]),
   mode: z.enum(["student", "instructor"]).optional(),
+  trustedDeviceToken: z.string().min(10).max(256).optional(),
+  deviceIdentifier: z.string().min(6).max(256).optional(),
+  deviceName: z.string().max(120).optional(),
+  locationLabel: z.string().max(120).optional(),
 });
 
 export const refreshValidator = z.object({

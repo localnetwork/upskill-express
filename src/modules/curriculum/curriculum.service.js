@@ -1,5 +1,6 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
+import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 async function ensureEducatorCourse(userId, courseId) {
   const course = await prisma.course.findFirst({
@@ -13,7 +14,7 @@ async function ensureEducatorCourse(userId, courseId) {
 
 export async function createSection(userId, courseId, payload) {
   await ensureEducatorCourse(userId, courseId);
-  return prisma.courseSection.create({
+  const section = await prisma.courseSection.create({
     data: {
       courseId,
       title: payload.title,
@@ -21,6 +22,20 @@ export async function createSection(userId, courseId, payload) {
       position: payload.position ?? payload.sort_order ?? 0,
     },
   });
+
+  await recordActivityEvent({
+    eventType: "INSTRUCTOR_CURRICULUM_ADDED",
+    userId,
+    courseId,
+    pagePath: `/instructor/courses/${courseId}/curriculum`,
+    metadata: {
+      entityType: "SECTION",
+      entityId: section.id,
+      title: section.title,
+    },
+  });
+
+  return section;
 }
 
 export async function createLesson(userId, courseId, sectionId, payload) {
@@ -32,7 +47,7 @@ export async function createLesson(userId, courseId, sectionId, payload) {
     throw new ApiError(404, "Section not found");
   }
 
-  return prisma.lesson.create({
+  const lesson = await prisma.lesson.create({
     data: {
       sectionId,
       courseId,
@@ -59,6 +74,21 @@ export async function createLesson(userId, courseId, sectionId, payload) {
       quizQuestions: payload.quizQuestions,
     },
   });
+
+  await recordActivityEvent({
+    eventType: "INSTRUCTOR_CURRICULUM_ADDED",
+    userId,
+    courseId,
+    pagePath: `/instructor/courses/${courseId}/curriculum`,
+    metadata: {
+      entityType: "LESSON",
+      entityId: lesson.id,
+      title: lesson.title,
+      lessonType: lesson.type,
+    },
+  });
+
+  return lesson;
 }
 
 export async function uploadLessonMedia(userId, courseId, lessonId, file, mediaType) {
@@ -99,6 +129,19 @@ export async function uploadLessonMedia(userId, courseId, lessonId, file, mediaT
       data: { resourceUrl: media.storagePath },
     });
   }
+
+  await recordActivityEvent({
+    eventType: "INSTRUCTOR_CURRICULUM_UPDATED",
+    userId,
+    courseId,
+    pagePath: `/instructor/courses/${courseId}/curriculum`,
+    metadata: {
+      entityType: "LESSON_MEDIA",
+      lessonId,
+      mediaType,
+      mediaId: media.id,
+    },
+  });
 
   return media;
 }

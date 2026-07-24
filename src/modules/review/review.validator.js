@@ -15,6 +15,18 @@ export const reviewLikeParamsValidator = z.object({
   reviewId: z.string().min(1),
 });
 
+export const reviewReplyParamsValidator = z.object({
+  reviewId: z.string().min(1),
+});
+
+export const replyToReviewValidator = z.object({
+  authorReply: z
+    .string()
+    .trim()
+    .min(1, "Reply is required")
+    .max(2000, "Reply must be at most 2000 characters"),
+});
+
 export const instructorCourseReviewsParamsValidator = z.object({
   slug: z.string().min(1),
 });

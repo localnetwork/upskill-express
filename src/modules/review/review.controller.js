@@ -3,6 +3,7 @@ import {
   getReviewEligibility,
   listCourseReviews,
   listInstructorReviews,
+  replyToReview,
   toggleReviewLike,
 } from "./review.service.js";
 
@@ -29,7 +30,7 @@ export async function listInstructorReviewsController(req, res) {
 export async function listInstructorCourseReviewsController(req, res) {
   const data = await listInstructorReviews(req.user.id, {
     ...req.query,
-    courseSlug: req.params.slug,
+    courseRef: req.params.slug,
   });
   return res.json({ message: "Course reviews fetched", ...data });
 }
@@ -37,4 +38,9 @@ export async function listInstructorCourseReviewsController(req, res) {
 export async function toggleReviewLikeController(req, res) {
   const data = await toggleReviewLike(req.user.id, req.params.reviewId);
   return res.json({ message: data.liked ? "Review liked" : "Review unliked", data });
+}
+
+export async function replyToReviewController(req, res) {
+  const data = await replyToReview(req.user.id, req.params.reviewId, req.body);
+  return res.json({ message: "Reply saved", data });
 }

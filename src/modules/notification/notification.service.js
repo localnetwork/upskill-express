@@ -1,6 +1,7 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { emitNotificationToUser } from "../../shared/realtime/socket.js";
+import { ApiError } from "../../shared/utils/ApiError.js";
 
 export async function createNotification(payload) {
   const notification = await prisma.notification.create({
@@ -81,4 +82,19 @@ export async function markAsRead(userId, notificationId) {
     where: { id: notificationId, userId },
     data: { readAt: new Date() },
   });
+}
+
+export async function getMyNotification(userId, notificationId) {
+  const notification = await prisma.notification.findFirst({
+    where: {
+      id: notificationId,
+      userId,
+    },
+  });
+
+  if (!notification) {
+    throw new ApiError(404, "Notification not found");
+  }
+
+  return notification;
 }

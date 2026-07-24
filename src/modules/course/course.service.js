@@ -2,6 +2,7 @@ import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { slugify } from "../../shared/utils/slugify.js";
+import { recordActivityEvent } from "../analytics/analytics.service.js";
 
 const COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
 const PROMO_MEDIA_TYPES = ["PROMO_VIDEO"];
@@ -352,7 +353,7 @@ async function makeUniqueSlug(title) {
 export async function createCourse(userId, payload) {
   const slug = await makeUniqueSlug(payload.title);
   const normalized = await normalizeCoursePayload(payload);
-  return prisma.course.create({
+  const course = await prisma.course.create({
     data: {
       title: normalized.title,
       subtitle: normalized.subtitle,
@@ -366,6 +367,18 @@ export async function createCourse(userId, payload) {
       isPublished: normalized.isPublished,
     },
   });
+
+  await recordActivityEvent({
+    eventType: "INSTRUCTOR_COURSE_CREATED",
+    userId,
+    courseId: course.id,
+    pagePath: "/instructor/courses",
+    metadata: {
+      courseTitle: course.title,
+    },
+  });
+
+  return course;
 }
 
 export async function updateCourse(userId, courseId, payload) {

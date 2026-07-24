@@ -133,7 +133,16 @@ export async function listCourseReviews(courseId, query, viewerUserId = null) {
   const { page, limit, skip } = getPagination(query);
   const orderBy = normalizeReviewSort(query.sort);
   const where = { courseId };
-  const [rows, total, aggregate, groupedRatings, canLikeCourseReviews] = await Promise.all([
+  const [course, rows, total, aggregate, groupedRatings, canLikeCourseReviews] = await Promise.all([
+    prisma.course.findFirst({
+      where: {
+        id: courseId,
+        deletedAt: null,
+      },
+      select: {
+        educatorId: true,
+      },
+    }),
     prisma.review.findMany({
       where,
       skip,
@@ -158,6 +167,18 @@ export async function listCourseReviews(courseId, query, viewerUserId = null) {
             reviewLikes: true,
           },
         },
+        course: {
+          select: {
+            educator: {
+              select: {
+                id: true,
+                username: true,
+                firstName: true,
+                lastName: true,
+              },
+            },
+          },
+        },
       },
       orderBy,
     }),
@@ -173,6 +194,7 @@ export async function listCourseReviews(courseId, query, viewerUserId = null) {
     }),
     canUserLikeCourseReview(viewerUserId, courseId),
   ]);
+  const canReply = Boolean(viewerUserId && course?.educatorId === viewerUserId);
 
   const ratingDistribution = [5, 4, 3, 2, 1].map((ratingValue) => {
     const row = groupedRatings.find((item) => item.rating === ratingValue);
@@ -189,7 +211,9 @@ export async function listCourseReviews(courseId, query, viewerUserId = null) {
     likesCount: Number(row?._count?.reviewLikes || 0),
     likedByMe: Boolean(viewerUserId && Array.isArray(row.reviewLikes) && row.reviewLikes.length > 0),
     canLike: Boolean(viewerUserId && canLikeCourseReviews && row.userId !== viewerUserId),
+    canReply,
     author: mapReviewAuthor(row.user),
+    courseAuthor: mapReviewAuthor(row?.course?.educator),
   }));
 
   return {
@@ -267,6 +291,91 @@ export async function toggleReviewLike(userId, reviewId) {
   return result;
 }
 
+export async function replyToReview(userId, reviewId, payload) {
+  const review = await prisma.review.findFirst({
+    where: { id: reviewId },
+    include: {
+      course: {
+        select: {
+          id: true,
+          title: true,
+          educatorId: true,
+        },
+      },
+      user: {
+        select: {
+          id: true,
+        },
+      },
+    },
+  });
+
+  if (!review) {
+    throw new ApiError(404, "Review not found");
+  }
+  if (review.course?.educatorId !== userId) {
+    throw new ApiError(403, "Only the course author can reply to this review");
+  }
+
+  const authorReply = String(payload?.authorReply || "").trim();
+  if (!authorReply) {
+    throw new ApiError(400, "Reply is required");
+  }
+
+  const updated = await prisma.review.update({
+    where: { id: reviewId },
+    data: {
+      authorReply,
+      authorReplyAt: new Date(),
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
+      _count: {
+        select: {
+          reviewLikes: true,
+        },
+      },
+      course: {
+        select: {
+          educator: {
+            select: {
+              id: true,
+              username: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  await createNotification({
+    userId: review.userId,
+    type: "COURSE_REVIEW",
+    title: "Instructor replied to your review",
+    message: `The instructor replied to your review on "${review.course?.title || "a course"}".`,
+    metadata: {
+      courseId: review.courseId,
+      reviewId: review.id,
+    },
+  });
+
+  return {
+    ...updated,
+    likesCount: Number(updated?._count?.reviewLikes || 0),
+    author: mapReviewAuthor(updated.user),
+    courseAuthor: mapReviewAuthor(updated?.course?.educator),
+  };
+}
+
 export async function getReviewEligibility(userId, courseId) {
   if (!userId) {
     return {
@@ -338,13 +447,23 @@ export async function listInstructorReviews(userId, query = {}) {
   const normalizedRating = Number(query.rating || 0);
   const courseId = String(query.courseId || "").trim();
   const courseSlug = String(query.courseSlug || "").trim();
+  const courseRef = String(query.courseRef || "").trim();
+  const courseMatchers = [];
+  if (courseId) {
+    courseMatchers.push({ id: courseId });
+  }
+  if (courseSlug) {
+    courseMatchers.push({ slug: courseSlug });
+  }
+  if (courseRef) {
+    courseMatchers.push({ id: courseRef }, { slug: courseRef });
+  }
 
   const where = {
     course: {
       educatorId: userId,
       deletedAt: null,
-      ...(courseId ? { id: courseId } : {}),
-      ...(courseSlug ? { slug: courseSlug } : {}),
+      ...(courseMatchers.length ? { OR: courseMatchers } : {}),
     },
     ...(Number.isInteger(normalizedRating) && normalizedRating >= 1 && normalizedRating <= 5
       ? { rating: normalizedRating }
@@ -393,8 +512,7 @@ export async function listInstructorReviews(userId, query = {}) {
         course: {
           educatorId: userId,
           deletedAt: null,
-          ...(courseId ? { id: courseId } : {}),
-          ...(courseSlug ? { slug: courseSlug } : {}),
+          ...(courseMatchers.length ? { OR: courseMatchers } : {}),
         },
       },
       _avg: { rating: true },

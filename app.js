@@ -18,6 +18,7 @@ import adminRoutes from "./src/modules/admin/admin.routes.js";
 import wishlistRoutes from "./src/modules/wishlist/wishlist.routes.js";
 import certificationRoutes from "./src/modules/certification/certification.routes.js";
 import analyticsRoutes from "./src/modules/analytics/analytics.routes.js";
+import communicationRoutes from "./src/modules/communication/communication.routes.js";
 import legacyRoutes from "./src/modules/legacy/legacy.routes.js";
 import {
   cacheGetResponse,
@@ -74,6 +75,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/certifications", certificationRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/communication", communicationRoutes);
 app.use("/api", legacyRoutes);
 app.get(
   "/api/course-price-tiers",

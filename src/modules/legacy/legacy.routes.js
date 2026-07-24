@@ -16,6 +16,7 @@ import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { getObjectFromR2, isR2Enabled, isR2StoragePath } from "../../shared/storage/r2.js";
 import { updateLessonProgress } from "../progress/progress.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import { createNotification } from "../notification/notification.service.js";
 import {
   consumeBackupCode,
   countBackupCodes,
@@ -23,6 +24,14 @@ import {
   generateBackupCodes,
   verifyTotpToken,
 } from "../auth/two-factor.service.js";
+import {
+  buildDeviceName,
+  hasActiveTrustedDeviceByIdentifier,
+  getRequestIpAddress,
+  getRequestUserAgent,
+  registerTrustedDevice,
+  resolveDeviceLocationLabel,
+} from "../auth/trusted-device.service.js";
 
 const router = Router();
 const QUIZ_ATTEMPT_KEY_PREFIX = "quiz_attempt::";
@@ -68,6 +77,29 @@ function mapAuthUser(user) {
     roles,
     permissions,
   };
+}
+
+function toBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+async function notifyNewDeviceLogin(userId, { deviceName, locationLabel, ipAddress, provider }) {
+  await createNotification({
+    userId,
+    type: "SYSTEM",
+    title: "New device login detected",
+    message: `A new device signed in to your account from ${locationLabel || ipAddress || "an unknown location"}.`,
+    metadata: {
+      notificationKind: "SECURITY_NEW_DEVICE_LOGIN",
+      provider: provider || "password",
+      deviceName: deviceName || "Unknown device",
+      locationLabel: locationLabel || null,
+      ipAddress: ipAddress || null,
+    },
+  });
 }
 
 async function findUserWithRolesById(id) {
@@ -2465,6 +2497,10 @@ router.post("/verify-2fa", async (req, res, next) => {
   try {
     const preAuthToken = String(req.body?.pre_auth_token || "").trim();
     const code = String(req.body?.code || "").trim();
+    const deviceIdentifier = String(req.body?.deviceIdentifier || "").trim();
+    const claimedDeviceName = String(req.body?.deviceName || "").trim();
+    const clientLocationLabel = String(req.body?.locationLabel || "").trim();
+    const rememberDevice = toBoolean(req.body?.rememberDevice, true);
     if (!preAuthToken) {
       throw new ApiError(400, "pre_auth_token is required");
     }
@@ -2500,10 +2536,44 @@ router.post("/verify-2fa", async (req, res, next) => {
       data: { refreshTokenHash },
     });
 
+    const requestUserAgent = getRequestUserAgent(req);
+    const requestIpAddress = getRequestIpAddress(req);
+    const requestLocationLabel = resolveDeviceLocationLabel(req, clientLocationLabel);
+    const deviceName = claimedDeviceName || buildDeviceName(requestUserAgent);
+    const knownDeviceBefore = await hasActiveTrustedDeviceByIdentifier(user.id, deviceIdentifier);
+    let trustedDeviceToken = null;
+    let isNewDevice = !knownDeviceBefore;
+    if (rememberDevice) {
+      const saved = await registerTrustedDevice(user.id, {
+        deviceIdentifier,
+        deviceName,
+        userAgent: requestUserAgent,
+        ipAddress: requestIpAddress,
+        locationLabel: requestLocationLabel,
+      });
+      trustedDeviceToken = saved.trustedDeviceToken;
+      isNewDevice = Boolean(saved.isNewDevice);
+    }
+
+    if (isNewDevice) {
+      await notifyNewDeviceLogin(user.id, {
+        deviceName,
+        locationLabel: requestLocationLabel,
+        ipAddress: requestIpAddress,
+        provider: "2fa_totp",
+      });
+    }
+
     await recordActivityEvent({
       eventType: "AUTH_LOGIN",
       userId: user.id,
-      metadata: { method: "2fa_totp" },
+      metadata: {
+        method: "2fa_totp",
+        rememberedDevice: rememberDevice,
+        device: deviceName,
+        location: requestLocationLabel,
+        ipAddress: requestIpAddress,
+      },
       dedupeWindowSeconds: 5,
     });
 
@@ -2512,6 +2582,7 @@ router.post("/verify-2fa", async (req, res, next) => {
       token: accessToken,
       accessToken,
       refreshToken,
+      trustedDeviceToken,
       user: mapAuthUser(user),
     });
   } catch (error) {
@@ -2569,6 +2640,10 @@ router.post("/verify-backup-code", async (req, res, next) => {
   try {
     const preAuthToken = String(req.body?.pre_auth_token || "").trim();
     const code = String(req.body?.code || "").trim();
+    const deviceIdentifier = String(req.body?.deviceIdentifier || "").trim();
+    const claimedDeviceName = String(req.body?.deviceName || "").trim();
+    const clientLocationLabel = String(req.body?.locationLabel || "").trim();
+    const rememberDevice = toBoolean(req.body?.rememberDevice, true);
     if (!preAuthToken) {
       throw new ApiError(400, "pre_auth_token is required");
     }
@@ -2607,10 +2682,44 @@ router.post("/verify-backup-code", async (req, res, next) => {
       },
     });
 
+    const requestUserAgent = getRequestUserAgent(req);
+    const requestIpAddress = getRequestIpAddress(req);
+    const requestLocationLabel = resolveDeviceLocationLabel(req, clientLocationLabel);
+    const deviceName = claimedDeviceName || buildDeviceName(requestUserAgent);
+    const knownDeviceBefore = await hasActiveTrustedDeviceByIdentifier(user.id, deviceIdentifier);
+    let trustedDeviceToken = null;
+    let isNewDevice = !knownDeviceBefore;
+    if (rememberDevice) {
+      const saved = await registerTrustedDevice(user.id, {
+        deviceIdentifier,
+        deviceName,
+        userAgent: requestUserAgent,
+        ipAddress: requestIpAddress,
+        locationLabel: requestLocationLabel,
+      });
+      trustedDeviceToken = saved.trustedDeviceToken;
+      isNewDevice = Boolean(saved.isNewDevice);
+    }
+
+    if (isNewDevice) {
+      await notifyNewDeviceLogin(user.id, {
+        deviceName,
+        locationLabel: requestLocationLabel,
+        ipAddress: requestIpAddress,
+        provider: "2fa_backup_code",
+      });
+    }
+
     await recordActivityEvent({
       eventType: "AUTH_LOGIN",
       userId: user.id,
-      metadata: { method: "2fa_backup_code" },
+      metadata: {
+        method: "2fa_backup_code",
+        rememberedDevice: rememberDevice,
+        device: deviceName,
+        location: requestLocationLabel,
+        ipAddress: requestIpAddress,
+      },
       dedupeWindowSeconds: 5,
     });
 
@@ -2619,6 +2728,7 @@ router.post("/verify-backup-code", async (req, res, next) => {
       token: accessToken,
       accessToken,
       refreshToken,
+      trustedDeviceToken,
       user: mapAuthUser(user),
       backup_codes_remaining: consumedResult.nextHashes.length,
     });

@@ -4,6 +4,7 @@ import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { countMany, findById, findByUsername, findMany, updateById } from "./user.repository.js";
 import { listUserActivityEvents, recordActivityEvent } from "../analytics/analytics.service.js";
+import { listTrustedDevices, revokeTrustedDevice } from "../auth/trusted-device.service.js";
 
 function getOptional(payload, key) {
   return payload[key] === undefined ? undefined : payload[key];
@@ -172,4 +173,16 @@ export async function softDeleteUser(userId) {
 
 export async function listCurrentUserActivity(userId, query = {}) {
   return listUserActivityEvents(userId, query);
+}
+
+export async function listCurrentUserDevices(userId) {
+  return listTrustedDevices(userId);
+}
+
+export async function removeCurrentUserDevice(userId, deviceId) {
+  const result = await revokeTrustedDevice(userId, deviceId);
+  if (!result.success) {
+    throw new ApiError(404, "Device not found");
+  }
+  return { success: true };
 }

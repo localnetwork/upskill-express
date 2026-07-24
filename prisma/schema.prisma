@@ -86,6 +86,11 @@ enum ActivityEventType {
   AUTH_REGISTER
   AUTH_LOGIN
   ACCOUNT_PROFILE_UPDATED
+  INSTRUCTOR_COURSE_CREATED
+  INSTRUCTOR_CURRICULUM_ADDED
+  INSTRUCTOR_CURRICULUM_UPDATED
+  INSTRUCTOR_PAYOUT_REQUESTED
+  INSTRUCTOR_ANNOUNCEMENT_POSTED
   LEARNING_LESSON_PROGRESS
   LEARNING_COURSE_COMPLETED
   LEARNING_REVIEW_CREATED
@@ -148,9 +153,32 @@ model User {
   taxTransactions       TaxTransaction[]
   createdMedia          Media[]
   activityEvents        ActivityEvent[]
+  trustedDevices        TrustedDevice[]
 
   @@index([deletedAt])
   @@map("users")
+}
+
+model TrustedDevice {
+  id               String    @id @default(cuid())
+  userId           String
+  deviceIdentifier String?
+  tokenDigest      String    @unique
+  deviceName       String
+  userAgent        String?
+  ipAddress        String?
+  locationLabel    String?
+  expiresAt        DateTime
+  lastUsedAt       DateTime  @default(now())
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt, lastUsedAt])
+  @@index([userId, deviceIdentifier, revokedAt])
+  @@map("trusted_devices")
 }
 
 model Role {
@@ -523,6 +551,8 @@ model Review {
   rating      Int
   title       String?
   comment     String?
+  authorReply String?
+  authorReplyAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -664,10 +694,26 @@ model PayoutRequest {
   educator            User         @relation("EducatorPayoutRequests", fields: [educatorId], references: [id], onDelete: Cascade)
   reviewedBy          User?        @relation("AdminReviewedPayoutRequests", fields: [reviewedById], references: [id])
   items               PayoutRequestItem[]
+  events              PayoutRequestEvent[]
 
   @@index([educatorId, status, requestedAt])
   @@index([reviewedById])
   @@map("payout_requests")
+}
+
+model PayoutRequestEvent {
+  id              String        @id @default(cuid())
+  payoutRequestId String
+  eventType       String
+  occurredAt      DateTime      @default(now())
+  payload         Json?
+  createdAt       DateTime      @default(now())
+
+  payoutRequest   PayoutRequest @relation(fields: [payoutRequestId], references: [id], onDelete: Cascade)
+
+  @@index([payoutRequestId, occurredAt])
+  @@index([eventType, occurredAt])
+  @@map("payout_request_events")
 }
 
 model PayoutRequestItem {
