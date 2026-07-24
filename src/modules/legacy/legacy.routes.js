@@ -34,6 +34,7 @@ import {
 } from "../auth/trusted-device.service.js";
 
 const router = Router();
+const supportsLessonTopics = Boolean(prisma.lessonTopic);
 const QUIZ_ATTEMPT_KEY_PREFIX = "quiz_attempt::";
 const codingSubmissionStore = new Map();
 const JUDGE0_BASE_URL = String(process.env.JUDGE0_BASE_URL || "https://ce.judge0.com").replace(/\/+$/, "");
@@ -176,9 +177,45 @@ function parseJsonOrNull(value) {
   }
 }
 
+function lessonIncludeForTopics() {
+  return supportsLessonTopics
+    ? {
+        topic: true,
+        lessonTopics: {
+          include: {
+            topic: true,
+          },
+        },
+      }
+    : {
+        topic: true,
+      };
+}
+
 function mapLessonToLegacyCurriculum(lesson) {
   const parsedCodingStarterCode = parseJsonOrNull(lesson.codingStarterCode);
   const parsedQuizQuestions = parseJsonOrNull(lesson.quizQuestions);
+  const topicRows = Array.isArray(lesson.lessonTopics)
+    ? lesson.lessonTopics
+        .map((row) => row?.topic)
+        .filter(Boolean)
+        .map((topic) => ({
+          id: topic.id,
+          title: topic.name,
+          slug: topic.slug,
+          category_id: topic.categoryId,
+        }))
+    : [];
+  const fallbackTopic = lesson.topic
+    ? {
+        id: lesson.topic.id,
+        title: lesson.topic.name,
+        slug: lesson.topic.slug,
+        category_id: lesson.topic.categoryId,
+      }
+    : null;
+  const topics = topicRows.length > 0 ? topicRows : fallbackTopic ? [fallbackTopic] : [];
+  const primaryTopicId = topics[0]?.id || lesson.topicId || null;
 
   return {
     id: lesson.id,
@@ -195,6 +232,10 @@ function mapLessonToLegacyCurriculum(lesson) {
     curriculum_description: lesson.description || "",
     curriculum_resource_type: mapLessonTypeToLegacyResource(lesson.type, lesson),
     estimated_duration: lesson.durationInSeconds || 0,
+    topic_id: primaryTopicId,
+    topic_ids: topics.map((topic) => topic.id),
+    topic: topics[0] || null,
+    topics,
     is_public_preview: Boolean(lesson.isPreview),
     is_preview: Boolean(lesson.isPreview),
     asset:
@@ -278,6 +319,77 @@ async function ensureEducatorOwnsLesson(userId, lessonId) {
     throw new ApiError(404, "Curriculum not found");
   }
   return lesson;
+}
+
+function normalizeTopicIds(input) {
+  if (input === undefined) return [];
+  const rawList = Array.isArray(input)
+    ? input
+    : typeof input === "string"
+      ? input.split(",")
+      : [input];
+  const normalized = rawList
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(normalized));
+}
+
+function extractTopicIdsFromRequestBody(body = {}) {
+  if (body.topicIds !== undefined) return normalizeTopicIds(body.topicIds);
+  if (body.topic_ids !== undefined) return normalizeTopicIds(body.topic_ids);
+  if (body.topicId !== undefined) return normalizeTopicIds(body.topicId);
+  if (body.topic_id !== undefined) return normalizeTopicIds(body.topic_id);
+  return undefined;
+}
+
+async function resolveCurriculumTopicsForCourse(course, topicIds) {
+  const normalizedTopicIds = normalizeTopicIds(topicIds);
+  if (!normalizedTopicIds.length) {
+    return [];
+  }
+
+  if (!course?.categoryId) {
+    throw new ApiError(
+      400,
+      "Course category is required before assigning a curriculum topic",
+    );
+  }
+
+  const topics = await prisma.topic.findMany({
+    where: {
+      id: { in: normalizedTopicIds },
+      deletedAt: null,
+    },
+    include: {
+      category: {
+        select: {
+          id: true,
+          parentId: true,
+          deletedAt: true,
+        },
+      },
+    },
+  });
+
+  if (topics.length !== normalizedTopicIds.length) {
+    throw new ApiError(400, "One or more topics are invalid");
+  }
+
+  const topicMap = new Map(topics.map((topic) => [topic.id, topic]));
+
+  for (const topicId of normalizedTopicIds) {
+    const topic = topicMap.get(topicId);
+    if (!topic || !topic.category || topic.category.deletedAt) {
+      throw new ApiError(400, "One or more topics are invalid");
+    }
+    const belongsToCourseCategory =
+      topic.categoryId === course.categoryId || topic.category.parentId === course.categoryId;
+    if (!belongsToCourseCategory) {
+      throw new ApiError(400, "Topic does not belong to the selected course category");
+    }
+  }
+
+  return normalizedTopicIds.map((topicId) => topicMap.get(topicId));
 }
 
 async function ensureLearnerOwnsQuizLesson(userId, lessonId) {
@@ -1482,6 +1594,63 @@ router.get(
   },
 );
 
+router.get(
+  "/course-sections/course/:courseId/topics",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const course = await ensureEducatorOwnsCourse(req.user.id, req.params.courseId);
+      if (!course.categoryId) {
+        return res.json({ data: [] });
+      }
+
+      const topics = await prisma.topic.findMany({
+        where: {
+          deletedAt: null,
+          category: {
+            deletedAt: null,
+            OR: [
+              { id: course.categoryId },
+              { parentId: course.categoryId },
+            ],
+          },
+        },
+        include: {
+          category: {
+            select: {
+              id: true,
+              name: true,
+              parentId: true,
+              parent: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: [{ category: { name: "asc" } }, { name: "asc" }],
+      });
+
+      return res.json({
+        data: topics.map((topic) => ({
+          id: topic.id,
+          title: topic.name,
+          slug: topic.slug,
+          category_id: topic.categoryId,
+          category_title: topic.category?.name || "",
+          parent_category_id: topic.category?.parentId || null,
+          parent_category_title: topic.category?.parent?.name || null,
+        })),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 router.post("/course-sections", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
   try {
     const courseId = req.body.course_id;
@@ -1559,6 +1728,7 @@ router.get(
       const section = await ensureEducatorOwnsSection(req.user.id, req.params.sectionId);
       const lessons = await prisma.lesson.findMany({
         where: { sectionId: section.id },
+        include: lessonIncludeForTopics(),
         orderBy: { position: "asc" },
       });
       return res.json({
@@ -1596,10 +1766,23 @@ router.put(
 router.post("/course-curriculums", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
   try {
     const section = await ensureEducatorOwnsSection(req.user.id, req.body.course_section_id);
+    const topicIds = extractTopicIdsFromRequestBody(req.body) || [];
+    const topics = await resolveCurriculumTopicsForCourse(section.course, topicIds);
     const lesson = await prisma.lesson.create({
+      include: lessonIncludeForTopics(),
       data: {
         sectionId: section.id,
         courseId: section.courseId,
+        topicId: topics[0]?.id || null,
+        ...(supportsLessonTopics && topics.length > 0
+          ? {
+              lessonTopics: {
+                create: topics.map((topic) => ({
+                  topicId: topic.id,
+                })),
+              },
+            }
+          : {}),
         type:
           req.body.curriculum_type === "quiz"
             ? "QUIZ"
@@ -1644,6 +1827,7 @@ router.put("/course-curriculums/:lessonId", authenticate, authorize("EDUCATOR"),
       req.body.codingStarterCode !== undefined
         ? req.body.codingStarterCode
         : req.body.coding_starter_code;
+    const topicIds = extractTopicIdsFromRequestBody(req.body);
 
     const data = {
       title: req.body.title,
@@ -1679,9 +1863,53 @@ router.put("/course-curriculums/:lessonId", authenticate, authorize("EDUCATOR"),
           : JSON.stringify(codingStarterCode || {});
     }
 
+    if (topicIds !== undefined) {
+      const topics = await resolveCurriculumTopicsForCourse(lesson.course, topicIds);
+      data.topicId = topics[0]?.id || null;
+
+      if (!supportsLessonTopics) {
+        if (topics.length > 1) {
+          throw new ApiError(
+            400,
+            "Multiple topics require the latest migration and Prisma client generation",
+          );
+        }
+        const updated = await prisma.lesson.update({
+          where: { id: lesson.id },
+          data,
+          include: lessonIncludeForTopics(),
+        });
+        return res.json({ data: mapLessonToLegacyCurriculum(updated) });
+      }
+
+      const updated = await prisma.$transaction(async (tx) => {
+        await tx.lesson.update({
+          where: { id: lesson.id },
+          data,
+        });
+        await tx.lessonTopic.deleteMany({
+          where: { lessonId: lesson.id },
+        });
+        if (topics.length > 0) {
+          await tx.lessonTopic.createMany({
+            data: topics.map((topic) => ({
+              lessonId: lesson.id,
+              topicId: topic.id,
+            })),
+          });
+        }
+        return tx.lesson.findUnique({
+          where: { id: lesson.id },
+          include: lessonIncludeForTopics(),
+        });
+      });
+      return res.json({ data: mapLessonToLegacyCurriculum(updated) });
+    }
+
     const updated = await prisma.lesson.update({
       where: { id: lesson.id },
       data,
+      include: lessonIncludeForTopics(),
     });
     return res.json({ data: mapLessonToLegacyCurriculum(updated) });
   } catch (error) {

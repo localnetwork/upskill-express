@@ -11,6 +11,10 @@ export const createSectionValidator = z.object({
 export const createLessonValidator = z.object({
   type: z.enum(["VIDEO", "QUIZ", "CODING_EXERCISE", "RESOURCE", "ASSIGNMENT"]).optional(),
   curriculum_type: z.string().optional(),
+  topicIds: z.array(z.string()).optional(),
+  topic_ids: z.array(z.string()).optional(),
+  topicId: z.string().optional(),
+  topic_id: z.string().optional(),
   title: z.string().min(2),
   description: z.string().optional(),
   curriculum_description: z.string().optional(),

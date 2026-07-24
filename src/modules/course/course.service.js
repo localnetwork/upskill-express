@@ -835,6 +835,7 @@ function mapCourseDetails(course, goals) {
                   : lesson.assignmentText || lesson.type === "RESOURCE"
                     ? "article"
                     : "null",
+          topic_id: lesson.topicId || null,
           estimated_duration: estimateLessonDurationSeconds(lesson),
           curriculum_description: lesson.description || "",
           asset:
@@ -1496,6 +1497,7 @@ export async function getCourseRoute(slug, actor = null) {
                 : lesson.assignmentText || lesson.type === "RESOURCE"
                   ? "article"
                   : "null",
+        topic_id: lesson.topicId || null,
         estimated_duration: estimateLessonDurationSeconds(lesson),
         curriculum_description: lesson.description || "",
         is_public_preview: Boolean(lesson.isPreview),
@@ -1671,6 +1673,7 @@ export async function getCourseForLearner(userId, slug) {
                 : lesson.assignmentText
                   ? "article"
                   : "null",
+            topic_id: lesson.topicId || null,
             curriculum_description: lesson.description || "",
             estimated_duration: estimateLessonDurationSeconds(lesson),
             asset:

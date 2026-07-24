@@ -1,0 +1,1508 @@
+[
+  {
+    "category": "Development",
+    "subcategories": [
+      {
+        "title": "Web Development",
+        "topics": [
+          "HTML5",
+          "CSS3",
+          "JavaScript",
+          "React.js",
+          "Next.js",
+          "Node.js"
+        ]
+      },
+      {
+        "title": "Data Science",
+        "topics": [
+          "Python for Data Science",
+          "Pandas",
+          "NumPy",
+          "Data Visualization",
+          "Machine Learning Basics",
+          "Jupyter Notebook"
+        ]
+      },
+      {
+        "title": "Mobile Development",
+        "topics": [
+          "Flutter",
+          "React Native",
+          "Android Development",
+          "iOS Development",
+          "Kotlin",
+          "Swift"
+        ]
+      },
+      {
+        "title": "Programming Languages",
+        "topics": [
+          "Python Programming",
+          "Java Programming",
+          "C++ Programming",
+          "C# Programming",
+          "Go Programming",
+          "Rust Programming"
+        ]
+      },
+      {
+        "title": "Game Development",
+        "topics": [
+          "Unity Engine",
+          "Unreal Engine",
+          "Godot Engine",
+          "Game Physics",
+          "Game Scripting",
+          "2D Game Design"
+        ]
+      },
+      {
+        "title": "Database Design & Development",
+        "topics": [
+          "SQL Fundamentals",
+          "Relational Database Design",
+          "NoSQL Databases",
+          "PostgreSQL",
+          "MongoDB",
+          "Database Indexing"
+        ]
+      },
+      {
+        "title": "Software Testing",
+        "topics": [
+          "Unit Testing",
+          "Test-Driven Development",
+          "Automated Testing",
+          "Selenium",
+          "QA Fundamentals",
+          "Bug Tracking"
+        ]
+      },
+      {
+        "title": "Software Engineering",
+        "topics": [
+          "Software Architecture",
+          "Design Patterns",
+          "Clean Code",
+          "Version Control with Git",
+          "Code Review",
+          "System Design"
+        ]
+      },
+      {
+        "title": "Software Development Tools",
+        "topics": [
+          "Docker",
+          "Kubernetes",
+          "CI/CD Pipelines",
+          "VS Code",
+          "Debugging Tools",
+          "API Development"
+        ]
+      },
+      {
+        "title": "No-Code Development",
+        "topics": [
+          "Bubble",
+          "Webflow",
+          "Airtable Apps",
+          "Zapier Workflows",
+          "No-Code Databases",
+          "App Prototyping without Code"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Business",
+    "subcategories": [
+      {
+        "title": "Entrepreneurship",
+        "topics": [
+          "Startup Validation",
+          "Business Model Canvas",
+          "MVP Planning",
+          "Pitch Deck",
+          "Fundraising Basics",
+          "Go-to-Market Strategy"
+        ]
+      },
+      {
+        "title": "Communication",
+        "topics": [
+          "Public Speaking",
+          "Business Writing",
+          "Active Listening",
+          "Presentation Skills",
+          "Negotiation Skills",
+          "Cross-Cultural Communication"
+        ]
+      },
+      {
+        "title": "Management",
+        "topics": [
+          "Team Leadership",
+          "People Management",
+          "Conflict Resolution",
+          "Delegation",
+          "Decision Making",
+          "Manager Coaching"
+        ]
+      },
+      {
+        "title": "Sales",
+        "topics": [
+          "Sales Fundamentals",
+          "Cold Calling",
+          "Sales Negotiation",
+          "CRM Tools",
+          "Closing Techniques",
+          "Sales Pipeline Management"
+        ]
+      },
+      {
+        "title": "Business Strategy",
+        "topics": [
+          "Competitive Analysis",
+          "SWOT Analysis",
+          "Business Planning",
+          "Growth Strategy",
+          "Blue Ocean Strategy",
+          "Strategic Partnerships"
+        ]
+      },
+      {
+        "title": "Operations",
+        "topics": [
+          "Supply Chain Basics",
+          "Process Improvement",
+          "Inventory Management",
+          "Lean Operations",
+          "Quality Control",
+          "Operations Planning"
+        ]
+      },
+      {
+        "title": "Project Management",
+        "topics": [
+          "Agile Scrum",
+          "Kanban",
+          "Roadmapping",
+          "Risk Management",
+          "Stakeholder Management",
+          "Project Reporting"
+        ]
+      },
+      {
+        "title": "Business Law",
+        "topics": [
+          "Contract Basics",
+          "Business Formation",
+          "Intellectual Property Basics",
+          "Employment Law Basics",
+          "Compliance Essentials",
+          "Commercial Law"
+        ]
+      },
+      {
+        "title": "Business Analytics & Intelligence",
+        "topics": [
+          "Data-Driven Decision Making",
+          "KPI Dashboards",
+          "Business Reporting",
+          "Power BI",
+          "Tableau Basics",
+          "Predictive Analytics"
+        ]
+      },
+      {
+        "title": "Human Resources",
+        "topics": [
+          "Recruitment Basics",
+          "Employee Onboarding",
+          "Performance Reviews",
+          "HR Policies",
+          "Compensation Basics",
+          "Employee Engagement"
+        ]
+      },
+      {
+        "title": "Industry",
+        "topics": [
+          "Retail Industry Basics",
+          "Healthcare Industry Basics",
+          "Manufacturing Basics",
+          "Hospitality Industry Basics",
+          "Nonprofit Management",
+          "Industry Trends Analysis"
+        ]
+      },
+      {
+        "title": "E-Commerce",
+        "topics": [
+          "Online Store Setup",
+          "Shopify Basics",
+          "Dropshipping",
+          "E-Commerce Marketing",
+          "Payment Gateways",
+          "Marketplace Selling"
+        ]
+      },
+      {
+        "title": "Media",
+        "topics": [
+          "Media Production Basics",
+          "Broadcasting Fundamentals",
+          "Journalism Basics",
+          "Podcasting for Business",
+          "Publishing Basics",
+          "Media Law"
+        ]
+      },
+      {
+        "title": "Real Estate",
+        "topics": [
+          "Real Estate Investing",
+          "Property Management",
+          "Real Estate Marketing",
+          "Home Staging",
+          "Real Estate Law Basics",
+          "Mortgage Basics"
+        ]
+      },
+      {
+        "title": "Other Business",
+        "topics": [
+          "Freelancing Basics",
+          "Business Etiquette",
+          "Crisis Management",
+          "Business Ethics",
+          "Remote Team Management",
+          "Franchise Basics"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Finance & Accounting",
+    "subcategories": [
+      {
+        "title": "Accounting & Bookkeeping",
+        "topics": [
+          "Double-Entry Bookkeeping",
+          "Chart of Accounts",
+          "Financial Statements",
+          "Accounts Payable",
+          "Accounts Receivable",
+          "Month-End Closing"
+        ]
+      },
+      {
+        "title": "Compliance",
+        "topics": [
+          "Regulatory Compliance Basics",
+          "Anti-Money Laundering",
+          "Audit Fundamentals",
+          "Corporate Governance",
+          "GDPR Compliance",
+          "Risk & Compliance Reporting"
+        ]
+      },
+      {
+        "title": "Cryptocurrency & Blockchain",
+        "topics": [
+          "Blockchain Basics",
+          "Bitcoin Fundamentals",
+          "Ethereum & Smart Contracts",
+          "Crypto Trading",
+          "NFT Basics",
+          "Wallet Security"
+        ]
+      },
+      {
+        "title": "Economics",
+        "topics": [
+          "Microeconomics Basics",
+          "Macroeconomics Basics",
+          "Behavioral Economics",
+          "Supply and Demand",
+          "Economic Indicators",
+          "International Trade Basics"
+        ]
+      },
+      {
+        "title": "Finance",
+        "topics": [
+          "Personal Finance Basics",
+          "Corporate Finance",
+          "Financial Planning",
+          "Budgeting Essentials",
+          "Debt Management",
+          "Retirement Planning"
+        ]
+      },
+      {
+        "title": "Finance Cert & Exam Prep",
+        "topics": [
+          "CFA Exam Prep",
+          "CPA Exam Prep",
+          "FRM Exam Prep",
+          "CFP Exam Prep",
+          "Series 7 Prep",
+          "Bookkeeping Certification Prep"
+        ]
+      },
+      {
+        "title": "Financial Modeling & Analysis",
+        "topics": [
+          "Excel Financial Modeling",
+          "DCF Valuation",
+          "Financial Ratio Analysis",
+          "Forecasting Techniques",
+          "Sensitivity Analysis",
+          "Startup Valuation"
+        ]
+      },
+      {
+        "title": "Investing & Trading",
+        "topics": [
+          "Stock Market Basics",
+          "Technical Analysis",
+          "Fundamental Analysis",
+          "Portfolio Diversification",
+          "Risk-Reward",
+          "Swing Trading"
+        ]
+      },
+      {
+        "title": "Money Management Tools",
+        "topics": [
+          "Budgeting Apps",
+          "Expense Tracking",
+          "Personal Finance Software",
+          "QuickBooks",
+          "Mint Basics",
+          "Financial Dashboards"
+        ]
+      },
+      {
+        "title": "Taxes",
+        "topics": [
+          "Tax Planning",
+          "Income Tax Basics",
+          "Business Tax Compliance",
+          "VAT Essentials",
+          "Tax Deductions",
+          "Tax Filing Workflow"
+        ]
+      },
+      {
+        "title": "Other Finance & Accounting",
+        "topics": [
+          "Payroll Basics",
+          "Cost Accounting",
+          "Forensic Accounting",
+          "Nonprofit Accounting",
+          "Financial Literacy",
+          "Insurance Basics"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "IT & Software",
+    "subcategories": [
+      {
+        "title": "IT Certifications",
+        "topics": [
+          "CompTIA A+",
+          "CompTIA Network+",
+          "CompTIA Security+",
+          "AWS Certified Cloud Practitioner",
+          "Cisco CCNA",
+          "ITIL Foundation"
+        ]
+      },
+      {
+        "title": "Network & Security",
+        "topics": [
+          "Network Fundamentals",
+          "Firewalls",
+          "VPN Setup",
+          "Penetration Testing Basics",
+          "SIEM",
+          "Zero Trust Security"
+        ]
+      },
+      {
+        "title": "Hardware",
+        "topics": [
+          "Computer Assembly",
+          "PC Troubleshooting",
+          "Networking Hardware",
+          "Peripheral Setup",
+          "Server Hardware Basics",
+          "IoT Devices"
+        ]
+      },
+      {
+        "title": "Operating Systems & Servers",
+        "topics": [
+          "Linux Administration",
+          "Windows Server",
+          "Shell Scripting",
+          "Nginx Configuration",
+          "Apache Configuration",
+          "Server Hardening"
+        ]
+      },
+      {
+        "title": "Other IT & Software",
+        "topics": [
+          "IT Support Fundamentals",
+          "Help Desk Skills",
+          "Cloud Computing Basics",
+          "System Administration",
+          "Virtualization",
+          "Technical Documentation"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Office Productivity",
+    "subcategories": [
+      {
+        "title": "Microsoft",
+        "topics": [
+          "Excel Formulas",
+          "Excel Pivot Tables",
+          "PowerPoint Design",
+          "Word Formatting",
+          "Outlook Productivity",
+          "Teams Collaboration"
+        ]
+      },
+      {
+        "title": "Apple",
+        "topics": [
+          "Keynote Basics",
+          "Pages Formatting",
+          "Numbers Spreadsheets",
+          "macOS Productivity",
+          "iCloud Workflow",
+          "iWork Collaboration"
+        ]
+      },
+      {
+        "title": "Google",
+        "topics": [
+          "Google Sheets",
+          "Google Docs",
+          "Google Slides",
+          "Google Workspace Admin",
+          "Google Forms",
+          "Google Calendar"
+        ]
+      },
+      {
+        "title": "SAP",
+        "topics": [
+          "SAP Fundamentals",
+          "SAP FICO Basics",
+          "SAP Navigation",
+          "SAP Reporting",
+          "SAP MM Basics",
+          "SAP HR Basics"
+        ]
+      },
+      {
+        "title": "Oracle",
+        "topics": [
+          "Oracle Database Basics",
+          "Oracle ERP Fundamentals",
+          "Oracle Cloud Basics",
+          "Oracle SQL",
+          "Oracle Financials",
+          "Oracle Reporting Tools"
+        ]
+      },
+      {
+        "title": "Other Office Productivity",
+        "topics": [
+          "Notion",
+          "Airtable",
+          "ClickUp",
+          "Asana",
+          "Trello",
+          "Automation with Zapier"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Personal Development",
+    "subcategories": [
+      {
+        "title": "Personal Transformation",
+        "topics": [
+          "Mindset Shift",
+          "Self-Discovery",
+          "Habit Rewiring",
+          "Life Purpose Exploration",
+          "Emotional Intelligence",
+          "Personal Values Clarification"
+        ]
+      },
+      {
+        "title": "Personal Productivity",
+        "topics": [
+          "Time Blocking",
+          "Goal Setting",
+          "Deep Work",
+          "Habit Building",
+          "Prioritization Frameworks",
+          "Weekly Planning"
+        ]
+      },
+      {
+        "title": "Leadership",
+        "topics": [
+          "Executive Presence",
+          "Strategic Thinking",
+          "Leading Through Change",
+          "Coaching Conversations",
+          "Influence Without Authority",
+          "Leadership Mindset"
+        ]
+      },
+      {
+        "title": "Career Development",
+        "topics": [
+          "Resume Writing",
+          "Interview Preparation",
+          "LinkedIn Optimization",
+          "Career Transition",
+          "Personal SWOT Analysis",
+          "Networking Skills"
+        ]
+      },
+      {
+        "title": "Parenting & Relationships",
+        "topics": [
+          "Positive Parenting",
+          "Communication in Relationships",
+          "Conflict Resolution at Home",
+          "Co-Parenting Basics",
+          "Family Time Management",
+          "Building Trust"
+        ]
+      },
+      {
+        "title": "Happiness",
+        "topics": [
+          "Gratitude Practice",
+          "Positive Psychology Basics",
+          "Life Satisfaction",
+          "Joy Habits",
+          "Optimism Training",
+          "Happiness Science"
+        ]
+      },
+      {
+        "title": "Esoteric Practices",
+        "topics": [
+          "Astrology Basics",
+          "Tarot Reading",
+          "Numerology",
+          "Meditation Rituals",
+          "Energy Healing",
+          "Crystal Basics"
+        ]
+      },
+      {
+        "title": "Religion & Spirituality",
+        "topics": [
+          "World Religions Overview",
+          "Spiritual Practices",
+          "Prayer & Reflection",
+          "Mindful Spirituality",
+          "Sacred Texts Study",
+          "Faith Community Building"
+        ]
+      },
+      {
+        "title": "Personal Brand Building",
+        "topics": [
+          "Personal Branding Basics",
+          "Online Reputation Management",
+          "Content Creation for Branding",
+          "Portfolio Building",
+          "Social Proof Strategies",
+          "Brand Storytelling"
+        ]
+      },
+      {
+        "title": "Creativity",
+        "topics": [
+          "Creative Thinking",
+          "Brainstorming Techniques",
+          "Idea Generation",
+          "Creative Writing Exercises",
+          "Design Thinking Basics",
+          "Innovation Mindset"
+        ]
+      },
+      {
+        "title": "Influence",
+        "topics": [
+          "Persuasion Techniques",
+          "Building Rapport",
+          "Ethical Influence",
+          "Storytelling for Influence",
+          "Social Proof",
+          "Charisma Building"
+        ]
+      },
+      {
+        "title": "Self Esteem & Confidence",
+        "topics": [
+          "Confidence Building",
+          "Overcoming Self-Doubt",
+          "Body Language for Confidence",
+          "Self-Compassion",
+          "Assertiveness Training",
+          "Imposter Syndrome Recovery"
+        ]
+      },
+      {
+        "title": "Stress Management",
+        "topics": [
+          "Stress Reduction Techniques",
+          "Relaxation Exercises",
+          "Time Pressure Management",
+          "Work-Life Balance",
+          "Coping Strategies",
+          "Resilience Building"
+        ]
+      },
+      {
+        "title": "Memory & Study Skills",
+        "topics": [
+          "Memory Techniques",
+          "Speed Reading",
+          "Note-Taking Methods",
+          "Exam Preparation Strategies",
+          "Concentration Training",
+          "Mnemonic Devices"
+        ]
+      },
+      {
+        "title": "Motivation",
+        "topics": [
+          "Goal-Driven Motivation",
+          "Overcoming Procrastination",
+          "Self-Discipline",
+          "Motivation Science",
+          "Reward Systems",
+          "Accountability Techniques"
+        ]
+      },
+      {
+        "title": "Other Personal Development",
+        "topics": [
+          "Minimalism Basics",
+          "Digital Detox",
+          "Journaling Practices",
+          "Life Coaching Basics",
+          "Decision-Making Skills",
+          "Personal Growth Planning"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Design",
+    "subcategories": [
+      {
+        "title": "Web Design",
+        "topics": [
+          "Responsive Design",
+          "Landing Page Design",
+          "Web Typography",
+          "Color Theory for Web",
+          "Webflow Design",
+          "UI Kits"
+        ]
+      },
+      {
+        "title": "Graphic Design & Illustration",
+        "topics": [
+          "Adobe Photoshop",
+          "Adobe Illustrator",
+          "Figma",
+          "Canva",
+          "Typography",
+          "Brand Identity Design"
+        ]
+      },
+      {
+        "title": "Design Tools",
+        "topics": [
+          "Adobe Creative Cloud",
+          "Sketch",
+          "Affinity Designer",
+          "Procreate",
+          "Canva Pro",
+          "Figma Plugins"
+        ]
+      },
+      {
+        "title": "User Experience Design",
+        "topics": [
+          "UX Research",
+          "Wireframing",
+          "Prototyping",
+          "Information Architecture",
+          "Usability Testing",
+          "Design Systems"
+        ]
+      },
+      {
+        "title": "Game Design",
+        "topics": [
+          "Level Design",
+          "Game Mechanics",
+          "Narrative Design",
+          "Game Balancing",
+          "Character Design",
+          "Game UX"
+        ]
+      },
+      {
+        "title": "3D & Animation",
+        "topics": [
+          "Blender Basics",
+          "3D Modeling",
+          "Texturing",
+          "Rigging",
+          "Motion Graphics",
+          "Animation Principles"
+        ]
+      },
+      {
+        "title": "Fashion Design",
+        "topics": [
+          "Fashion Sketching",
+          "Pattern Making",
+          "Textile Basics",
+          "Garment Construction",
+          "Fashion Trend Forecasting",
+          "Fashion Illustration"
+        ]
+      },
+      {
+        "title": "Architectural Design",
+        "topics": [
+          "AutoCAD Basics",
+          "Architectural Drafting",
+          "Building Codes Basics",
+          "SketchUp",
+          "Sustainable Architecture",
+          "Space Planning"
+        ]
+      },
+      {
+        "title": "Interior Design",
+        "topics": [
+          "Space Planning",
+          "Color Schemes for Interiors",
+          "Furniture Layout",
+          "Lighting Design",
+          "Interior Styling",
+          "Mood Boards"
+        ]
+      },
+      {
+        "title": "Other Design",
+        "topics": [
+          "Icon Design",
+          "Packaging Design",
+          "Print Design",
+          "Design Portfolio Building",
+          "Design Critique",
+          "Accessibility in Design"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Marketing",
+    "subcategories": [
+      {
+        "title": "Digital Marketing",
+        "topics": [
+          "Marketing Funnel",
+          "Campaign Planning",
+          "Audience Targeting",
+          "Conversion Optimization",
+          "Email Marketing",
+          "Landing Pages"
+        ]
+      },
+      {
+        "title": "Search Engine Optimization",
+        "topics": [
+          "Keyword Research",
+          "On-Page SEO",
+          "Technical SEO",
+          "Backlink Strategy",
+          "Local SEO",
+          "SEO Content Writing"
+        ]
+      },
+      {
+        "title": "Social Media Marketing",
+        "topics": [
+          "Content Calendar",
+          "Facebook Ads",
+          "Instagram Growth",
+          "TikTok Strategy",
+          "Community Management",
+          "Influencer Campaigns"
+        ]
+      },
+      {
+        "title": "Branding",
+        "topics": [
+          "Brand Strategy",
+          "Brand Identity",
+          "Brand Voice",
+          "Logo Design Basics",
+          "Brand Positioning",
+          "Rebranding Strategy"
+        ]
+      },
+      {
+        "title": "Marketing Fundamentals",
+        "topics": [
+          "Marketing Principles",
+          "4Ps of Marketing",
+          "Target Market Research",
+          "Customer Personas",
+          "Marketing Mix",
+          "Competitive Positioning"
+        ]
+      },
+      {
+        "title": "Marketing Analytics & Automation",
+        "topics": [
+          "Google Analytics",
+          "Marketing Automation Tools",
+          "A/B Testing",
+          "Attribution Modeling",
+          "HubSpot Basics",
+          "Customer Journey Mapping"
+        ]
+      },
+      {
+        "title": "Public Relations",
+        "topics": [
+          "Press Release Writing",
+          "Media Relations",
+          "Crisis Communication",
+          "PR Strategy",
+          "Reputation Management",
+          "Event Publicity"
+        ]
+      },
+      {
+        "title": "Paid Advertising",
+        "topics": [
+          "Google Ads",
+          "Facebook Ads Manager",
+          "PPC Strategy",
+          "Ad Copywriting",
+          "Retargeting Campaigns",
+          "Programmatic Advertising"
+        ]
+      },
+      {
+        "title": "Video & Mobile Marketing",
+        "topics": [
+          "Video Ad Creation",
+          "Mobile App Marketing",
+          "YouTube Marketing",
+          "SMS Marketing",
+          "App Store Optimization",
+          "Short-Form Video Strategy"
+        ]
+      },
+      {
+        "title": "Content Marketing",
+        "topics": [
+          "Content Strategy",
+          "Blog Writing",
+          "Content Calendars",
+          "Storytelling for Brands",
+          "Repurposing Content",
+          "Content Distribution"
+        ]
+      },
+      {
+        "title": "Growth Hacking",
+        "topics": [
+          "Growth Experiments",
+          "Viral Loops",
+          "Referral Programs",
+          "Funnel Optimization",
+          "Product-Led Growth",
+          "Growth Metrics"
+        ]
+      },
+      {
+        "title": "Affiliate Marketing",
+        "topics": [
+          "Affiliate Program Setup",
+          "Affiliate Networks",
+          "Commission Structures",
+          "Affiliate Content Creation",
+          "Tracking & Attribution",
+          "Influencer Affiliates"
+        ]
+      },
+      {
+        "title": "Product Marketing",
+        "topics": [
+          "Positioning & Messaging",
+          "Go-to-Market Planning",
+          "Product Launches",
+          "Competitive Analysis",
+          "Customer Onboarding Messaging",
+          "Sales Enablement"
+        ]
+      },
+      {
+        "title": "Other Marketing",
+        "topics": [
+          "Guerrilla Marketing",
+          "Event Marketing",
+          "Word-of-Mouth Marketing",
+          "Marketing Ethics",
+          "Nonprofit Marketing",
+          "B2B Marketing Basics"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Lifestyle",
+    "subcategories": [
+      {
+        "title": "Arts & Crafts",
+        "topics": [
+          "Knitting Basics",
+          "Scrapbooking",
+          "DIY Home Decor",
+          "Candle Making",
+          "Pottery Basics",
+          "Jewelry Making"
+        ]
+      },
+      {
+        "title": "Beauty & Makeup",
+        "topics": [
+          "Skincare Routine",
+          "Everyday Makeup",
+          "Color Matching",
+          "Bridal Makeup",
+          "Makeup Tools",
+          "Beauty Content Creation"
+        ]
+      },
+      {
+        "title": "Esoteric Practices",
+        "topics": [
+          "Astrology for Beginners",
+          "Tarot Basics",
+          "Feng Shui",
+          "Manifestation Techniques",
+          "Energy Cleansing",
+          "Moon Rituals"
+        ]
+      },
+      {
+        "title": "Food & Beverage",
+        "topics": [
+          "Home Cooking",
+          "Meal Prep",
+          "Baking Basics",
+          "Coffee Brewing",
+          "Food Presentation",
+          "Nutrition-Aware Cooking"
+        ]
+      },
+      {
+        "title": "Gaming",
+        "topics": [
+          "PC Gaming Setup",
+          "Console Gaming Tips",
+          "Esports Basics",
+          "Game Streaming",
+          "Retro Gaming",
+          "Tabletop Games"
+        ]
+      },
+      {
+        "title": "Home Improvement & Gardening",
+        "topics": [
+          "Home Renovation Basics",
+          "Gardening for Beginners",
+          "Indoor Plant Care",
+          "DIY Repairs",
+          "Landscaping Basics",
+          "Sustainable Gardening"
+        ]
+      },
+      {
+        "title": "Pet Care & Training",
+        "topics": [
+          "Dog Training Basics",
+          "Cat Care Essentials",
+          "Pet Nutrition",
+          "Puppy Obedience",
+          "Pet Grooming",
+          "Pet First Aid"
+        ]
+      },
+      {
+        "title": "Travel",
+        "topics": [
+          "Travel Planning",
+          "Budget Travel",
+          "Travel Photography",
+          "Itinerary Building",
+          "Solo Travel",
+          "Digital Nomad Basics"
+        ]
+      },
+      {
+        "title": "Other Lifestyle",
+        "topics": [
+          "Minimalist Living",
+          "Sustainable Living",
+          "Personal Style",
+          "Home Organization",
+          "Frugal Living",
+          "Family Traditions"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Photography & Video",
+    "subcategories": [
+      {
+        "title": "Digital Photography",
+        "topics": [
+          "Camera Basics",
+          "Exposure Triangle",
+          "Composition",
+          "Lighting Techniques",
+          "Photo Editing",
+          "RAW Workflow"
+        ]
+      },
+      {
+        "title": "Photography",
+        "topics": [
+          "Photography Fundamentals",
+          "Street Photography",
+          "Landscape Photography",
+          "Night Photography",
+          "Black and White Photography",
+          "Photo Storytelling"
+        ]
+      },
+      {
+        "title": "Portrait Photography",
+        "topics": [
+          "Studio Portraits",
+          "Natural Light Portraits",
+          "Posing Techniques",
+          "Portrait Retouching",
+          "Family Portraits",
+          "Headshot Photography"
+        ]
+      },
+      {
+        "title": "Photography Tools",
+        "topics": [
+          "Adobe Lightroom",
+          "Capture One",
+          "Photoshop Retouching",
+          "Lens Selection",
+          "Tripod Techniques",
+          "Studio Setup"
+        ]
+      },
+      {
+        "title": "Commercial Photography",
+        "topics": [
+          "Product Photography",
+          "Food Photography",
+          "Real Estate Photography",
+          "Fashion Photography",
+          "Advertising Photography",
+          "Client Contracts for Photographers"
+        ]
+      },
+      {
+        "title": "Video Design",
+        "topics": [
+          "Video Editing",
+          "Color Grading",
+          "Storyboarding",
+          "Cinematography Basics",
+          "Audio for Video",
+          "Premiere Pro"
+        ]
+      },
+      {
+        "title": "Other Photography & Video",
+        "topics": [
+          "Drone Photography",
+          "Mobile Photography",
+          "Photo Book Design",
+          "Event Videography",
+          "Live Streaming Setup",
+          "YouTube Channel Basics"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Health & Fitness",
+    "subcategories": [
+      {
+        "title": "Fitness",
+        "topics": [
+          "Strength Training",
+          "Bodyweight Workouts",
+          "Workout Programming",
+          "Mobility",
+          "Home Fitness",
+          "Gym Fundamentals"
+        ]
+      },
+      {
+        "title": "General Health",
+        "topics": [
+          "Preventive Health Basics",
+          "Health Screening Awareness",
+          "Immune System Basics",
+          "Chronic Disease Prevention",
+          "Healthy Aging",
+          "Health Literacy"
+        ]
+      },
+      {
+        "title": "Sports",
+        "topics": [
+          "Running Fundamentals",
+          "Cycling Basics",
+          "Swimming Techniques",
+          "Team Sports Coaching",
+          "Sports Injury Prevention",
+          "Athletic Performance Basics"
+        ]
+      },
+      {
+        "title": "Nutrition & Diet",
+        "topics": [
+          "Macronutrients",
+          "Meal Planning",
+          "Fat Loss Nutrition",
+          "Muscle Gain Nutrition",
+          "Hydration",
+          "Supplement Basics"
+        ]
+      },
+      {
+        "title": "Yoga",
+        "topics": [
+          "Yoga for Beginners",
+          "Hatha Yoga",
+          "Vinyasa Flow",
+          "Yoga Breathing Techniques",
+          "Yoga for Flexibility",
+          "Restorative Yoga"
+        ]
+      },
+      {
+        "title": "Mental Health",
+        "topics": [
+          "Stress Management",
+          "Emotional Regulation",
+          "Mindfulness",
+          "Sleep Hygiene",
+          "Burnout Prevention",
+          "Healthy Boundaries"
+        ]
+      },
+      {
+        "title": "Martial Arts & Self Defense",
+        "topics": [
+          "Karate Basics",
+          "Boxing Fundamentals",
+          "Brazilian Jiu-Jitsu Basics",
+          "Self-Defense Techniques",
+          "Muay Thai Basics",
+          "Taekwondo Fundamentals"
+        ]
+      },
+      {
+        "title": "Safety & First Aid",
+        "topics": [
+          "CPR Basics",
+          "Basic First Aid",
+          "Emergency Preparedness",
+          "Wound Care",
+          "Choking Response",
+          "Workplace Safety Basics"
+        ]
+      },
+      {
+        "title": "Dance",
+        "topics": [
+          "Dance Fundamentals",
+          "Hip Hop Dance",
+          "Ballet Basics",
+          "Latin Dance",
+          "Contemporary Dance",
+          "Dance Fitness"
+        ]
+      },
+      {
+        "title": "Meditation",
+        "topics": [
+          "Mindfulness Meditation",
+          "Guided Meditation",
+          "Breathwork",
+          "Meditation for Sleep",
+          "Meditation for Anxiety",
+          "Meditation Techniques for Beginners"
+        ]
+      },
+      {
+        "title": "Other Health & Fitness",
+        "topics": [
+          "Posture Correction",
+          "Ergonomics Basics",
+          "Recovery & Rest",
+          "Wearable Fitness Tech",
+          "Injury Rehabilitation Basics",
+          "Wellness Planning"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Music",
+    "subcategories": [
+      {
+        "title": "Instruments",
+        "topics": [
+          "Guitar Basics",
+          "Piano Fundamentals",
+          "Ukulele",
+          "Drum Rudiments",
+          "Bass Guitar",
+          "Violin Basics"
+        ]
+      },
+      {
+        "title": "Music Production",
+        "topics": [
+          "DAW Fundamentals",
+          "Beat Making",
+          "Arrangement",
+          "Mixing Basics",
+          "Mastering Basics",
+          "MIDI Workflow"
+        ]
+      },
+      {
+        "title": "Music Fundamentals",
+        "topics": [
+          "Music Theory Basics",
+          "Reading Sheet Music",
+          "Rhythm & Timing",
+          "Ear Training",
+          "Scales and Chords",
+          "Songwriting Basics"
+        ]
+      },
+      {
+        "title": "Vocal",
+        "topics": [
+          "Vocal Warm-Ups",
+          "Singing Technique",
+          "Vocal Range Training",
+          "Breath Control for Singers",
+          "Harmony Singing",
+          "Performance Vocals"
+        ]
+      },
+      {
+        "title": "Music Techniques",
+        "topics": [
+          "Improvisation",
+          "Music Composition",
+          "Sight Reading",
+          "Transcription Skills",
+          "Arranging for Ensembles",
+          "Music Theory Application"
+        ]
+      },
+      {
+        "title": "Music Software",
+        "topics": [
+          "Ableton Live",
+          "FL Studio",
+          "Logic Pro",
+          "Pro Tools",
+          "Cubase",
+          "GarageBand"
+        ]
+      },
+      {
+        "title": "Other Music",
+        "topics": [
+          "Music Business Basics",
+          "Live Performance Skills",
+          "Home Studio Setup",
+          "Music Licensing",
+          "Podcast Audio Editing",
+          "Music Marketing"
+        ]
+      }
+    ]
+  },
+  {
+    "category": "Teaching & Academics",
+    "subcategories": [
+      {
+        "title": "Engineering",
+        "topics": [
+          "Mechanical Engineering Basics",
+          "Electrical Engineering Basics",
+          "Civil Engineering Basics",
+          "Engineering Design Process",
+          "CAD for Engineers",
+          "Engineering Math"
+        ]
+      },
+      {
+        "title": "Humanities",
+        "topics": [
+          "Philosophy Basics",
+          "History Fundamentals",
+          "Literature Analysis",
+          "Cultural Studies",
+          "Ethics",
+          "Art History"
+        ]
+      },
+      {
+        "title": "Math",
+        "topics": [
+          "Algebra",
+          "Geometry",
+          "Trigonometry",
+          "Calculus",
+          "Statistics",
+          "Discrete Mathematics"
+        ]
+      },
+      {
+        "title": "Science",
+        "topics": [
+          "Physics Basics",
+          "Chemistry Basics",
+          "Biology Fundamentals",
+          "Earth Science",
+          "Scientific Method",
+          "Lab Skills"
+        ]
+      },
+      {
+        "title": "Online Education",
+        "topics": [
+          "Course Design Basics",
+          "Instructional Design",
+          "E-Learning Tools",
+          "LMS Platforms",
+          "Online Teaching Techniques",
+          "Student Engagement Online"
+        ]
+      },
+      {
+        "title": "Social Science",
+        "topics": [
+          "Sociology Basics",
+          "Psychology Fundamentals",
+          "Political Science Basics",
+          "Anthropology Basics",
+          "Human Geography",
+          "Research Methods"
+        ]
+      },
+      {
+        "title": "Language Learning",
+        "topics": [
+          "English Grammar",
+          "Conversational English",
+          "Business English",
+          "Spanish Basics",
+          "Japanese Basics",
+          "Language Pronunciation"
+        ]
+      },
+      {
+        "title": "Teacher Training",
+        "topics": [
+          "Classroom Management",
+          "Lesson Planning",
+          "Assessment Design",
+          "Differentiated Instruction",
+          "Special Education Basics",
+          "Teaching Strategies"
+        ]
+      },
+      {
+        "title": "Test Prep",
+        "topics": [
+          "SAT Prep",
+          "GRE Prep",
+          "IELTS Prep",
+          "TOEFL Prep",
+          "GMAT Prep",
+          "ACT Prep"
+        ]
+      },
+      {
+        "title": "Other Teaching & Academics",
+        "topics": [
+          "Study Skills",
+          "Tutoring Basics",
+          "Curriculum Development",
+          "Educational Technology",
+          "Homeschooling Basics",
+          "Academic Writing"
+        ]
+      }
+    ]
+  }
+]

@@ -246,10 +246,31 @@ model Category {
   parent      Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
   children    Category[] @relation("CategoryHierarchy")
   courses     Course[]
+  topics      Topic[]
 
   @@unique([name, parentId])
   @@index([deletedAt])
   @@map("categories")
+}
+
+model Topic {
+  id          String   @id @default(cuid())
+  categoryId  String
+  name        String
+  slug        String   @unique
+  description String?
+  deletedAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  lessons     Lesson[]
+  lessonTopics LessonTopic[]
+
+  @@unique([name, categoryId])
+  @@index([categoryId])
+  @@index([deletedAt])
+  @@map("topics")
 }
 
 model CourseLevel {
@@ -357,6 +378,7 @@ model Lesson {
   id                 String      @id @default(cuid())
   sectionId          String
   courseId           String
+  topicId            String?
   type               LessonType
   title              String
   description        String?
@@ -374,12 +396,31 @@ model Lesson {
 
   section            CourseSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
   course             Course        @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  topic              Topic?        @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  lessonTopics       LessonTopic[]
   progress           LessonProgress[]
   media              Media[]
 
   @@unique([sectionId, position])
   @@index([courseId])
+  @@index([topicId])
   @@map("lessons")
+}
+
+model LessonTopic {
+  id        String   @id @default(cuid())
+  lessonId  String
+  topicId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lesson    Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  topic     Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([lessonId, topicId])
+  @@index([lessonId])
+  @@index([topicId])
+  @@map("lesson_topics")
 }
 
 model Cart {
