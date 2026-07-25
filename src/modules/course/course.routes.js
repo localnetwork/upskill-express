@@ -14,6 +14,7 @@ import {
   getCourseForLearnerController,
   getCourseRouteController,
   getCourseBySlugController,
+  checkCourseSlugAvailabilityController,
   listAuthoredCoursesController,
   listCoursesController,
   publishCourseController,
@@ -115,6 +116,15 @@ router.get(
     tags: ["courses", "analytics", "categories"],
   }),
   asyncHandler(getCourseDiscoveryController),
+);
+router.get(
+  "/slug-availability",
+  cacheGetResponse({
+    prefix: "courses:slug-availability",
+    ttlSeconds: 30,
+    tags: ["courses"],
+  }),
+  asyncHandler(checkCourseSlugAvailabilityController),
 );
 router.get(
   "/:slug",

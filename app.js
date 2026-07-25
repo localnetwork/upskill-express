@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import path from "path";
+import fs from "fs/promises";
 import authRoutes from "./src/modules/auth/auth.routes.js";
 import userRoutes from "./src/modules/user/user.routes.js";
 import categoryRoutes from "./src/modules/category/category.routes.js";
@@ -19,6 +20,7 @@ import wishlistRoutes from "./src/modules/wishlist/wishlist.routes.js";
 import certificationRoutes from "./src/modules/certification/certification.routes.js";
 import analyticsRoutes from "./src/modules/analytics/analytics.routes.js";
 import communicationRoutes from "./src/modules/communication/communication.routes.js";
+import tagRoutes from "./src/modules/tag/tag.routes.js";
 import legacyRoutes from "./src/modules/legacy/legacy.routes.js";
 import {
   cacheGetResponse,
@@ -76,7 +78,43 @@ app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/certifications", certificationRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/communication", communicationRoutes);
+app.use("/api/tags", tagRoutes);
 app.use("/api", legacyRoutes);
+app.get(
+  "/api/languages",
+  cacheGetResponse({
+    prefix: "languages",
+    ttlSeconds: 600,
+    tags: ["courses"],
+  }),
+  async (_req, res, next) => {
+    try {
+      const filePath = path.resolve("prisma", "data", "languages.json");
+      const raw = await fs.readFile(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+
+      const rows = Array.isArray(parsed) ? parsed : [];
+      const languageSet = new Set();
+
+      for (const row of rows) {
+        const languages = Array.isArray(row?.languages) ? row.languages : [];
+        for (const item of languages) {
+          const normalized = String(item || "").trim();
+          if (normalized) languageSet.add(normalized);
+        }
+      }
+
+      const languages = Array.from(languageSet).sort((a, b) => a.localeCompare(b));
+      return res.json({
+        message: "Languages fetched",
+        data: languages.map((language) => ({ value: language, label: language })),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
 app.get(
   "/api/course-price-tiers",
   cacheGetResponse({

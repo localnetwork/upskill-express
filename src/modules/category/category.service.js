@@ -1,14 +1,40 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
+import { Prisma } from "@prisma/client";
 
-function normalizeCategoryPayload(payload) {
+const categoryModel = Prisma?.dmmf?.datamodel?.models?.find(
+  (model) => model.name === "Category",
+);
+const categorySupportsImageField = Boolean(
+  categoryModel?.fields?.some((field) => field.name === "image"),
+);
+
+let categoryImageColumnExistsCache = null;
+
+function normalizeCategoryData(payload) {
   return {
     name: payload.name || payload.title,
     slug: payload.slug,
     description: payload.description || payload.category_description,
     parentId: payload.parentId || payload.parent_id || null,
   };
+}
+
+function normalizeCategoryImage(payload) {
+  if (payload.image === undefined) return undefined;
+  return String(payload.image || "").trim() || null;
+}
+
+function normalizeCategoryPayload(payload) {
+  const data = normalizeCategoryData(payload);
+  const normalizedImage = normalizeCategoryImage(payload);
+
+  if (categorySupportsImageField && normalizedImage !== undefined) {
+    data.image = normalizedImage;
+  }
+
+  return data;
 }
 
 function toLegacyCategory(category) {
@@ -41,8 +67,69 @@ function buildCategoryTree(categories) {
   return roots;
 }
 
+async function categoryImageColumnExists() {
+  if (categorySupportsImageField) return true;
+  if (categoryImageColumnExistsCache !== null) return categoryImageColumnExistsCache;
+
+  const result = await prisma.$queryRaw`
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'categories'
+        AND column_name = 'image'
+    ) AS "exists"
+  `;
+
+  categoryImageColumnExistsCache = Boolean(result?.[0]?.exists);
+  return categoryImageColumnExistsCache;
+}
+
+async function updateCategoryImageById(categoryId, image) {
+  const hasImageColumn = await categoryImageColumnExists();
+  if (!hasImageColumn) return;
+
+  await prisma.$executeRaw`
+    UPDATE "categories"
+    SET "image" = ${image}, "updatedAt" = NOW()
+    WHERE "id" = ${categoryId}
+  `;
+}
+
+async function getCategoryImagesMap(categoryIds = []) {
+  const uniqueIds = Array.from(new Set((categoryIds || []).filter(Boolean)));
+  if (!uniqueIds.length) return new Map();
+
+  const hasImageColumn = await categoryImageColumnExists();
+  if (!hasImageColumn) return new Map();
+
+  const rows = await prisma.$queryRaw`
+    SELECT "id", "image"
+    FROM "categories"
+    WHERE "id" IN (${Prisma.join(uniqueIds)})
+  `;
+
+  return new Map(rows.map((row) => [row.id, row.image || null]));
+}
+
+function attachImagesToTree(nodes = [], imageMap = new Map()) {
+  return (nodes || []).map((node) => ({
+    ...node,
+    image: imageMap.has(node.id) ? imageMap.get(node.id) : (node.image || null),
+    children: attachImagesToTree(node.children || [], imageMap),
+  }));
+}
+
 export async function createCategory(payload) {
-  return prisma.category.create({ data: normalizeCategoryPayload(payload) });
+  const image = normalizeCategoryImage(payload);
+  const created = await prisma.category.create({ data: normalizeCategoryPayload(payload) });
+
+  if (!categorySupportsImageField && image !== undefined) {
+    await updateCategoryImageById(created.id, image);
+    return { ...created, image };
+  }
+
+  return created;
 }
 
 export async function updateCategory(categoryId, payload) {
@@ -52,10 +139,19 @@ export async function updateCategory(categoryId, payload) {
   if (!category) {
     throw new ApiError(404, "Category not found");
   }
-  return prisma.category.update({
+  const image = normalizeCategoryImage(payload);
+
+  const updated = await prisma.category.update({
     where: { id: categoryId },
     data: normalizeCategoryPayload(payload),
   });
+
+  if (!categorySupportsImageField && image !== undefined) {
+    await updateCategoryImageById(updated.id, image);
+    return { ...updated, image };
+  }
+
+  return updated;
 }
 
 export async function listCategories(query) {
@@ -84,12 +180,20 @@ export async function listCategories(query) {
   };
 
   if (shouldReturnTree) {
-    const rows = await prisma.category.findMany({
+    let rows = await prisma.category.findMany({
       where: {
         deletedAt: null,
       },
       orderBy: [{ name: "asc" }, { createdAt: "asc" }],
     });
+
+    if (!categorySupportsImageField && rows.length) {
+      const imageMap = await getCategoryImagesMap(rows.map((row) => row.id));
+      rows = rows.map((row) => ({
+        ...row,
+        image: imageMap.has(row.id) ? imageMap.get(row.id) : null,
+      }));
+    }
 
     const tree = buildCategoryTree(rows);
     const total = rows.length;
@@ -111,7 +215,7 @@ export async function listCategories(query) {
   }
 
   const { page, limit, skip } = getPagination(query);
-  const [rows, total] = await Promise.all([
+  let [rows, total] = await Promise.all([
     prisma.category.findMany({
       where,
       skip,
@@ -121,11 +225,29 @@ export async function listCategories(query) {
     }),
     prisma.category.count({ where }),
   ]);
+
+  if (!categorySupportsImageField && rows.length) {
+    const rowIds = rows.map((row) => row.id);
+    const parentIds = rows.map((row) => row.parent?.id).filter(Boolean);
+    const imageMap = await getCategoryImagesMap([...rowIds, ...parentIds]);
+
+    rows = rows.map((row) => ({
+      ...row,
+      image: imageMap.has(row.id) ? imageMap.get(row.id) : null,
+      parent: row.parent
+        ? {
+            ...row.parent,
+            image: imageMap.has(row.parent.id) ? imageMap.get(row.parent.id) : null,
+          }
+        : null,
+    }));
+  }
+
   return toPagedResult(rows, total, page, limit);
 }
 
 export async function getCategoryBySlugOrId(slugOrId) {
-  const category = await prisma.category.findFirst({
+  let category = await prisma.category.findFirst({
     where: {
       deletedAt: null,
       OR: [{ id: slugOrId }, { slug: slugOrId }],
@@ -141,6 +263,29 @@ export async function getCategoryBySlugOrId(slugOrId) {
 
   if (!category) {
     throw new ApiError(404, "Category not found");
+  }
+
+  if (!categorySupportsImageField) {
+    const childIds = (category.children || []).map((item) => item.id);
+    const imageMap = await getCategoryImagesMap([
+      category.id,
+      category.parent?.id,
+      ...childIds,
+    ]);
+
+    category = {
+      ...category,
+      image: imageMap.has(category.id) ? imageMap.get(category.id) : null,
+      parent: category.parent
+        ? {
+            ...category.parent,
+            image: imageMap.has(category.parent.id)
+              ? imageMap.get(category.parent.id)
+              : null,
+          }
+        : null,
+      children: attachImagesToTree(category.children || [], imageMap),
+    };
   }
 
   return toLegacyCategory(category);

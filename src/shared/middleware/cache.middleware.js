@@ -101,7 +101,16 @@ export function cacheGetResponse(options = {}) {
 
   return async function cacheMiddleware(req, res, next) {
     const redis = getRedisClient();
+    const cacheControl = String(req.headers?.["cache-control"] || "").toLowerCase();
+    const shouldBypassCache =
+      String(req.query?.nocache || "") === "true" ||
+      cacheControl.includes("no-cache");
+
     if (!redis || req.method !== "GET") {
+      return next();
+    }
+
+    if (shouldBypassCache) {
       return next();
     }
 
@@ -174,6 +183,10 @@ function getInvalidationTagsFromRequest(req) {
 
   if (path.startsWith("/api/categories")) {
     push("categories", "courses");
+  }
+
+  if (path.startsWith("/api/tags")) {
+    push("tags", "courses");
   }
 
   if (path.startsWith("/api/reviews")) {

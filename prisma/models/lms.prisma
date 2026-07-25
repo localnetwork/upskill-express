@@ -133,6 +133,7 @@ model Category {
   id          String     @id @default(cuid())
   name        String
   slug        String     @unique
+  image       String?
   description String?
   parentId    String?
   deletedAt   DateTime?

@@ -27,3 +27,8 @@ export const trackActivityEventValidator = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
   dedupeWindowSeconds: z.coerce.number().int().min(0).max(300).optional(),
 });
+
+export const trendingTopicsQueryValidator = z.object({
+  limit: z.coerce.number().int().min(1).max(20).optional(),
+  days: z.coerce.number().int().min(1).max(365).optional(),
+});

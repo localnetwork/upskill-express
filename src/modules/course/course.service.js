@@ -58,6 +58,38 @@ async function readCourseGoals(courseId) {
   }
 }
 
+async function readCourseGoalsMap(courseIds = []) {
+  const uniqueIds = Array.from(new Set((courseIds || []).filter(Boolean)));
+  if (!uniqueIds.length) return new Map();
+
+  const keys = uniqueIds.map((courseId) => getCourseGoalsSettingKey(courseId));
+  const settings = await prisma.platformSetting.findMany({
+    where: { key: { in: keys } },
+    select: { key: true, value: true },
+  });
+
+  const settingMap = new Map(settings.map((setting) => [setting.key, setting.value]));
+  const goalsMap = new Map();
+
+  for (const courseId of uniqueIds) {
+    const key = getCourseGoalsSettingKey(courseId);
+    const rawValue = settingMap.get(key);
+    if (!rawValue) {
+      goalsMap.set(courseId, normalizeGoalsPayload({}));
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(rawValue);
+      goalsMap.set(courseId, normalizeGoalsPayload(parsed));
+    } catch (_error) {
+      goalsMap.set(courseId, normalizeGoalsPayload({}));
+    }
+  }
+
+  return goalsMap;
+}
+
 function extractMediaId(value) {
   if (!value) return "";
   if (typeof value === "string") return value.trim();
@@ -239,6 +271,24 @@ function toTrimmedString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function toQueryList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((item) => String(item || "").split(","))
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
 function clampInteger(value, min, max, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed)) return fallback;
@@ -394,10 +444,22 @@ async function normalizeCoursePayload(payload) {
     return normalized.length ? normalized : null;
   };
 
+  const normalizedSlugInput =
+    payload.slug === undefined
+      ? undefined
+      : slugify(String(payload.slug || ""))
+          .slice(0, 150)
+          .replace(/-+$/g, "");
+
   return {
     title: payload.title,
+    slug: normalizedSlugInput,
     subtitle: payload.subtitle,
     description: payload.description,
+    language:
+      payload.language === undefined
+        ? undefined
+        : toTrimmedString(payload.language) || null,
     welcomeMessage: normalizeOptionalMessage(
       payload.welcomeMessage ?? payload.welcome_message,
     ),
@@ -422,16 +484,38 @@ async function makeUniqueSlug(title) {
   return count > 0 ? `${base}-${count + 1}` : base;
 }
 
+async function assertCourseSlugAvailable(slug, excludeCourseId = null) {
+  if (!slug) {
+    throw new ApiError(400, "Slug is required");
+  }
+
+  const existing = await prisma.course.findFirst({
+    where: {
+      slug,
+      deletedAt: null,
+      id: excludeCourseId ? { not: excludeCourseId } : undefined,
+    },
+    select: { id: true },
+  });
+
+  if (existing) {
+    throw new ApiError(409, "Slug already exists");
+  }
+}
+
 export async function createCourse(userId, payload) {
-  const slug = await makeUniqueSlug(payload.title);
   const normalized = await normalizeCoursePayload(payload);
+  const slug = normalized.slug || (await makeUniqueSlug(payload.title));
+  if (normalized.slug) {
+    await assertCourseSlugAvailable(normalized.slug);
+  }
   const course = await prisma.course.create({
     data: {
       title: normalized.title,
       subtitle: normalized.subtitle,
       description: normalized.description,
       slug,
-      language: payload.language || "en",
+      language: normalized.language || "en",
       categoryId: normalized.categoryId,
       levelId: normalized.levelId,
       priceTierId: normalized.priceTierId,
@@ -465,11 +549,18 @@ export async function updateCourse(userId, courseId, payload) {
   if (course.educatorId !== userId) {
     throw new ApiError(403, "You can only update your own course");
   }
-  if (course.workflowStatus !== "DRAFT") {
-    throw new ApiError(400, "Only draft courses can be updated");
+  const editableWorkflowStatuses = new Set(["DRAFT", "REJECTED", "PUBLISHED"]);
+  if (!editableWorkflowStatuses.has(String(course.workflowStatus || "").toUpperCase())) {
+    throw new ApiError(
+      400,
+      "Only draft, rejected, or published courses can be updated",
+    );
   }
 
   const normalized = await normalizeCoursePayload(payload);
+  if (normalized.slug !== undefined) {
+    await assertCourseSlugAvailable(normalized.slug, course.id);
+  }
 
   return prisma.$transaction(async (tx) => {
     const updatedCourse = await tx.course.update({
@@ -525,6 +616,30 @@ export async function updateCourse(userId, courseId, payload) {
       promo_video: promoVideo,
     };
   });
+}
+
+export async function checkCourseSlugAvailability(slug, excludeCourseId = null) {
+  const normalizedSlug = slugify(String(slug || ""))
+    .slice(0, 150)
+    .replace(/-+$/g, "");
+
+  if (!normalizedSlug) {
+    throw new ApiError(400, "slug is required");
+  }
+
+  const existing = await prisma.course.findFirst({
+    where: {
+      slug: normalizedSlug,
+      deletedAt: null,
+      id: excludeCourseId ? { not: excludeCourseId } : undefined,
+    },
+    select: { id: true },
+  });
+
+  return {
+    slug: normalizedSlug,
+    isAvailable: !existing,
+  };
 }
 
 export async function updateCourseMessages(userId, courseId, payload) {
@@ -634,8 +749,9 @@ export async function submitCourseForApproval(userId, courseId, note) {
   if (course.educatorId !== userId) {
     throw new ApiError(403, "Forbidden");
   }
-  if (course.workflowStatus !== "DRAFT") {
-    throw new ApiError(400, "Course is not in draft state");
+  const normalizedWorkflowStatus = String(course.workflowStatus || "").toUpperCase();
+  if (!["DRAFT", "REJECTED"].includes(normalizedWorkflowStatus)) {
+    throw new ApiError(400, "Only draft or rejected courses can be submitted");
   }
 
   return prisma.$transaction(async (tx) => {
@@ -711,7 +827,13 @@ export async function listCourses(query, user) {
   const resolvedLevelId = await resolveLevelId(query.levelId || query.instructional_level);
   const searchTerm = toTrimmedString(query.search || query.q);
   const categorySlug = toTrimmedString(query.categorySlug || query.category_slug);
-  const topicSlug = toTrimmedString(query.topicSlug || query.topic_slug || query.topic);
+  const topicSlugs = toQueryList(query.topicSlug || query.topic_slug || query.topic);
+  const priceFilters = toQueryList(query.price);
+  const languageFilters = toQueryList(query.language).map((item) => item.toLowerCase());
+  const handsOnFilters = toQueryList(query.handsOn || query.hands_on).map((item) =>
+    item.toLowerCase(),
+  );
+  const minRating = Number(query.rating || 0);
 
   let resolvedCategoryIds = [];
   if (categorySlug) {
@@ -736,6 +858,61 @@ export async function listCourses(query, user) {
     }
   }
 
+  let ratedCourseIds = null;
+  if (Number.isFinite(minRating) && minRating > 0) {
+    const ratingRows = await prisma.review.groupBy({
+      by: ["courseId"],
+      _avg: { rating: true },
+      having: {
+        rating: {
+          _avg: {
+            gte: minRating,
+          },
+        },
+      },
+    });
+    ratedCourseIds = ratingRows.map((row) => row.courseId);
+  }
+
+  const lessonHandsOnOr = [];
+  if (handsOnFilters.includes("quizzes")) {
+    lessonHandsOnOr.push({ type: "QUIZ" });
+  }
+  if (handsOnFilters.includes("coding-exercise")) {
+    lessonHandsOnOr.push({ type: "CODING_EXERCISE" });
+  }
+  if (handsOnFilters.includes("practice-tests")) {
+    lessonHandsOnOr.push({
+      title: { contains: "practice test", mode: "insensitive" },
+    });
+  }
+  if (handsOnFilters.includes("role-plays")) {
+    lessonHandsOnOr.push({
+      title: { contains: "role play", mode: "insensitive" },
+    });
+  }
+
+  const lessonConditions = [];
+  if (topicSlugs.length) {
+    lessonConditions.push({
+      OR: [
+        { topic: { slug: { in: topicSlugs }, deletedAt: null } },
+        {
+          lessonTopics: {
+            some: {
+              topic: { slug: { in: topicSlugs }, deletedAt: null },
+            },
+          },
+        },
+      ],
+    });
+  }
+  if (lessonHandsOnOr.length) {
+    lessonConditions.push({
+      OR: lessonHandsOnOr,
+    });
+  }
+
   const where = {
     deletedAt: null,
     workflowStatus: user?.roles?.includes("ADMIN")
@@ -743,34 +920,51 @@ export async function listCourses(query, user) {
       : query.includePending === "true" && user?.roles?.includes("EDUCATOR")
         ? undefined
         : "PUBLISHED",
-    OR: searchTerm
-      ? [
-          { title: { contains: searchTerm, mode: "insensitive" } },
-          { subtitle: { contains: searchTerm, mode: "insensitive" } },
-        ]
-      : undefined,
+    AND: [
+      searchTerm
+        ? {
+            OR: [
+              { title: { contains: searchTerm, mode: "insensitive" } },
+              { subtitle: { contains: searchTerm, mode: "insensitive" } },
+            ],
+          }
+        : undefined,
+      languageFilters.length
+        ? {
+            OR: languageFilters.map((language) => ({
+              language: { equals: language, mode: "insensitive" },
+            })),
+          }
+        : undefined,
+    ].filter(Boolean),
     categoryId:
       resolvedCategoryIds.length > 0
         ? { in: resolvedCategoryIds }
         : query.categoryId || query.category_id || undefined,
     levelId: resolvedLevelId || undefined,
-    lessons: topicSlug
+    id: ratedCourseIds ? { in: ratedCourseIds } : undefined,
+    priceTier:
+      priceFilters.length === 1
+        ? priceFilters[0] === "free"
+          ? { price: { lte: 0 } }
+          : priceFilters[0] === "paid"
+            ? { price: { gt: 0 } }
+            : undefined
+        : undefined,
+    lessons: lessonConditions.length
       ? {
           some: {
-            OR: [
-              { topic: { slug: topicSlug, deletedAt: null } },
-              {
-                lessonTopics: {
-                  some: {
-                    topic: { slug: topicSlug, deletedAt: null },
-                  },
-                },
-              },
-            ],
+            AND: lessonConditions,
           },
         }
       : undefined,
   };
+
+  const sort = toTrimmedString(query.sort || query.sortBy).toLowerCase();
+  const orderBy =
+    sort === "best_selling" || sort === "best-selling"
+      ? [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }]
+      : { createdAt: "desc" };
 
   const [rows, total] = await Promise.all([
     prisma.course.findMany({
@@ -796,7 +990,7 @@ export async function listCourses(query, user) {
           orderBy: { createdAt: "desc" },
         },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy,
     }),
     prisma.course.count({ where }),
   ]);
@@ -825,8 +1019,11 @@ export async function listCourses(query, user) {
     enrolledCourseIds = new Set(enrollmentRows.map((row) => row.courseId));
   }
 
+  const courseGoalsMap = await readCourseGoalsMap(rows.map((course) => course.id));
+
   const mappedRows = rows.map((course) => ({
     ...course,
+    goals: courseGoalsMap.get(course.id) || normalizeGoalsPayload({}),
     is_in_cart: cartCourseIds.has(course.id),
     is_enrolled: enrolledCourseIds.has(course.id),
   }));

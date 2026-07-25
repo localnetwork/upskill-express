@@ -8,6 +8,7 @@ import {
   getCourseForLearner,
   getCourseRoute,
   getCourseBySlug,
+  checkCourseSlugAvailability,
   getCourseStudentsForManagement,
   listAuthoredCourses,
   listCourses,
@@ -139,6 +140,13 @@ export async function getCourseDiscoveryController(req, res) {
 export async function getCourseBySlugController(req, res) {
   const data = await getCourseBySlug(req.params.slug);
   return res.json({ message: "Course fetched", data });
+}
+
+export async function checkCourseSlugAvailabilityController(req, res) {
+  const slug = String(req.query?.slug || "").trim();
+  const excludeCourseId = String(req.query?.excludeCourseId || "").trim() || null;
+  const data = await checkCourseSlugAvailability(slug, excludeCourseId);
+  return res.json({ message: "Course slug availability fetched", data });
 }
 
 export async function getCourseForManagementController(req, res) {

@@ -310,3 +310,192 @@ export async function getAdminActivityReport(query = {}) {
     },
   };
 }
+
+function clampInteger(value, min, max, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+export async function getTrendingTopicsAnalytics(query = {}) {
+  const limit = clampInteger(query.limit, 1, 20, 6);
+  const days = clampInteger(query.days, 1, 365, 30);
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const courses = await prisma.course.findMany({
+    where: {
+      deletedAt: null,
+      workflowStatus: "PUBLISHED",
+    },
+    select: {
+      id: true,
+      _count: {
+        select: {
+          enrollments: true,
+        },
+      },
+    },
+    take: 600,
+    orderBy: { updatedAt: "desc" },
+  });
+
+  if (!courses.length) {
+    return {
+      range_days: days,
+      topics: [],
+    };
+  }
+
+  const courseIds = courses.map((course) => course.id);
+  const courseActivityMap = new Map();
+  const activityEvent = getActivityEventModel(true);
+
+  if (activityEvent) {
+    try {
+      const analyticsRows = await activityEvent.groupBy({
+        by: ["courseId", "eventType"],
+        where: {
+          courseId: { in: courseIds },
+          createdAt: { gte: since },
+          eventType: { in: ["COURSE_IMPRESSION", "COURSE_PAGE_VIEW"] },
+        },
+        _count: { _all: true },
+      });
+
+      for (const row of analyticsRows) {
+        const courseId = row.courseId;
+        if (!courseId) continue;
+
+        if (!courseActivityMap.has(courseId)) {
+          courseActivityMap.set(courseId, { impressions: 0, pageViews: 0 });
+        }
+
+        const current = courseActivityMap.get(courseId);
+        if (row.eventType === "COURSE_IMPRESSION") {
+          current.impressions += row._count._all;
+        }
+        if (row.eventType === "COURSE_PAGE_VIEW") {
+          current.pageViews += row._count._all;
+        }
+      }
+    } catch (_error) {}
+  }
+
+  const lessons = await prisma.lesson.findMany({
+    where: {
+      courseId: { in: courseIds },
+    },
+    select: {
+      courseId: true,
+      topic: {
+        select: {
+          id: true,
+          slug: true,
+          name: true,
+          category: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            },
+          },
+        },
+      },
+      lessonTopics: {
+        select: {
+          topic: {
+            select: {
+              id: true,
+              slug: true,
+              name: true,
+              category: {
+                select: {
+                  id: true,
+                  name: true,
+                  slug: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const topicsByCourse = new Map();
+  for (const lesson of lessons) {
+    if (!topicsByCourse.has(lesson.courseId)) {
+      topicsByCourse.set(lesson.courseId, new Map());
+    }
+
+    const topicMap = topicsByCourse.get(lesson.courseId);
+    if (lesson.topic?.id) {
+      topicMap.set(lesson.topic.id, lesson.topic);
+    }
+    for (const row of lesson.lessonTopics || []) {
+      if (row?.topic?.id) {
+        topicMap.set(row.topic.id, row.topic);
+      }
+    }
+  }
+
+  const courseMap = new Map(courses.map((row) => [row.id, row]));
+  const topicMap = new Map();
+
+  for (const [courseId, topicEntries] of topicsByCourse.entries()) {
+    const course = courseMap.get(courseId);
+    if (!course) continue;
+
+    const enrollments = Number(course?._count?.enrollments || 0);
+    const activity = courseActivityMap.get(courseId) || { impressions: 0, pageViews: 0 };
+    const courseTrendScore =
+      enrollments * 8 +
+      Number(activity.pageViews || 0) * 0.5 +
+      Number(activity.impressions || 0) * 0.2;
+
+    for (const topic of topicEntries.values()) {
+      if (!topicMap.has(topic.id)) {
+        topicMap.set(topic.id, {
+          id: topic.id,
+          slug: topic.slug,
+          title: topic.name,
+          category: topic.category
+            ? {
+                id: topic.category.id,
+                title: topic.category.name,
+                slug: topic.category.slug,
+              }
+            : null,
+          trend_score: 0,
+          course_count: 0,
+          page_views: 0,
+          impressions: 0,
+          enrollments: 0,
+        });
+      }
+
+      const aggregate = topicMap.get(topic.id);
+      aggregate.trend_score += courseTrendScore;
+      aggregate.course_count += 1;
+      aggregate.page_views += Number(activity.pageViews || 0);
+      aggregate.impressions += Number(activity.impressions || 0);
+      aggregate.enrollments += enrollments;
+    }
+  }
+
+  const topics = Array.from(topicMap.values())
+    .map((row) => ({
+      ...row,
+      trend_score: Number(row.trend_score.toFixed(2)),
+    }))
+    .sort((a, b) => {
+      if (b.trend_score !== a.trend_score) return b.trend_score - a.trend_score;
+      return b.course_count - a.course_count;
+    })
+    .slice(0, limit);
+
+  return {
+    range_days: days,
+    topics,
+  };
+}

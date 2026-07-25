@@ -3,7 +3,8 @@ import { z } from "zod";
 const categorySchema = z.object({
   name: z.string().min(2).max(120).optional(),
   title: z.string().min(2).max(120).optional(),
-  slug: z.string().min(2).max(160),
+  slug: z.string().min(2).max(150),
+  image: z.string().max(2048).optional().nullable(),
   description: z.string().optional(),
   category_description: z.string().optional(),
   parentId: z.string().optional().nullable(),

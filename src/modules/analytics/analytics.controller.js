@@ -1,4 +1,4 @@
-import { recordActivityEvent } from "./analytics.service.js";
+import { getTrendingTopicsAnalytics, recordActivityEvent } from "./analytics.service.js";
 
 export async function trackActivityEventController(req, res) {
   const data = await recordActivityEvent({
@@ -12,3 +12,10 @@ export async function trackActivityEventController(req, res) {
   });
 }
 
+export async function getTrendingTopicsAnalyticsController(req, res) {
+  const data = await getTrendingTopicsAnalytics(req.query);
+  return res.json({
+    message: "Trending topics analytics fetched",
+    data,
+  });
+}

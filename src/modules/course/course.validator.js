@@ -17,6 +17,7 @@ const categoryRefSchema = z.union([
 
 export const createCourseValidator = z.object({
   title: z.string().min(3).max(60),
+  slug: z.string().min(2).max(150).optional(),
   subtitle: z.string().optional(),
   description: z.string().optional(),
   welcomeMessage: z.string().optional().nullable(),
