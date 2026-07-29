@@ -47,6 +47,11 @@ const JUDGE0_LANGUAGE_IDS = {
   go: 60,
   csharp: 51,
 };
+const USER_PICTURE_KEY_PREFIX = "profile_picture::";
+
+function getUserPictureSettingKey(userId) {
+  return `${USER_PICTURE_KEY_PREFIX}${userId}`;
+}
 
 function getUserRoles(user) {
   return (user.roles || []).map((item) => item.role.name);
@@ -1307,7 +1312,7 @@ router.get("/user/:slug", async (req, res, next) => {
     const isEducator = roleNames.includes("EDUCATOR");
     const isLearner = roleNames.includes("LEARNER");
 
-    const [educatorStatsRaw, completedEnrollmentsRaw, certificateIndexRows] = await Promise.all([
+    const [educatorStatsRaw, completedEnrollmentsRaw, certificateIndexRows, userPicture] = await Promise.all([
       isEducator
         ? Promise.all([
             prisma.course.count({
@@ -1404,6 +1409,36 @@ router.get("/user/:slug", async (req, res, next) => {
             orderBy: { createdAt: "desc" },
           })
         : Promise.resolve([]),
+      (async () => {
+        const setting = await prisma.platformSetting.findUnique({
+          where: { key: getUserPictureSettingKey(user.id) },
+          select: { value: true },
+        });
+
+        const parsed = parseJsonOrNull(setting?.value);
+        const mediaId = String(parsed?.mediaId || parsed?.id || setting?.value || "").trim();
+        if (!mediaId) return null;
+
+        const media = await prisma.media.findFirst({
+          where: {
+            id: mediaId,
+            userId: user.id,
+            mediaType: "IMAGE",
+          },
+          select: {
+            id: true,
+            storagePath: true,
+            originalName: true,
+          },
+        });
+
+        if (!media) return null;
+        return {
+          id: media.id,
+          path: media.storagePath,
+          title: media.originalName || "",
+        };
+      })(),
     ]);
 
     const educatorStats = {
@@ -1502,6 +1537,7 @@ router.get("/user/:slug", async (req, res, next) => {
       link_x: extended.link_x,
       link_youtube: extended.link_youtube,
       link_github: extended.link_github,
+      user_picture: userPicture,
       roles: user.roles.map((item) => ({
         role_name:
           item.role.name === "EDUCATOR"
@@ -1535,7 +1571,7 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
       },
       include: {
         educator: {
-          select: { id: true, username: true, firstName: true, lastName: true },
+          select: { id: true, username: true, firstName: true, lastName: true, headline: true },
         },
         level: true,
         priceTier: true,
@@ -1554,6 +1590,37 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
       },
       orderBy: { createdAt: "desc" },
     });
+    const educatorIds = Array.from(
+      new Set(courses.map((course) => course?.educator?.id).filter(Boolean)),
+    );
+    const educatorPicturesByUserId = new Map();
+
+    if (educatorIds.length) {
+      const mediaRows = await prisma.media.findMany({
+        where: {
+          userId: { in: educatorIds },
+          courseId: null,
+          mediaType: "IMAGE",
+        },
+        select: {
+          id: true,
+          userId: true,
+          storagePath: true,
+          originalName: true,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      for (const mediaRow of mediaRows) {
+        if (!educatorPicturesByUserId.has(mediaRow.userId)) {
+          educatorPicturesByUserId.set(mediaRow.userId, {
+            id: mediaRow.id,
+            path: mediaRow.storagePath,
+            title: mediaRow.originalName || "",
+          });
+        }
+      }
+    }
     const courseIds = courses.map((course) => course.id);
     const ratingsByCourseId = new Map();
 
@@ -1594,7 +1661,8 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
           username: course.educator.username,
           firstname: course.educator.firstName || "",
           lastname: course.educator.lastName || "",
-          user_picture: null,
+          headline: course.educator.headline || "",
+          user_picture: educatorPicturesByUserId.get(course.educator.id) || null,
         },
       },
       resources_count: {
@@ -1684,6 +1752,19 @@ router.put("/profile/user-picture", authenticate, async (req, res, next) => {
     if (!media) {
       throw new ApiError(404, "Media not found");
     }
+
+    await prisma.platformSetting.upsert({
+      where: { key: getUserPictureSettingKey(req.user.id) },
+      create: {
+        key: getUserPictureSettingKey(req.user.id),
+        value: JSON.stringify({ mediaId: media.id }),
+        description: `Profile picture for user ${req.user.id}`,
+      },
+      update: {
+        value: JSON.stringify({ mediaId: media.id }),
+        description: `Profile picture for user ${req.user.id}`,
+      },
+    });
 
     return res.json({
       message: "Profile image linked",

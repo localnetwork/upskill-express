@@ -1,9 +1,11 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { Prisma } from "@prisma/client";
+import axios from "axios";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { slugify } from "../../shared/utils/slugify.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import { env } from "../../shared/config/env.js";
 
 const COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
 const PROMO_MEDIA_TYPES = ["PROMO_VIDEO"];
@@ -20,6 +22,39 @@ function mapLegacyMedia(media) {
     path: media.storagePath,
     title: media.originalName,
   };
+}
+
+async function getLatestUserPicturesMap(userIds = []) {
+  const uniqueUserIds = Array.from(new Set((userIds || []).filter(Boolean)));
+  if (!uniqueUserIds.length) return new Map();
+
+  const mediaRows = await prisma.media.findMany({
+    where: {
+      userId: { in: uniqueUserIds },
+      courseId: null,
+      mediaType: "IMAGE",
+    },
+    select: {
+      id: true,
+      userId: true,
+      storagePath: true,
+      originalName: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const map = new Map();
+  for (const row of mediaRows) {
+    if (!map.has(row.userId)) {
+      map.set(row.userId, {
+        id: row.id,
+        path: row.storagePath,
+        title: row.originalName || "",
+      });
+    }
+  }
+
+  return map;
 }
 
 function getCourseGoalsSettingKey(courseId) {
@@ -238,7 +273,7 @@ function estimateLessonDurationSeconds(lesson) {
 function getCourseInclude() {
   return {
     educator: {
-      select: { id: true, username: true, firstName: true, lastName: true },
+      select: { id: true, username: true, firstName: true, lastName: true, headline: true },
     },
     level: true,
     priceTier: true,
@@ -573,6 +608,432 @@ export async function createCourse(userId, payload) {
   });
 
   return course;
+}
+
+function readJsonFromAiContent(content) {
+  const raw = String(content || "").trim();
+  if (!raw) return null;
+
+  const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fencedMatch ? fencedMatch[1] : raw;
+
+  try {
+    return JSON.parse(candidate);
+  } catch (_error) {
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      const sliced = candidate.slice(start, end + 1);
+      try {
+        return JSON.parse(sliced);
+      } catch (_nestedError) {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function normalizeAIDraftLessonType(input) {
+  const raw = String(input || "RESOURCE")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+
+  if (raw === "ARTICLE") return "RESOURCE";
+  if (["VIDEO", "QUIZ", "CODING_EXERCISE", "RESOURCE", "ASSIGNMENT"].includes(raw)) {
+    return raw;
+  }
+  return "RESOURCE";
+}
+
+function normalizeAIDraftPayload(draft, fallbackPrompt) {
+  const source = draft && typeof draft === "object" ? draft : {};
+  const title = String(source.title || "")
+    .trim()
+    .slice(0, 60);
+  const fallbackTitle = String(fallbackPrompt || "")
+    .trim()
+    .slice(0, 60);
+  const safeTitle =
+    title.length >= 3
+      ? title
+      : fallbackTitle.length >= 3
+        ? fallbackTitle
+        : "AI Course Draft";
+
+  const subtitle = String(source.subtitle || "")
+    .trim()
+    .slice(0, 180);
+  const description = String(source.description || source.course_description || "")
+    .trim()
+    .slice(0, 8000);
+  const language = String(source.language || "English")
+    .trim()
+    .slice(0, 100);
+  const instructionalLevel = String(
+    source.instructional_level || source.level || "",
+  )
+    .trim()
+    .slice(0, 120);
+  const categoryHint = String(source.category || source.category_hint || "")
+    .trim()
+    .slice(0, 140);
+
+  const toItems = (value) =>
+    Array.isArray(value)
+      ? value
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+          .slice(0, 20)
+      : [];
+
+  const whatYouWillLearn = toItems(
+    source.what_you_will_learn || source.what_you_will_learn_data,
+  );
+  const requirements = toItems(source.requirements || source.requirements_data);
+  const whoShouldAttend = toItems(
+    source.who_should_attend || source.who_should_attend_data,
+  );
+
+  const rawSections = Array.isArray(source.sections) ? source.sections : [];
+  const sections = rawSections
+    .slice(0, 20)
+    .map((section, sectionIndex) => {
+      const sectionTitle = String(section?.title || `Section ${sectionIndex + 1}`)
+        .trim()
+        .slice(0, 160);
+      const sectionDescription = String(section?.description || "")
+        .trim()
+        .slice(0, 5000);
+      const rawLessons = Array.isArray(section?.lessons)
+        ? section.lessons
+        : Array.isArray(section?.curriculums)
+          ? section.curriculums
+          : [];
+      const lessons = rawLessons
+        .slice(0, 50)
+        .map((lesson, lessonIndex) => {
+          const lessonTitle = String(
+            lesson?.title || `Lesson ${sectionIndex + 1}.${lessonIndex + 1}`,
+          )
+            .trim()
+            .slice(0, 180);
+          const lessonDescription = String(
+            lesson?.description || lesson?.curriculum_description || "",
+          )
+            .trim()
+            .slice(0, 8000);
+          const estimatedMinutes = Number(
+            lesson?.estimated_minutes || lesson?.duration_minutes || 8,
+          );
+          const durationInSeconds = Number.isFinite(estimatedMinutes)
+            ? Math.max(60, Math.min(60 * 90, Math.round(estimatedMinutes * 60)))
+            : 8 * 60;
+
+          return {
+            title: lessonTitle || `Lesson ${sectionIndex + 1}.${lessonIndex + 1}`,
+            description: lessonDescription,
+            type: normalizeAIDraftLessonType(
+              lesson?.type || lesson?.curriculum_type || "RESOURCE",
+            ),
+            durationInSeconds,
+          };
+        })
+        .filter((lesson) => lesson.title.length >= 2);
+
+      return {
+        title: sectionTitle || `Section ${sectionIndex + 1}`,
+        description: sectionDescription,
+        lessons:
+          lessons.length > 0
+            ? lessons
+            : [
+                {
+                  title: `Lesson ${sectionIndex + 1}.1`,
+                  description: "Expand this lesson outline and add your content.",
+                  type: "RESOURCE",
+                  durationInSeconds: 8 * 60,
+                },
+              ],
+      };
+    })
+    .filter((section) => section.title.length >= 2);
+
+  const fallbackSections =
+    sections.length > 0
+      ? sections
+      : [
+          {
+            title: "Introduction and course roadmap",
+            description: "Set expectations and walk learners through the journey.",
+            lessons: [
+              {
+                title: "Welcome and outcomes",
+                description: "Introduce the course and key outcomes.",
+                type: "RESOURCE",
+                durationInSeconds: 6 * 60,
+              },
+            ],
+          },
+          {
+            title: "Core concepts",
+            description: "Break down foundational concepts into practical lessons.",
+            lessons: [
+              {
+                title: "Core concept walkthrough",
+                description: "Teach the most important concept with examples.",
+                type: "RESOURCE",
+                durationInSeconds: 10 * 60,
+              },
+            ],
+          },
+          {
+            title: "Applied practice",
+            description: "Help learners apply knowledge in practical scenarios.",
+            lessons: [
+              {
+                title: "Hands-on practice",
+                description: "Practice exercise to reinforce the lessons.",
+                type: "ASSIGNMENT",
+                durationInSeconds: 12 * 60,
+              },
+            ],
+          },
+        ];
+
+  const paddedSections = [...fallbackSections];
+  while (paddedSections.length < 3) {
+    const nextIndex = paddedSections.length + 1;
+    paddedSections.push({
+      title: `Section ${nextIndex}`,
+      description: "Expand this section with your own structure and examples.",
+      lessons: [
+        {
+          title: `Lesson ${nextIndex}.1`,
+          description: "Core explanation for this topic.",
+          type: "RESOURCE",
+          durationInSeconds: 8 * 60,
+        },
+        {
+          title: `Lesson ${nextIndex}.2`,
+          description: "Guided example or walkthrough.",
+          type: "VIDEO",
+          durationInSeconds: 10 * 60,
+        },
+        {
+          title: `Lesson ${nextIndex}.3`,
+          description: "Practice activity for reinforcement.",
+          type: "ASSIGNMENT",
+          durationInSeconds: 12 * 60,
+        },
+      ],
+    });
+  }
+
+  for (const section of paddedSections) {
+    const lessons = Array.isArray(section.lessons) ? section.lessons : [];
+    while (lessons.length < 3) {
+      const nextLesson = lessons.length + 1;
+      lessons.push({
+        title: `${section.title} - Lesson ${nextLesson}`,
+        description: "Add details for this lesson.",
+        type: "RESOURCE",
+        durationInSeconds: 8 * 60,
+      });
+    }
+    section.lessons = lessons;
+  }
+
+  return {
+    title: safeTitle,
+    subtitle,
+    description,
+    language,
+    instructionalLevel,
+    categoryHint,
+    whatYouWillLearn,
+    requirements,
+    whoShouldAttend,
+    sections: paddedSections,
+  };
+}
+
+async function resolveAICategoryId(categoryHint) {
+  const normalizedHint = String(categoryHint || "").trim().toLowerCase();
+  if (!normalizedHint) return null;
+
+  const categories = await prisma.category.findMany({
+    where: { deletedAt: null },
+    select: { id: true, name: true, slug: true, parentId: true },
+  });
+  if (!categories.length) return null;
+
+  const hintTokens = slugify(normalizedHint).split("-").filter(Boolean);
+  let best = null;
+
+  for (const category of categories) {
+    const label = String(category.name || category.slug || "").toLowerCase();
+    const slugLabel = String(category.slug || "").toLowerCase();
+    const labelTokens = slugify(`${label} ${slugLabel}`).split("-").filter(Boolean);
+
+    let score = 0;
+    if (label === normalizedHint || slugLabel === slugify(normalizedHint)) score += 100;
+    if (label.includes(normalizedHint) || normalizedHint.includes(label)) score += 45;
+    for (const token of hintTokens) {
+      if (labelTokens.includes(token)) score += 8;
+    }
+    if (category.parentId) score += 3;
+
+    if (!best || score > best.score) {
+      best = { id: category.id, score };
+    }
+  }
+
+  if (!best || best.score <= 0) return null;
+  return best.id;
+}
+
+async function generateCourseDraftViaAI(prompt, options = {}) {
+  if (!env.aiKey) {
+    throw new ApiError(
+      500,
+      "AI key is not configured. Set AI_KEY in the backend environment.",
+    );
+  }
+
+  const systemPrompt =
+    "You are an expert instructional designer. Return only valid JSON with no markdown fences. " +
+    "Schema: { title, subtitle, description, language, instructional_level, category, what_you_will_learn[], requirements[], who_should_attend[], sections:[{ title, description, lessons:[{ title, description, type, estimated_minutes }] }] }. " +
+    "Constraints: title <= 60 chars, subtitle <= 180 chars, 4-8 sections, 3-8 lessons each section, lesson type one of VIDEO|RESOURCE|ASSIGNMENT|QUIZ|CODING_EXERCISE, estimated_minutes is number.";
+
+  let response;
+  try {
+    response = await axios.post(
+      `${env.deepseekBaseUrl.replace(/\/+$/g, "")}/chat/completions`,
+      {
+        model: env.deepseekModel,
+        temperature: 0.7,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: `Create a complete draft course from this brief:\n${prompt}\n\nPreferred language: ${options.language || "English"}\nPreferred level: ${options.instructionalLevel || "Choose the best fit"}`,
+          },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${env.aiKey}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 60000,
+      },
+    );
+  } catch (_error) {
+    throw new ApiError(
+      502,
+      "AI provider is unavailable right now. Please try again.",
+    );
+  }
+
+  const aiContent = response?.data?.choices?.[0]?.message?.content || "";
+  const parsed = readJsonFromAiContent(aiContent);
+  if (!parsed) {
+    throw new ApiError(502, "AI returned an invalid response format");
+  }
+  return normalizeAIDraftPayload(parsed, prompt);
+}
+
+export async function createCourseAIDraft(userId, payload) {
+  const prompt = String(payload?.prompt || "")
+    .trim()
+    .slice(0, 4000);
+  if (prompt.length < 20) {
+    throw new ApiError(400, "Prompt must be at least 20 characters");
+  }
+
+  const aiDraft = await generateCourseDraftViaAI(prompt, {
+    language: payload?.language,
+    instructionalLevel: payload?.instructional_level,
+  });
+
+  const [categoryId, levelId] = await Promise.all([
+    resolveAICategoryId(aiDraft.categoryHint),
+    resolveLevelId(aiDraft.instructionalLevel),
+  ]);
+
+  const course = await createCourse(userId, {
+    title: aiDraft.title,
+    subtitle: aiDraft.subtitle,
+    description: aiDraft.description,
+    language: aiDraft.language,
+    categoryId,
+    levelId,
+    published: false,
+  });
+
+  if (
+    aiDraft.whatYouWillLearn.length > 0 ||
+    aiDraft.requirements.length > 0 ||
+    aiDraft.whoShouldAttend.length > 0
+  ) {
+    await updateCourseGoals(userId, course.id, {
+      what_you_will_learn_data: aiDraft.whatYouWillLearn,
+      requirements_data: aiDraft.requirements,
+      who_should_attend_data: aiDraft.whoShouldAttend,
+    });
+  }
+
+  for (let sectionIndex = 0; sectionIndex < aiDraft.sections.length; sectionIndex += 1) {
+    const sectionPayload = aiDraft.sections[sectionIndex];
+    const section = await prisma.courseSection.create({
+      data: {
+        courseId: course.id,
+        title: sectionPayload.title,
+        description: sectionPayload.description || null,
+        position: sectionIndex + 1,
+      },
+    });
+
+    const lessons = Array.isArray(sectionPayload.lessons)
+      ? sectionPayload.lessons
+      : [];
+    for (let lessonIndex = 0; lessonIndex < lessons.length; lessonIndex += 1) {
+      const lessonPayload = lessons[lessonIndex];
+      const lessonType = normalizeAIDraftLessonType(lessonPayload.type);
+      await prisma.lesson.create({
+        data: {
+          courseId: course.id,
+          sectionId: section.id,
+          type: lessonType,
+          title: String(lessonPayload.title || `Lesson ${lessonIndex + 1}`),
+          description: String(lessonPayload.description || ""),
+          assignmentText:
+            lessonType === "RESOURCE" || lessonType === "ASSIGNMENT"
+              ? String(lessonPayload.description || "")
+              : null,
+          position: lessonIndex + 1,
+          durationInSeconds: Number(lessonPayload.durationInSeconds || 0),
+          isPreview: sectionIndex === 0 && lessonIndex === 0,
+        },
+      });
+    }
+  }
+
+  return {
+    id: course.id,
+    uuid: course.id,
+    slug: course.slug,
+    title: course.title,
+    generated: {
+      sections: aiDraft.sections.length,
+      lessons: aiDraft.sections.reduce(
+        (sum, section) => sum + (Array.isArray(section.lessons) ? section.lessons.length : 0),
+        0,
+      ),
+    },
+  };
 }
 
 export async function updateCourse(userId, courseId, payload) {
@@ -1026,7 +1487,16 @@ export async function listCourses(query, user) {
       skip,
       take: limit,
       include: {
-        educator: { select: { id: true, email: true, username: true, firstName: true, lastName: true } },
+        educator: {
+          select: {
+            id: true,
+            email: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            headline: true,
+          },
+        },
         category: true,
         level: true,
         priceTier: true,
@@ -1092,9 +1562,18 @@ export async function listCourses(query, user) {
   }
 
   const courseGoalsMap = await readCourseGoalsMap(rows.map((course) => course.id));
+  const educatorPicturesByUserId = await getLatestUserPicturesMap(
+    rows.map((course) => course?.educator?.id),
+  );
 
   const mappedRows = rows.map((course) => ({
     ...course,
+    educator: course.educator
+      ? {
+          ...course.educator,
+          user_picture: educatorPicturesByUserId.get(course.educator.id) || null,
+        }
+      : null,
     goals: courseGoalsMap.get(course.id) || normalizeGoalsPayload({}),
     is_in_cart: cartCourseIds.has(course.id),
     is_enrolled: enrolledCourseIds.has(course.id),
@@ -2179,6 +2658,12 @@ export async function listAuthoredCourses(userId, query) {
 
   const withStats = rows.map((row) => ({
     ...row,
+    educator: row.educator
+      ? {
+          ...row.educator,
+          user_picture: null,
+        }
+      : null,
     stats: {
       enrollments_this_month: monthlyByCourseId.get(row.id) || 0,
       average_rating: ratingsByCourseId.get(row.id)?.average_rating || 0,
@@ -2186,7 +2671,21 @@ export async function listAuthoredCourses(userId, query) {
     },
   }));
 
-  return toPagedResult(withStats, total, page, limit);
+  const educatorPicturesByUserId = await getLatestUserPicturesMap(
+    withStats.map((course) => course?.educator?.id),
+  );
+
+  const withStatsAndPictures = withStats.map((course) => ({
+    ...course,
+    educator: course.educator
+      ? {
+          ...course.educator,
+          user_picture: educatorPicturesByUserId.get(course.educator.id) || null,
+        }
+      : null,
+  }));
+
+  return toPagedResult(withStatsAndPictures, total, page, limit);
 }
 
 function canViewCourseRoute(course, actor) {
@@ -2258,23 +2757,59 @@ export async function getCourseRoute(slug, actor = null) {
     throw new ApiError(404, "Course not found");
   }
 
-  const [isEnrolled, isInCart, isInWishlist] = actor?.id
-    ? await Promise.all([
-        prisma.enrollment.findFirst({ where: { userId: actor.id, courseId: course.id } }),
-        prisma.cartItem.findFirst({
+  const [isEnrolled, isInCart, isInWishlist, activePromotionCouponRows] = await Promise.all([
+    actor?.id
+      ? prisma.enrollment.findFirst({ where: { userId: actor.id, courseId: course.id } })
+      : Promise.resolve(null),
+    actor?.id
+      ? prisma.cartItem.findFirst({
           where: {
             courseId: course.id,
             cart: { userId: actor.id },
           },
-        }),
-        prisma.wishlist.findFirst({
+        })
+      : Promise.resolve(null),
+    actor?.id
+      ? prisma.wishlist.findFirst({
           where: {
             userId: actor.id,
             courseId: course.id,
           },
-        }),
-      ])
-    : [null, null, null];
+        })
+      : Promise.resolve(null),
+    prisma.coupon.findMany({
+      where: {
+        courseId: course.id,
+        isActive: true,
+        deletedAt: null,
+        OR: [{ startsAt: null }, { startsAt: { lte: new Date() } }],
+        AND: [{ OR: [{ endsAt: null }, { endsAt: { gte: new Date() } }] }],
+      },
+      select: {
+        id: true,
+        code: true,
+        type: true,
+        value: true,
+        maxDiscount: true,
+        usageLimit: true,
+        usedCount: true,
+        startsAt: true,
+        endsAt: true,
+        createdAt: true,
+      },
+      orderBy: [{ createdAt: "desc" }],
+      take: 10,
+    }),
+  ]);
+  const activePromotionCoupon =
+    (activePromotionCouponRows || []).find((coupon) => {
+      const usageLimit =
+        coupon?.usageLimit === null || coupon?.usageLimit === undefined
+          ? null
+          : Number(coupon.usageLimit);
+      if (usageLimit === null) return true;
+      return Number(coupon?.usedCount || 0) < usageLimit;
+    }) || null;
   const totalEnrollees = await prisma.enrollment.count({
     where: {
       courseId: course.id,
@@ -2421,6 +2956,27 @@ export async function getCourseRoute(slug, actor = null) {
       total_enrollees: totalEnrollees,
       is_bestseller: isBestseller,
     },
+    promotion_coupon: activePromotionCoupon
+      ? {
+          id: activePromotionCoupon.id,
+          code: activePromotionCoupon.code,
+          type: activePromotionCoupon.type,
+          value: Number(activePromotionCoupon.value || 0),
+          max_discount:
+            activePromotionCoupon.maxDiscount === null ||
+            activePromotionCoupon.maxDiscount === undefined
+              ? null
+              : Number(activePromotionCoupon.maxDiscount),
+          usage_limit:
+            activePromotionCoupon.usageLimit === null ||
+            activePromotionCoupon.usageLimit === undefined
+              ? null
+              : Number(activePromotionCoupon.usageLimit),
+          used_count: Number(activePromotionCoupon.usedCount || 0),
+          starts_at: activePromotionCoupon.startsAt,
+          ends_at: activePromotionCoupon.endsAt,
+        }
+      : null,
     is_enrolled: Boolean(isEnrolled),
     is_in_cart: Boolean(isInCart),
     is_in_wishlist: Boolean(isInWishlist),
@@ -2577,6 +3133,663 @@ export async function getCourseForLearner(userId, slug) {
         }),
       })),
     },
+  };
+}
+
+function clipText(value, maxLength) {
+  const normalized = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return "";
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 1)}…`
+    : normalized;
+}
+
+function buildCourseAssistantSuggestedTopics(course) {
+  const topics = [];
+  const seen = new Set();
+
+  const pushUnique = (text) => {
+    const normalized = clipText(text, 120);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    topics.push(normalized);
+  };
+
+  for (const section of course?.sections || []) {
+    pushUnique(`Section: ${section.title}`);
+    for (const lesson of (section.lessons || []).slice(0, 6)) {
+      pushUnique(`Lesson: ${lesson.title}`);
+    }
+  }
+
+  return topics.slice(0, 14);
+}
+
+function buildCourseAssistantContext(course) {
+  return (course?.sections || []).slice(0, 14).map((section) => ({
+    section_title: clipText(section?.title, 140),
+    section_description: clipText(section?.description, 260),
+    lessons: (section?.lessons || []).slice(0, 16).map((lesson) => ({
+      lesson_id: lesson.id,
+      lesson_title: clipText(lesson?.title, 160),
+      lesson_type: lesson?.type || "RESOURCE",
+      lesson_description: clipText(lesson?.description, 300),
+      assignment_text: clipText(lesson?.assignmentText, 240),
+      coding_instructions: clipText(lesson?.codingInstructions, 240),
+      has_quiz: Boolean(
+        Array.isArray(safeParseJson(lesson?.quizQuestions)) ||
+          safeParseJson(lesson?.quizQuestions)?.questions,
+      ),
+    })),
+  }));
+}
+
+function tokenizeScopeText(value) {
+  const stopWords = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "about",
+    "into",
+    "your",
+    "you",
+    "are",
+    "was",
+    "were",
+    "can",
+    "could",
+    "would",
+    "should",
+    "what",
+    "when",
+    "where",
+    "which",
+    "have",
+    "has",
+    "had",
+    "how",
+    "why",
+    "its",
+    "it's",
+    "our",
+    "their",
+    "them",
+    "they",
+    "his",
+    "her",
+    "she",
+    "him",
+    "who",
+    "will",
+    "just",
+    "also",
+    "than",
+    "then",
+    "there",
+    "here",
+    "very",
+    "more",
+    "most",
+    "some",
+    "any",
+    "all",
+    "not",
+    "too",
+    "a",
+    "an",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "is",
+    "be",
+    "or",
+    "as",
+    "by",
+    "it",
+    "if",
+    "do",
+    "did",
+    "does",
+    "we",
+    "i",
+    "me",
+    "my",
+  ]);
+
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 && !stopWords.has(token));
+}
+
+function buildCourseScopeTokenSet(course) {
+  const corpus = [
+    course?.title,
+    course?.subtitle,
+    course?.description,
+    ...(course?.sections || []).flatMap((section) => [
+      section?.title,
+      section?.description,
+      ...(section?.lessons || []).flatMap((lesson) => [
+        lesson?.title,
+        lesson?.description,
+        lesson?.assignmentText,
+        lesson?.codingInstructions,
+      ]),
+    ]),
+  ]
+    .map((value) => String(value || ""))
+    .join(" ");
+
+  return new Set(tokenizeScopeText(corpus));
+}
+
+function isCourseRelatedQuestion({ message, course, recentMessages, selectedLecture }) {
+  const normalizedMessage = String(message || "").trim();
+  if (!normalizedMessage) return false;
+
+  const broadCourseIntent =
+    /(course|lesson|section|curriculum|quiz|assignment|exercise|module|chapter|topic|lecture|learn|learning|syllabus|project|instructor|video)/i.test(
+      normalizedMessage,
+    );
+  if (broadCourseIntent) return true;
+
+  if (
+    selectedLecture &&
+    /(this|that|it|explain again|summarize|next step|what next|review)/i.test(
+      normalizedMessage.toLowerCase(),
+    )
+  ) {
+    return true;
+  }
+
+  const messageTokens = tokenizeScopeText(normalizedMessage);
+  if (!messageTokens.length) return false;
+
+  const scopeTokens = buildCourseScopeTokenSet(course);
+  let overlap = 0;
+  for (const token of messageTokens) {
+    if (scopeTokens.has(token)) overlap += 1;
+    if (overlap >= 1) return true;
+  }
+
+  if (
+    Array.isArray(recentMessages) &&
+    recentMessages.length > 0 &&
+    messageTokens.length <= 6 &&
+    /(again|clarify|example|why|how|step|detail)/i.test(normalizedMessage)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export async function askCourseLearningAssistant(userId, slug, payload = {}) {
+  const enrollment = await prisma.enrollment.findFirst({
+    where: {
+      userId,
+      status: { in: ["ACTIVE", "COMPLETED"] },
+      course: {
+        OR: [{ slug }, { id: slug }],
+        deletedAt: null,
+      },
+    },
+    include: {
+      course: {
+        select: {
+          id: true,
+          slug: true,
+          title: true,
+          subtitle: true,
+          description: true,
+          sections: {
+            orderBy: { position: "asc" },
+            select: {
+              id: true,
+              title: true,
+              description: true,
+              lessons: {
+                orderBy: { position: "asc" },
+                select: {
+                  id: true,
+                  title: true,
+                  description: true,
+                  type: true,
+                  assignmentText: true,
+                  codingInstructions: true,
+                  quizQuestions: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!enrollment?.course) {
+    throw new ApiError(404, "Enrollment not found");
+  }
+  if (!env.aiKey) {
+    throw new ApiError(
+      500,
+      "AI key is not configured. Set AI_KEY in the backend environment.",
+    );
+  }
+
+  const userMessage = clipText(payload?.message, 4000);
+  if (userMessage.length < 2) {
+    throw new ApiError(400, "Message is required");
+  }
+
+  const selectedLectureId = String(payload?.lecture_id || "").trim();
+  const selectedLecture = selectedLectureId
+    ? enrollment.course.sections
+        .flatMap((section) => section.lessons || [])
+        .find((lesson) => lesson.id === selectedLectureId) || null
+    : null;
+
+  const recentMessages = Array.isArray(payload?.messages)
+    ? payload.messages
+        .slice(-10)
+        .map((message) => ({
+          role: message?.role === "assistant" ? "assistant" : "user",
+          content: clipText(message?.content, 1200),
+        }))
+        .filter((message) => message.content.length > 0)
+    : [];
+
+  const isInScope = isCourseRelatedQuestion({
+    message: userMessage,
+    course: enrollment.course,
+    recentMessages,
+    selectedLecture,
+  });
+  if (!isInScope) {
+    return {
+      reply:
+        "I can only help with questions related to this course. Ask me about the current lesson, section topics, quizzes, assignments, or concepts covered in this course.",
+      suggested_topics: buildCourseAssistantSuggestedTopics(enrollment.course),
+    };
+  }
+
+  const systemPrompt =
+    "You are Upskill Course Assistant for one enrolled course. " +
+    "You must ONLY answer questions directly related to the given course context. " +
+    "If question is outside scope, do not answer it; return in_scope=false. " +
+    "Return ONLY valid JSON with this schema: {\"in_scope\":boolean,\"answer_markdown\":string}. " +
+    "Use concise markdown formatting (short paragraphs, bullets, numbered steps when relevant).";
+
+  let aiResponse;
+  try {
+    aiResponse = await axios.post(
+      `${env.deepseekBaseUrl.replace(/\/+$/g, "")}/chat/completions`,
+      {
+        model: env.deepseekModel,
+        temperature: 0.4,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "system",
+            content: JSON.stringify({
+              course: {
+                id: enrollment.course.id,
+                slug: enrollment.course.slug,
+                title: enrollment.course.title,
+                subtitle: clipText(enrollment.course.subtitle, 220),
+                description: clipText(enrollment.course.description, 800),
+              },
+              selected_lesson: selectedLecture
+                ? {
+                    id: selectedLecture.id,
+                    title: selectedLecture.title,
+                    type: selectedLecture.type,
+                    description: clipText(selectedLecture.description, 400),
+                  }
+                : null,
+              curriculum_outline: buildCourseAssistantContext(enrollment.course),
+            }),
+          },
+          ...recentMessages,
+          { role: "user", content: userMessage },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${env.aiKey}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 60000,
+      },
+    );
+  } catch (_error) {
+    throw new ApiError(
+      502,
+      "AI assistant is unavailable right now. Please try again.",
+    );
+  }
+
+  const rawReply = clipText(aiResponse?.data?.choices?.[0]?.message?.content, 8000);
+  const parsedReply = readJsonFromAiContent(rawReply) || {};
+  const hasInScopeFlag =
+    typeof parsedReply?.in_scope === "boolean" ||
+    parsedReply?.in_scope === "true" ||
+    parsedReply?.in_scope === "false";
+  const parsedInScope =
+    parsedReply?.in_scope === true || parsedReply?.in_scope === "true";
+  const parsedAnswer = clipText(parsedReply?.answer_markdown, 6000);
+  const fallbackReply = clipText(rawReply, 6000);
+
+  const reply = hasInScopeFlag
+    ? parsedInScope
+      ? parsedAnswer || fallbackReply
+      : "I can only help with this course’s content. Ask about lessons, sections, quizzes, assignments, or concepts included in this course."
+    : fallbackReply;
+  if (!reply) {
+    throw new ApiError(502, "AI assistant returned an empty response");
+  }
+
+  return {
+    reply,
+    suggested_topics: buildCourseAssistantSuggestedTopics(enrollment.course),
+  };
+}
+
+function normalizeAISuggestedLessonType(input) {
+  const normalized = String(input || "RESOURCE")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+  if (normalized === "ARTICLE") return "RESOURCE";
+  if (["VIDEO", "QUIZ", "CODING_EXERCISE", "RESOURCE", "ASSIGNMENT"].includes(normalized)) {
+    return normalized;
+  }
+  return "RESOURCE";
+}
+
+function trimForDb(value, maxLength) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  return normalized.slice(0, maxLength);
+}
+
+function ensureEditableWorkflowStatus(workflowStatus) {
+  const normalized = String(workflowStatus || "").toUpperCase();
+  if (!["DRAFT", "REJECTED", "PUBLISHED"].includes(normalized)) {
+    throw new ApiError(
+      400,
+      "Only draft, rejected, or published courses can be updated with AI",
+    );
+  }
+}
+
+export async function updateCourseWithAI(userId, courseId, payload = {}) {
+  const target = String(payload?.target || "")
+    .trim()
+    .toLowerCase();
+  const prompt = trimForDb(payload?.prompt, 4000);
+  const sectionId = String(payload?.section_id || "").trim();
+  const curriculumId = String(payload?.curriculum_id || "").trim();
+
+  if (!["course_basics", "section", "curriculum", "new_section"].includes(target)) {
+    throw new ApiError(400, "Invalid AI update target");
+  }
+  if (prompt.length < 20) {
+    throw new ApiError(400, "Prompt must be at least 20 characters");
+  }
+  if (!env.aiKey) {
+    throw new ApiError(
+      500,
+      "AI key is not configured. Set AI_KEY in the backend environment.",
+    );
+  }
+
+  const course = await prisma.course.findFirst({
+    where: { id: courseId, educatorId: userId, deletedAt: null },
+    include: {
+      sections: {
+        orderBy: { position: "asc" },
+        include: {
+          lessons: {
+            orderBy: { position: "asc" },
+            select: {
+              id: true,
+              title: true,
+              description: true,
+              type: true,
+              assignmentText: true,
+              codingInstructions: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+  ensureEditableWorkflowStatus(course.workflowStatus);
+
+  const selectedSection = sectionId
+    ? course.sections.find((section) => section.id === sectionId) || null
+    : null;
+  const selectedLesson = curriculumId
+    ? course.sections
+        .flatMap((section) => section.lessons || [])
+        .find((lesson) => lesson.id === curriculumId) || null
+    : null;
+
+  if (target === "section" && !selectedSection) {
+    throw new ApiError(400, "Select a valid section for AI update");
+  }
+  if (target === "curriculum" && !selectedLesson) {
+    throw new ApiError(400, "Select a valid curriculum item for AI update");
+  }
+
+  const schemaByTarget = {
+    course_basics:
+      '{"title":"string<=60","subtitle":"string<=180","description":"string<=8000","language":"string<=100"}',
+    section: '{"title":"string<=160","description":"string<=5000"}',
+    curriculum:
+      '{"title":"string<=180","description":"string<=8000","type":"VIDEO|QUIZ|CODING_EXERCISE|RESOURCE|ASSIGNMENT"}',
+    new_section:
+      '{"title":"string<=160","description":"string<=5000","lessons":[{"title":"string<=180","description":"string<=8000","type":"VIDEO|QUIZ|CODING_EXERCISE|RESOURCE|ASSIGNMENT","estimated_minutes":"number"}]}',
+  };
+
+  const systemPrompt =
+    "You are an expert instructional designer for course editing. " +
+    "Return ONLY valid JSON (no markdown) matching the requested schema. " +
+    "Keep updates practical and aligned to existing course context. " +
+    "Do not include fields outside the schema.";
+
+  let aiResponse;
+  try {
+    aiResponse = await axios.post(
+      `${env.deepseekBaseUrl.replace(/\/+$/g, "")}/chat/completions`,
+      {
+        model: env.deepseekModel,
+        temperature: 0.55,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "system",
+            content: JSON.stringify({
+              target,
+              schema: schemaByTarget[target],
+              selected_section: selectedSection
+                ? {
+                    id: selectedSection.id,
+                    title: selectedSection.title,
+                    description: clipText(selectedSection.description, 400),
+                  }
+                : null,
+              selected_curriculum: selectedLesson
+                ? {
+                    id: selectedLesson.id,
+                    title: selectedLesson.title,
+                    description: clipText(selectedLesson.description, 500),
+                    type: selectedLesson.type,
+                  }
+                : null,
+              course: {
+                id: course.id,
+                title: course.title,
+                subtitle: clipText(course.subtitle, 240),
+                description: clipText(course.description, 1000),
+              },
+              current_outline: course.sections.slice(0, 16).map((section) => ({
+                id: section.id,
+                title: clipText(section.title, 120),
+                lessons: (section.lessons || []).slice(0, 20).map((lesson) => ({
+                  id: lesson.id,
+                  title: clipText(lesson.title, 140),
+                  type: lesson.type,
+                })),
+              })),
+            }),
+          },
+          {
+            role: "user",
+            content: `Update target: ${target}\nInstruction: ${prompt}`,
+          },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${env.aiKey}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 60000,
+      },
+    );
+  } catch (_error) {
+    throw new ApiError(502, "AI update is unavailable right now. Please try again.");
+  }
+
+  const raw = aiResponse?.data?.choices?.[0]?.message?.content || "";
+  const parsed = readJsonFromAiContent(raw);
+  if (!parsed || typeof parsed !== "object") {
+    throw new ApiError(502, "AI returned an invalid update response");
+  }
+
+  if (target === "course_basics") {
+    await prisma.course.update({
+      where: { id: course.id },
+      data: {
+        title: trimForDb(parsed?.title || course.title, 60) || course.title,
+        subtitle: trimForDb(parsed?.subtitle || course.subtitle, 180) || null,
+        description:
+          trimForDb(parsed?.description || course.description, 8000) || null,
+        language: trimForDb(parsed?.language || course.language || "English", 100),
+      },
+    });
+  } else if (target === "section") {
+    await prisma.courseSection.update({
+      where: { id: selectedSection.id },
+      data: {
+        title: trimForDb(parsed?.title || selectedSection.title, 160) || selectedSection.title,
+        description:
+          trimForDb(parsed?.description || selectedSection.description, 5000) || null,
+      },
+    });
+  } else if (target === "curriculum") {
+    const nextType = normalizeAISuggestedLessonType(
+      parsed?.type || selectedLesson.type || "RESOURCE",
+    );
+    const nextDescription =
+      trimForDb(parsed?.description || selectedLesson.description, 8000) || null;
+    await prisma.lesson.update({
+      where: { id: selectedLesson.id },
+      data: {
+        title: trimForDb(parsed?.title || selectedLesson.title, 180) || selectedLesson.title,
+        description: nextDescription,
+        type: nextType,
+        assignmentText:
+          nextType === "RESOURCE" || nextType === "ASSIGNMENT"
+            ? trimForDb(parsed?.description || selectedLesson.assignmentText || "", 8000) ||
+              null
+            : null,
+      },
+    });
+  } else if (target === "new_section") {
+    const nextSectionPosition =
+      (course.sections || []).reduce(
+        (max, section) => Math.max(max, Number(section.position || 0)),
+        0,
+      ) + 1;
+    const section = await prisma.courseSection.create({
+      data: {
+        courseId: course.id,
+        title: trimForDb(parsed?.title || "New AI Section", 160) || "New AI Section",
+        description: trimForDb(parsed?.description || "", 5000) || null,
+        position: nextSectionPosition,
+      },
+    });
+
+    const lessons = Array.isArray(parsed?.lessons) ? parsed.lessons.slice(0, 40) : [];
+    const fallbackLessons =
+      lessons.length > 0
+        ? lessons
+        : [
+            {
+              title: "AI-generated lesson",
+              description: "Expand this lesson with examples and exercises.",
+              type: "RESOURCE",
+              estimated_minutes: 10,
+            },
+          ];
+
+    for (let lessonIndex = 0; lessonIndex < fallbackLessons.length; lessonIndex += 1) {
+      const lesson = fallbackLessons[lessonIndex] || {};
+      const type = normalizeAISuggestedLessonType(lesson?.type);
+      const lessonDescription = trimForDb(lesson?.description || "", 8000);
+      const estimatedMinutes = Number(lesson?.estimated_minutes || 8);
+      const durationInSeconds = Number.isFinite(estimatedMinutes)
+        ? Math.max(60, Math.min(90 * 60, Math.round(estimatedMinutes * 60)))
+        : 8 * 60;
+
+      await prisma.lesson.create({
+        data: {
+          courseId: course.id,
+          sectionId: section.id,
+          title:
+            trimForDb(lesson?.title || `Lesson ${lessonIndex + 1}`, 180) ||
+            `Lesson ${lessonIndex + 1}`,
+          description: lessonDescription || null,
+          type,
+          assignmentText:
+            type === "RESOURCE" || type === "ASSIGNMENT"
+              ? lessonDescription || null
+              : null,
+          position: lessonIndex + 1,
+          durationInSeconds,
+          isPreview: false,
+        },
+      });
+    }
+  }
+
+  const refreshedCourse = await getCourseForManagement(
+    { id: userId, roles: ["EDUCATOR"] },
+    course.id,
+  );
+
+  return {
+    target,
+    course: refreshedCourse,
   };
 }
 

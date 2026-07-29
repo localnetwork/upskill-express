@@ -17,6 +17,8 @@ import {
   resolveTrustedDeviceForLogin,
 } from "./trusted-device.service.js";
 
+const USER_PICTURE_KEY_PREFIX = "profile_picture::";
+
 async function notifyNewDeviceLogin(userId, { deviceName, locationLabel, ipAddress, provider }) {
   await createNotification({
     userId,
@@ -37,7 +39,7 @@ function getRoles(user) {
   return (user.roles || []).map((item) => item.role.name);
 }
 
-function mapAuthUser(user, roles = getRoles(user)) {
+function mapAuthUser(user, roles = getRoles(user), userPicture = null) {
   const permissions = mapPermissionsFromRoles(roles);
   return {
     id: user.id,
@@ -60,8 +62,53 @@ function mapAuthUser(user, roles = getRoles(user)) {
     link_x: user.link_x || "",
     link_youtube: user.link_youtube || "",
     link_github: user.link_github || "",
+    user_picture: userPicture,
     roles,
     permissions,
+  };
+}
+
+function getUserPictureSettingKey(userId) {
+  return `${USER_PICTURE_KEY_PREFIX}${userId}`;
+}
+
+function safeParseJson(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function getUserProfilePicture(userId) {
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key: getUserPictureSettingKey(userId) },
+    select: { value: true },
+  });
+
+  const parsed = safeParseJson(setting?.value);
+  const mediaId = String(parsed?.mediaId || parsed?.id || setting?.value || "").trim();
+  if (!mediaId) return null;
+
+  const media = await prisma.media.findFirst({
+    where: {
+      id: mediaId,
+      userId,
+      mediaType: "IMAGE",
+    },
+    select: {
+      id: true,
+      storagePath: true,
+      originalName: true,
+    },
+  });
+
+  if (!media) return null;
+  return {
+    id: media.id,
+    path: media.storagePath,
+    title: media.originalName || "",
   };
 }
 
@@ -249,10 +296,11 @@ export async function login(payload, context = {}) {
   );
 
   if (user.twoFactorEnabled && user.twoFactorSecret && !trustedDevice.trusted) {
+    const userPicture = await getUserProfilePicture(user.id);
     return {
       requires_2fa: true,
       pre_auth_token: signPreAuthToken(buildTokenPayload(user)),
-      user: mapAuthUser(user),
+      user: mapAuthUser(user, getRoles(user), userPicture),
     };
   }
 
@@ -294,11 +342,13 @@ export async function login(payload, context = {}) {
     dedupeWindowSeconds: 5,
   });
 
+  const userPicture = await getUserProfilePicture(user.id);
+
   return {
     accessToken,
     refreshToken,
     trustedDeviceToken,
-    user: mapAuthUser(user),
+    user: mapAuthUser(user, getRoles(user), userPicture),
   };
 }
 
@@ -331,10 +381,11 @@ export async function googleAuth(payload, context = {}) {
     );
 
     if (existingUser.twoFactorEnabled && existingUser.twoFactorSecret && !trustedDevice.trusted) {
+      const userPicture = await getUserProfilePicture(existingUser.id);
       return {
         requires_2fa: true,
         pre_auth_token: signPreAuthToken(buildTokenPayload(existingUser)),
-        user: mapAuthUser(existingUser),
+        user: mapAuthUser(existingUser, getRoles(existingUser), userPicture),
       };
     }
 
@@ -376,11 +427,13 @@ export async function googleAuth(payload, context = {}) {
       dedupeWindowSeconds: 5,
     });
 
+    const userPicture = await getUserProfilePicture(existingUser.id);
+
     return {
       accessToken,
       refreshToken,
       trustedDeviceToken,
-      user: mapAuthUser(existingUser),
+      user: mapAuthUser(existingUser, getRoles(existingUser), userPicture),
     };
   }
 

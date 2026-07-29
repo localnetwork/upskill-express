@@ -2,9 +2,12 @@ import { ApiError } from "../../shared/utils/ApiError.js";
 import { comparePassword, hashPassword } from "../../shared/utils/security.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
+import { prisma } from "../../shared/database/prisma.js";
 import { countMany, findById, findByUsername, findMany, updateById } from "./user.repository.js";
 import { listUserActivityEvents, recordActivityEvent } from "../analytics/analytics.service.js";
 import { listTrustedDevices, revokeTrustedDevice } from "../auth/trusted-device.service.js";
+
+const USER_PICTURE_KEY_PREFIX = "profile_picture::";
 
 function getOptional(payload, key) {
   return payload[key] === undefined ? undefined : payload[key];
@@ -65,12 +68,61 @@ function mapUser(user) {
   };
 }
 
+function getUserPictureSettingKey(userId) {
+  return `${USER_PICTURE_KEY_PREFIX}${userId}`;
+}
+
+function safeParseJson(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function getUserProfilePicture(userId) {
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key: getUserPictureSettingKey(userId) },
+    select: { value: true },
+  });
+
+  const parsed = safeParseJson(setting?.value);
+  const mediaId = String(parsed?.mediaId || parsed?.id || setting?.value || "").trim();
+  if (!mediaId) return null;
+
+  const media = await prisma.media.findFirst({
+    where: {
+      id: mediaId,
+      userId,
+      mediaType: "IMAGE",
+    },
+    select: {
+      id: true,
+      storagePath: true,
+      originalName: true,
+    },
+  });
+
+  if (!media) return null;
+  return {
+    id: media.id,
+    path: media.storagePath,
+    title: media.originalName || "",
+  };
+}
+
 export async function getCurrentUser(userId) {
   const user = await findById(userId);
   if (!user || user.deletedAt) {
     throw new ApiError(404, "User not found");
   }
-  return mapUser(user);
+  const mapped = mapUser(user);
+  const userPicture = await getUserProfilePicture(user.id);
+  return {
+    ...mapped,
+    user_picture: userPicture,
+  };
 }
 
 export async function updateCurrentUser(userId, payload) {

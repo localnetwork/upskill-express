@@ -407,6 +407,34 @@ export async function getCategoryBySlugOrId(slugOrId) {
     })
     .slice(0, 5);
 
+  const educatorIds = popularEducators.map((row) => row.id);
+  const profilePicturesByUserId = new Map();
+
+  if (educatorIds.length) {
+    const mediaRows = await prisma.media.findMany({
+      where: {
+        userId: { in: educatorIds },
+        courseId: null,
+        mediaType: "IMAGE",
+      },
+      select: {
+        id: true,
+        userId: true,
+        storagePath: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    for (const row of mediaRows) {
+      if (!profilePicturesByUserId.has(row.userId)) {
+        profilePicturesByUserId.set(row.userId, {
+          id: row.id,
+          path: row.storagePath,
+        });
+      }
+    }
+  }
+
   const totalEnrolled = courseIds.reduce(
     (sum, courseId) => sum + Number(enrollmentsByCourseId.get(courseId) || 0),
     0,
@@ -417,7 +445,10 @@ export async function getCategoryBySlugOrId(slugOrId) {
     ...category,
     expert_courses: expertCourses,
     total_enrolled: totalEnrolled,
-    popular_educators: popularEducators,
+    popular_educators: popularEducators.map((row) => ({
+      ...row,
+      profile_picture: profilePicturesByUserId.get(row.id) || null,
+    })),
   };
 
   return toLegacyCategory(category);

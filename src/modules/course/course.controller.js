@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   createCourse,
+  createCourseAIDraft,
+  updateCourseWithAI,
   createCourseCoupon,
   deleteDraftCourse,
   getCourseDiscoveryData,
@@ -10,6 +12,7 @@ import {
   getCourseRoute,
   getCourseBySlug,
   checkCourseSlugAvailability,
+  askCourseLearningAssistant,
   getCourseStudentsForManagement,
   listAuthoredCourses,
   listCourseCouponsForManagement,
@@ -69,7 +72,8 @@ function toLegacyCourseSummary(course) {
         username: course.educator?.username,
         firstname: course.educator?.firstName || course.educator?.firstname || "",
         lastname: course.educator?.lastName || course.educator?.lastname || "",
-        user_picture: null,
+        headline: course.educator?.headline || "",
+        user_picture: course.educator?.user_picture || null,
       },
     },
     resources_count: {
@@ -91,6 +95,20 @@ function toLegacyCourseSummary(course) {
 export async function createCourseController(req, res) {
   const data = await createCourse(req.user.id, req.body);
   return res.status(201).json({ message: "Course created", data: { ...data, uuid: data.id } });
+}
+
+export async function createCourseAIDraftController(req, res) {
+  const data = await createCourseAIDraft(req.user.id, req.body);
+  return res.status(201).json({ message: "AI draft course created", data });
+}
+
+export async function updateCourseWithAIController(req, res) {
+  const data = await updateCourseWithAI(
+    req.user.id,
+    req.params.courseId,
+    req.body,
+  );
+  return res.json({ message: "Course updated with AI", data });
 }
 
 export async function updateCourseController(req, res) {
@@ -206,6 +224,15 @@ export async function getCourseRouteController(req, res) {
 export async function getCourseForLearnerController(req, res) {
   const data = await getCourseForLearner(req.user.id, req.params.slug);
   return res.json({ message: "Course fetched", data });
+}
+
+export async function askCourseLearningAssistantController(req, res) {
+  const data = await askCourseLearningAssistant(
+    req.user.id,
+    req.params.slug,
+    req.body,
+  );
+  return res.json({ message: "Assistant reply generated", data });
 }
 
 export async function updateCoursePricingController(req, res) {

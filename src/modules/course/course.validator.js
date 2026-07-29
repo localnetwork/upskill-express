@@ -55,3 +55,30 @@ export const createCourseCouponValidator = z.object({
   endAt: z.string().optional().nullable(),
   maxRedemptions: z.coerce.number().int().positive().optional().nullable(),
 });
+
+export const createCourseAIDraftValidator = z.object({
+  prompt: z.string().min(20).max(4000),
+  language: z.string().max(100).optional(),
+  instructional_level: z.string().max(120).optional(),
+});
+
+export const learnAssistantValidator = z.object({
+  message: z.string().min(2).max(4000),
+  lecture_id: z.string().optional().nullable(),
+  messages: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().min(1).max(2000),
+      }),
+    )
+    .max(20)
+    .optional(),
+});
+
+export const updateCourseWithAIValidator = z.object({
+  target: z.enum(["course_basics", "section", "curriculum", "new_section"]),
+  prompt: z.string().min(20).max(4000),
+  section_id: z.string().optional().nullable(),
+  curriculum_id: z.string().optional().nullable(),
+});

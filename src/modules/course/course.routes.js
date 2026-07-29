@@ -6,6 +6,9 @@ import { validate } from "../../shared/middleware/validate.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import {
   createCourseController,
+  createCourseAIDraftController,
+  askCourseLearningAssistantController,
+  updateCourseWithAIController,
   deleteDraftCourseController,
   getCourseDiscoveryController,
   getCourseForManagementController,
@@ -28,8 +31,11 @@ import {
   updateCourseController,
 } from "./course.controller.js";
 import {
+  createCourseAIDraftValidator,
   createCourseCouponValidator,
   createCourseValidator,
+  learnAssistantValidator,
+  updateCourseWithAIValidator,
   updateCourseValidator,
 } from "./course.validator.js";
 
@@ -80,6 +86,13 @@ router.get(
     tags: ["courses", "progress", "enrollments"],
   }),
   asyncHandler(getCourseForLearnerController),
+);
+router.post(
+  "/:slug/learn-assistant",
+  authenticate,
+  authorize("LEARNER"),
+  validate(learnAssistantValidator),
+  asyncHandler(askCourseLearningAssistantController),
 );
 router.get(
   "/:slug/manage",
@@ -143,6 +156,20 @@ router.get(
 );
 
 router.post("/", authenticate, authorize("EDUCATOR"), validate(createCourseValidator), asyncHandler(createCourseController));
+router.post(
+  "/ai-draft",
+  authenticate,
+  authorize("EDUCATOR"),
+  validate(createCourseAIDraftValidator),
+  asyncHandler(createCourseAIDraftController),
+);
+router.post(
+  "/:courseId/ai-update",
+  authenticate,
+  authorize("EDUCATOR"),
+  validate(updateCourseWithAIValidator),
+  asyncHandler(updateCourseWithAIController),
+);
 router.patch("/:courseId", authenticate, authorize("EDUCATOR"), validate(updateCourseValidator), asyncHandler(updateCourseController));
 router.put("/:courseId", authenticate, authorize("EDUCATOR"), validate(updateCourseValidator), asyncHandler(updateCourseController));
 router.put("/:courseId/pricing", authenticate, authorize("EDUCATOR"), asyncHandler(updateCoursePricingController));

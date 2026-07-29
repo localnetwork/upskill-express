@@ -42,6 +42,9 @@ export const env = {
   cfPublicAccessUrl: process.env.CF_PUBLIC_ACCESS_URL || "",
   googleClientId: process.env.GOOGLE_CLIENT_ID || "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+  aiKey: process.env.AI_KEY || process.env.DEEPSEEK_API_KEY || "",
+  deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
+  deepseekModel: process.env.DEEPSEEK_MODEL || "deepseek-chat",
   autoPayoutEnabled:
     String(process.env.AUTO_PAYOUT_ENABLED || "false").toLowerCase() === "true",
   autoPayoutIntervalMs:
