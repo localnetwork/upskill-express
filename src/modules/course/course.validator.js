@@ -77,7 +77,9 @@ export const learnAssistantValidator = z.object({
 });
 
 export const updateCourseWithAIValidator = z.object({
-  target: z.enum(["course_basics", "section", "curriculum", "new_section"]),
+  target: z
+    .enum(["auto", "course_basics", "section", "curriculum", "new_section"])
+    .optional(),
   prompt: z.string().min(20).max(4000),
   section_id: z.string().optional().nullable(),
   curriculum_id: z.string().optional().nullable(),

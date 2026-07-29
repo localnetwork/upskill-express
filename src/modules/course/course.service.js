@@ -647,6 +647,230 @@ function normalizeAIDraftLessonType(input) {
   return "RESOURCE";
 }
 
+function looksLikeGenericSectionTitle(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return true;
+  return /^section\s*\d+/.test(normalized) || /^module\s*\d+/.test(normalized);
+}
+
+function looksLikeGenericLessonTitle(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return true;
+  return (
+    /^lesson\s*[\d.]+/.test(normalized) ||
+    /^lecture\s*[\d.]+/.test(normalized) ||
+    /^curriculum\s*[\d.]+/.test(normalized) ||
+    normalized === "ai-generated lesson"
+  );
+}
+
+function buildAIDraftFocusTerms(sourceText = "") {
+  const stop = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "your",
+    "you",
+    "are",
+    "what",
+    "when",
+    "where",
+    "which",
+    "have",
+    "has",
+    "had",
+    "how",
+    "why",
+    "all",
+    "about",
+    "course",
+    "lesson",
+    "section",
+    "curriculum",
+  ]);
+  const words = String(sourceText || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 4 && !stop.has(word));
+
+  const unique = [];
+  const seen = new Set();
+  for (const word of words) {
+    if (seen.has(word)) continue;
+    seen.add(word);
+    unique.push(word);
+    if (unique.length >= 8) break;
+  }
+  return unique;
+}
+
+function toTitleCase(value = "") {
+  return String(value || "")
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
+function suggestSectionTitleFromTerms(index, terms = [], fallbackTitle = "Course") {
+  const templates = [
+    "Foundations of {{term}}",
+    "Core {{term}} Concepts",
+    "Practical {{term}} Workflow",
+    "{{term}} Applications",
+    "Advanced {{term}} Techniques",
+  ];
+  const rawTerm = terms[index % Math.max(1, terms.length)] || fallbackTitle;
+  const term = toTitleCase(rawTerm);
+  const template = templates[index % templates.length];
+  return template.replace("{{term}}", term).slice(0, 160);
+}
+
+function suggestLessonTitleFromTerms(sectionTitle, index, terms = []) {
+  const rawTerm = terms[index % Math.max(1, terms.length)] || sectionTitle || "Topic";
+  const term = toTitleCase(rawTerm);
+  const templates = [
+    `Understanding ${term}`,
+    `${term} Walkthrough`,
+    `${term} in Practice`,
+    `${term} Troubleshooting`,
+    `Hands-on ${term} Exercise`,
+  ];
+  return templates[index % templates.length].slice(0, 180);
+}
+
+function ensureUniqueTitle(rawTitle, usedSet, maxLength = 180, fallback = "Untitled Topic") {
+  const base = trimForDb(rawTitle, maxLength) || fallback;
+  let candidate = base;
+  let suffix = 2;
+
+  while (usedSet.has(candidate.toLowerCase())) {
+    const suffixText = ` (${suffix})`;
+    const trimmedBase = trimForDb(base, Math.max(1, maxLength - suffixText.length));
+    candidate = `${trimmedBase}${suffixText}`;
+    suffix += 1;
+  }
+
+  usedSet.add(candidate.toLowerCase());
+  return candidate;
+}
+
+function resolveSectionObjectiveText(rawDescription, sectionTitle, courseTitle) {
+  const normalized = trimForDb(rawDescription, 5000);
+  if (normalized) return normalized;
+  const safeSectionTitle = trimForDb(sectionTitle, 160) || "this section";
+  const safeCourseTitle = trimForDb(courseTitle, 120) || "the course";
+  return `Learning objective: Build practical understanding of ${safeSectionTitle} and how it connects to ${safeCourseTitle}.`;
+}
+
+function resolveCurriculumDescriptionText(
+  rawDescription,
+  lessonTitle,
+  sectionTitle,
+  courseTitle,
+) {
+  const normalized = trimForDb(rawDescription, 8000);
+  if (normalized) return normalized;
+  const safeLessonTitle = trimForDb(lessonTitle, 180) || "this lesson";
+  const safeSectionTitle = trimForDb(sectionTitle, 160) || "this section";
+  const safeCourseTitle = trimForDb(courseTitle, 120) || "the course";
+  return `In this lesson, you'll learn ${safeLessonTitle} within ${safeSectionTitle}, with practical examples aligned to ${safeCourseTitle}.`;
+}
+
+async function loadAICourseTopicCatalog(courseCategoryId) {
+  const normalizedCategoryId = String(courseCategoryId || "").trim();
+  if (!normalizedCategoryId) return [];
+
+  const categories = await prisma.category.findMany({
+    where: {
+      deletedAt: null,
+      OR: [
+        { id: normalizedCategoryId },
+        { parentId: normalizedCategoryId },
+        {
+          parent: {
+            id: normalizedCategoryId,
+          },
+        },
+      ],
+    },
+    select: { id: true },
+  });
+
+  const categoryIds = Array.from(
+    new Set([
+      normalizedCategoryId,
+      ...categories.map((row) => String(row.id || "").trim()).filter(Boolean),
+    ]),
+  );
+
+  const topics = await prisma.topic.findMany({
+    where: {
+      deletedAt: null,
+      categoryId: { in: categoryIds },
+    },
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      categoryId: true,
+      category: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+        },
+      },
+    },
+  });
+
+  return topics;
+}
+
+function pickBestTopicForAIGeneratedLesson(topicCatalog = [], context = {}) {
+  if (!Array.isArray(topicCatalog) || topicCatalog.length === 0) return null;
+
+  const sourceText = [
+    context?.topicHint,
+    context?.title,
+    context?.description,
+    context?.sectionTitle,
+    context?.courseTitle,
+    context?.courseDescription,
+  ]
+    .map((value) => String(value || ""))
+    .join(" ");
+  const tokens = buildAIDraftFocusTerms(sourceText);
+  if (!tokens.length) return null;
+
+  let best = null;
+  for (const topic of topicCatalog) {
+    const haystack = buildAIDraftFocusTerms(
+      `${topic?.name || ""} ${topic?.slug || ""} ${topic?.category?.name || ""} ${topic?.category?.slug || ""}`,
+    );
+    const haystackSet = new Set(haystack);
+
+    let score = 0;
+    for (const token of tokens) {
+      if (haystackSet.has(token)) score += 8;
+      if (String(topic?.name || "").toLowerCase().includes(token)) score += 5;
+      if (String(topic?.slug || "").toLowerCase().includes(token)) score += 4;
+    }
+    if (score > 0 && (!best || score > best.score)) {
+      best = { topic, score };
+    }
+  }
+
+  return best?.topic || null;
+}
+
 function normalizeAIDraftPayload(draft, fallbackPrompt) {
   const source = draft && typeof draft === "object" ? draft : {};
   const title = String(source.title || "")
@@ -661,6 +885,7 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
       : fallbackTitle.length >= 3
         ? fallbackTitle
         : "AI Course Draft";
+  const focusTerms = buildAIDraftFocusTerms(`${safeTitle} ${fallbackPrompt || ""}`);
 
   const subtitle = String(source.subtitle || "")
     .trim()
@@ -679,6 +904,16 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
   const categoryHint = String(source.category || source.category_hint || "")
     .trim()
     .slice(0, 140);
+  const welcomeMessage = String(
+    source.welcome_message || source.welcomeMessage || "",
+  )
+    .trim()
+    .slice(0, 5000);
+  const congratulationsMessage = String(
+    source.congratulations_message || source.congratulationsMessage || "",
+  )
+    .trim()
+    .slice(0, 5000);
 
   const toItems = (value) =>
     Array.isArray(value)
@@ -700,9 +935,12 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
   const sections = rawSections
     .slice(0, 20)
     .map((section, sectionIndex) => {
-      const sectionTitle = String(section?.title || `Section ${sectionIndex + 1}`)
-        .trim()
-        .slice(0, 160);
+      const sectionTitleRaw = String(section?.title || "").trim();
+      const sectionTitle = (
+        !sectionTitleRaw || looksLikeGenericSectionTitle(sectionTitleRaw)
+          ? suggestSectionTitleFromTerms(sectionIndex, focusTerms, safeTitle)
+          : sectionTitleRaw
+      ).slice(0, 160);
       const sectionDescription = String(section?.description || "")
         .trim()
         .slice(0, 5000);
@@ -714,11 +952,12 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
       const lessons = rawLessons
         .slice(0, 50)
         .map((lesson, lessonIndex) => {
-          const lessonTitle = String(
-            lesson?.title || `Lesson ${sectionIndex + 1}.${lessonIndex + 1}`,
-          )
-            .trim()
-            .slice(0, 180);
+          const lessonTitleRaw = String(lesson?.title || "").trim();
+          const lessonTitle = (
+            !lessonTitleRaw || looksLikeGenericLessonTitle(lessonTitleRaw)
+              ? suggestLessonTitleFromTerms(sectionTitle, lessonIndex, focusTerms)
+              : lessonTitleRaw
+          ).slice(0, 180);
           const lessonDescription = String(
             lesson?.description || lesson?.curriculum_description || "",
           )
@@ -732,8 +971,13 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
             : 8 * 60;
 
           return {
-            title: lessonTitle || `Lesson ${sectionIndex + 1}.${lessonIndex + 1}`,
-            description: lessonDescription,
+            title: lessonTitle,
+            description: resolveCurriculumDescriptionText(
+              lessonDescription,
+              lessonTitle,
+              sectionTitle,
+              safeTitle,
+            ),
             type: normalizeAIDraftLessonType(
               lesson?.type || lesson?.curriculum_type || "RESOURCE",
             ),
@@ -743,17 +987,26 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
         .filter((lesson) => lesson.title.length >= 2);
 
       return {
-        title: sectionTitle || `Section ${sectionIndex + 1}`,
-        description: sectionDescription,
+        title: sectionTitle,
+        description: resolveSectionObjectiveText(
+          sectionDescription,
+          sectionTitle,
+          safeTitle,
+        ),
         lessons:
           lessons.length > 0
             ? lessons
             : [
                 {
-                  title: `Lesson ${sectionIndex + 1}.1`,
-                  description: "Expand this lesson outline and add your content.",
-                  type: "RESOURCE",
-                  durationInSeconds: 8 * 60,
+                    title: suggestLessonTitleFromTerms(sectionTitle, 0, focusTerms),
+                    description: resolveCurriculumDescriptionText(
+                      "",
+                      suggestLessonTitleFromTerms(sectionTitle, 0, focusTerms),
+                      sectionTitle,
+                      safeTitle,
+                    ),
+                    type: "RESOURCE",
+                    durationInSeconds: 8 * 60,
                 },
               ],
       };
@@ -805,25 +1058,49 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
   const paddedSections = [...fallbackSections];
   while (paddedSections.length < 3) {
     const nextIndex = paddedSections.length + 1;
+    const suggestedSectionTitle = suggestSectionTitleFromTerms(
+      nextIndex - 1,
+      focusTerms,
+      safeTitle,
+    );
     paddedSections.push({
-      title: `Section ${nextIndex}`,
-      description: "Expand this section with your own structure and examples.",
+      title: suggestedSectionTitle,
+      description: resolveSectionObjectiveText(
+        "",
+        suggestedSectionTitle,
+        safeTitle,
+      ),
       lessons: [
         {
-          title: `Lesson ${nextIndex}.1`,
-          description: "Core explanation for this topic.",
+          title: suggestLessonTitleFromTerms(suggestedSectionTitle, 0, focusTerms),
+          description: resolveCurriculumDescriptionText(
+            "",
+            suggestLessonTitleFromTerms(suggestedSectionTitle, 0, focusTerms),
+            suggestedSectionTitle,
+            safeTitle,
+          ),
           type: "RESOURCE",
           durationInSeconds: 8 * 60,
         },
         {
-          title: `Lesson ${nextIndex}.2`,
-          description: "Guided example or walkthrough.",
+          title: suggestLessonTitleFromTerms(suggestedSectionTitle, 1, focusTerms),
+          description: resolveCurriculumDescriptionText(
+            "",
+            suggestLessonTitleFromTerms(suggestedSectionTitle, 1, focusTerms),
+            suggestedSectionTitle,
+            safeTitle,
+          ),
           type: "VIDEO",
           durationInSeconds: 10 * 60,
         },
         {
-          title: `Lesson ${nextIndex}.3`,
-          description: "Practice activity for reinforcement.",
+          title: suggestLessonTitleFromTerms(suggestedSectionTitle, 2, focusTerms),
+          description: resolveCurriculumDescriptionText(
+            "",
+            suggestLessonTitleFromTerms(suggestedSectionTitle, 2, focusTerms),
+            suggestedSectionTitle,
+            safeTitle,
+          ),
           type: "ASSIGNMENT",
           durationInSeconds: 12 * 60,
         },
@@ -836,8 +1113,13 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
     while (lessons.length < 3) {
       const nextLesson = lessons.length + 1;
       lessons.push({
-        title: `${section.title} - Lesson ${nextLesson}`,
-        description: "Add details for this lesson.",
+        title: suggestLessonTitleFromTerms(section.title, nextLesson - 1, focusTerms),
+        description: resolveCurriculumDescriptionText(
+          "",
+          suggestLessonTitleFromTerms(section.title, nextLesson - 1, focusTerms),
+          section.title,
+          safeTitle,
+        ),
         type: "RESOURCE",
         durationInSeconds: 8 * 60,
       });
@@ -845,10 +1127,57 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
     section.lessons = lessons;
   }
 
+  const usedSectionTitles = new Set();
+  for (let sectionIndex = 0; sectionIndex < paddedSections.length; sectionIndex += 1) {
+    const section = paddedSections[sectionIndex];
+    const sectionTerms = buildAIDraftFocusTerms(
+      `${section?.description || ""} ${section?.title || ""} ${safeTitle} ${fallbackPrompt || ""}`,
+    );
+    const sectionCandidate =
+      !section?.title || looksLikeGenericSectionTitle(section.title)
+        ? suggestSectionTitleFromTerms(
+            sectionIndex,
+            sectionTerms.length ? sectionTerms : focusTerms,
+            safeTitle,
+          )
+        : section.title;
+    section.title = ensureUniqueTitle(
+      sectionCandidate,
+      usedSectionTitles,
+      160,
+      `Course Topic ${sectionIndex + 1}`,
+    );
+
+    const usedLessonTitles = new Set();
+    const lessons = Array.isArray(section.lessons) ? section.lessons : [];
+    for (let lessonIndex = 0; lessonIndex < lessons.length; lessonIndex += 1) {
+      const lesson = lessons[lessonIndex];
+      const lessonTerms = buildAIDraftFocusTerms(
+        `${lesson?.description || ""} ${lesson?.title || ""} ${section.title} ${safeTitle}`,
+      );
+      const lessonCandidate =
+        !lesson?.title || looksLikeGenericLessonTitle(lesson.title)
+          ? suggestLessonTitleFromTerms(
+              section.title,
+              lessonIndex,
+              lessonTerms.length ? lessonTerms : sectionTerms,
+            )
+          : lesson.title;
+      lesson.title = ensureUniqueTitle(
+        lessonCandidate,
+        usedLessonTitles,
+        180,
+        `Applied ${section.title} Topic`,
+      );
+    }
+  }
+
   return {
     title: safeTitle,
     subtitle,
     description,
+    welcomeMessage,
+    congratulationsMessage,
     language,
     instructionalLevel,
     categoryHint,
@@ -904,8 +1233,9 @@ async function generateCourseDraftViaAI(prompt, options = {}) {
 
   const systemPrompt =
     "You are an expert instructional designer. Return only valid JSON with no markdown fences. " +
-    "Schema: { title, subtitle, description, language, instructional_level, category, what_you_will_learn[], requirements[], who_should_attend[], sections:[{ title, description, lessons:[{ title, description, type, estimated_minutes }] }] }. " +
-    "Constraints: title <= 60 chars, subtitle <= 180 chars, 4-8 sections, 3-8 lessons each section, lesson type one of VIDEO|RESOURCE|ASSIGNMENT|QUIZ|CODING_EXERCISE, estimated_minutes is number.";
+    "Schema: { title, subtitle, description, welcome_message, congratulations_message, language, instructional_level, category, what_you_will_learn[], requirements[], who_should_attend[], sections:[{ title, description, lessons:[{ title, description, type, estimated_minutes }] }] }. " +
+    "Constraints: title <= 60 chars, subtitle <= 180 chars, 4-8 sections, 3-8 lessons each section, lesson type one of VIDEO|RESOURCE|ASSIGNMENT|QUIZ|CODING_EXERCISE, estimated_minutes is number. " +
+    "Section and lesson titles must be descriptive and specific; never use generic placeholders like 'Section 1' or 'Lesson 1'.";
 
   let response;
   try {
@@ -967,6 +1297,8 @@ export async function createCourseAIDraft(userId, payload) {
     title: aiDraft.title,
     subtitle: aiDraft.subtitle,
     description: aiDraft.description,
+    welcomeMessage: aiDraft.welcomeMessage || null,
+    congratulationsMessage: aiDraft.congratulationsMessage || null,
     language: aiDraft.language,
     categoryId,
     levelId,
@@ -984,6 +1316,11 @@ export async function createCourseAIDraft(userId, payload) {
       who_should_attend_data: aiDraft.whoShouldAttend,
     });
   }
+  const draftTopicCatalog = await loadAICourseTopicCatalog(categoryId);
+  const supportsLessonTopics = Boolean(prisma.lessonTopic);
+  const aiDraftFocusTerms = buildAIDraftFocusTerms(
+    `${course.title} ${course.description || ""} ${prompt || ""}`,
+  );
 
   for (let sectionIndex = 0; sectionIndex < aiDraft.sections.length; sectionIndex += 1) {
     const sectionPayload = aiDraft.sections[sectionIndex];
@@ -991,7 +1328,11 @@ export async function createCourseAIDraft(userId, payload) {
       data: {
         courseId: course.id,
         title: sectionPayload.title,
-        description: sectionPayload.description || null,
+        description: resolveSectionObjectiveText(
+          sectionPayload.description,
+          sectionPayload.title,
+          course.title,
+        ),
         position: sectionIndex + 1,
       },
     });
@@ -1002,16 +1343,58 @@ export async function createCourseAIDraft(userId, payload) {
     for (let lessonIndex = 0; lessonIndex < lessons.length; lessonIndex += 1) {
       const lessonPayload = lessons[lessonIndex];
       const lessonType = normalizeAIDraftLessonType(lessonPayload.type);
+      const resolvedLessonTitle =
+        trimForDb(
+          looksLikeGenericLessonTitle(lessonPayload.title)
+            ? suggestLessonTitleFromTerms(
+                sectionPayload.title,
+                lessonIndex,
+                aiDraftFocusTerms,
+              )
+            : lessonPayload.title,
+          180,
+        ) ||
+        suggestLessonTitleFromTerms(
+          sectionPayload.title,
+          lessonIndex,
+          aiDraftFocusTerms,
+        );
+      const bestTopic = pickBestTopicForAIGeneratedLesson(draftTopicCatalog, {
+        topicHint: lessonPayload?.topic_hint || lessonPayload?.topic || "",
+        title: resolvedLessonTitle,
+        description: lessonPayload?.description || "",
+        sectionTitle: sectionPayload?.title || "",
+        courseTitle: course.title,
+        courseDescription: course.description || "",
+      });
       await prisma.lesson.create({
         data: {
           courseId: course.id,
           sectionId: section.id,
+          topicId: bestTopic?.id || null,
+          ...(supportsLessonTopics && bestTopic?.id
+            ? {
+                lessonTopics: {
+                  create: [{ topicId: bestTopic.id }],
+                },
+              }
+            : {}),
           type: lessonType,
-          title: String(lessonPayload.title || `Lesson ${lessonIndex + 1}`),
-          description: String(lessonPayload.description || ""),
+          title: resolvedLessonTitle,
+          description: resolveCurriculumDescriptionText(
+            lessonPayload.description,
+            resolvedLessonTitle,
+            sectionPayload.title,
+            course.title,
+          ),
           assignmentText:
             lessonType === "RESOURCE" || lessonType === "ASSIGNMENT"
-              ? String(lessonPayload.description || "")
+              ? resolveCurriculumDescriptionText(
+                  lessonPayload.description,
+                  resolvedLessonTitle,
+                  sectionPayload.title,
+                  course.title,
+                )
               : null,
           position: lessonIndex + 1,
           durationInSeconds: Number(lessonPayload.durationInSeconds || 0),
@@ -3537,14 +3920,14 @@ function ensureEditableWorkflowStatus(workflowStatus) {
 }
 
 export async function updateCourseWithAI(userId, courseId, payload = {}) {
-  const target = String(payload?.target || "")
+  const target = String(payload?.target || "auto")
     .trim()
     .toLowerCase();
   const prompt = trimForDb(payload?.prompt, 4000);
   const sectionId = String(payload?.section_id || "").trim();
   const curriculumId = String(payload?.curriculum_id || "").trim();
 
-  if (!["course_basics", "section", "curriculum", "new_section"].includes(target)) {
+  if (!["auto", "course_basics", "section", "curriculum", "new_section"].includes(target)) {
     throw new ApiError(400, "Invalid AI update target");
   }
   if (prompt.length < 20) {
@@ -3560,6 +3943,20 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
   const course = await prisma.course.findFirst({
     where: { id: courseId, educatorId: userId, deletedAt: null },
     include: {
+      category: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          parent: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            },
+          },
+        },
+      },
       sections: {
         orderBy: { position: "asc" },
         include: {
@@ -3582,6 +3979,28 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
     throw new ApiError(404, "Course not found");
   }
   ensureEditableWorkflowStatus(course.workflowStatus);
+  const courseGoals = await readCourseGoals(course.id);
+  const updateTopicCatalog = await loadAICourseTopicCatalog(course.categoryId);
+  const supportsLessonTopics = Boolean(prisma.lessonTopic);
+  const aiUpdateFocusTerms = buildAIDraftFocusTerms(
+    `${course.title} ${course.description || ""} ${prompt || ""}`,
+  );
+  const usedSectionTitles = new Set(
+    (course.sections || [])
+      .map((section) => String(section?.title || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const usedLessonTitlesBySectionId = new Map();
+  for (const section of course.sections || []) {
+    usedLessonTitlesBySectionId.set(
+      section.id,
+      new Set(
+        (section.lessons || [])
+          .map((lesson) => String(lesson?.title || "").trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    );
+  }
 
   const selectedSection = sectionId
     ? course.sections.find((section) => section.id === sectionId) || null
@@ -3599,12 +4018,221 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
     throw new ApiError(400, "Select a valid curriculum item for AI update");
   }
 
+  const findSectionByRef = (sectionRef = "") => {
+    const normalizedRef = String(sectionRef || "").trim();
+    if (!normalizedRef) return null;
+    const byId = course.sections.find((section) => section.id === normalizedRef);
+    if (byId) return byId;
+
+    const lowered = normalizedRef.toLowerCase();
+    return (
+      course.sections.find((section) =>
+        String(section.title || "").toLowerCase().includes(lowered),
+      ) || null
+    );
+  };
+
+  const findLessonByRef = (lessonRef = "", sectionRef = "") => {
+    const normalizedLessonRef = String(lessonRef || "").trim();
+    if (!normalizedLessonRef) return null;
+
+    const sectionScoped = findSectionByRef(sectionRef);
+    const candidates = sectionScoped
+      ? sectionScoped.lessons || []
+      : course.sections.flatMap((section) => section.lessons || []);
+
+    const byId = candidates.find((lesson) => lesson.id === normalizedLessonRef);
+    if (byId) return byId;
+
+    const lowered = normalizedLessonRef.toLowerCase();
+    return (
+      candidates.find((lesson) =>
+        String(lesson.title || "").toLowerCase().includes(lowered),
+      ) || null
+    );
+  };
+
+  const createSectionWithLessons = async (input = {}) => {
+    const aiFocusTerms = aiUpdateFocusTerms;
+    const normalizedSectionTitle = trimForDb(input?.title, 160);
+    let section = null;
+    let createAttempt = 0;
+    while (!section && createAttempt < 5) {
+      createAttempt += 1;
+      const lastSection = await prisma.courseSection.findFirst({
+        where: { courseId: course.id },
+        orderBy: { position: "desc" },
+        select: { position: true },
+      });
+      const nextSectionPosition = Number(lastSection?.position || 0) + 1;
+      const computedSectionTitle =
+        !normalizedSectionTitle || looksLikeGenericSectionTitle(normalizedSectionTitle)
+          ? suggestSectionTitleFromTerms(
+              Math.max(0, nextSectionPosition - 1),
+              buildAIDraftFocusTerms(
+                `${input?.description || ""} ${input?.title || ""} ${course.title} ${prompt}`,
+              ).length
+                ? buildAIDraftFocusTerms(
+                    `${input?.description || ""} ${input?.title || ""} ${course.title} ${prompt}`,
+                  )
+                : aiFocusTerms,
+              course.title,
+            )
+          : normalizedSectionTitle;
+      const uniqueSectionTitle = ensureUniqueTitle(
+        computedSectionTitle,
+        usedSectionTitles,
+        160,
+        "Course Topic Deep Dive",
+      );
+
+      try {
+        section = await prisma.courseSection.create({
+          data: {
+            courseId: course.id,
+            title: uniqueSectionTitle,
+            description: resolveSectionObjectiveText(
+              input?.description || "",
+              uniqueSectionTitle,
+              course.title,
+            ),
+            position: nextSectionPosition,
+          },
+        });
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2002"
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!section) {
+      throw new ApiError(
+        409,
+        "Unable to allocate a section position. Please try again.",
+      );
+    }
+
+    const lessons = Array.isArray(input?.lessons) ? input.lessons.slice(0, 40) : [];
+    const fallbackLessons =
+      lessons.length > 0
+        ? lessons
+        : [
+            {
+              title: suggestLessonTitleFromTerms(section.title, 0, aiFocusTerms),
+              description: "Expand this lesson with examples and exercises.",
+              type: "RESOURCE",
+              estimated_minutes: 10,
+            },
+          ];
+    const usedLessonTitles = new Set();
+    usedLessonTitlesBySectionId.set(section.id, usedLessonTitles);
+
+    for (let lessonIndex = 0; lessonIndex < fallbackLessons.length; lessonIndex += 1) {
+      const lesson = fallbackLessons[lessonIndex] || {};
+      const type = normalizeAISuggestedLessonType(lesson?.type);
+      const lessonDescription = resolveCurriculumDescriptionText(
+        lesson?.description || "",
+        lesson?.title || "",
+        section.title,
+        course.title,
+      );
+      const bestTopic = pickBestTopicForAIGeneratedLesson(updateTopicCatalog, {
+        topicHint: lesson?.topic_hint || lesson?.topic || "",
+        title: lesson?.title || "",
+        description: lessonDescription,
+        sectionTitle: section.title,
+        courseTitle: course.title,
+        courseDescription: course.description || "",
+      });
+      const estimatedMinutes = Number(lesson?.estimated_minutes || 8);
+      const durationInSeconds = Number.isFinite(estimatedMinutes)
+        ? Math.max(60, Math.min(90 * 60, Math.round(estimatedMinutes * 60)))
+        : 8 * 60;
+      const lessonTerms = buildAIDraftFocusTerms(
+        `${lessonDescription} ${lesson?.title || ""} ${section.title} ${course.title} ${prompt}`,
+      );
+      const lessonCandidate =
+        looksLikeGenericLessonTitle(lesson?.title)
+          ? suggestLessonTitleFromTerms(
+              section.title,
+              lessonIndex,
+              lessonTerms.length ? lessonTerms : aiFocusTerms,
+            )
+          : lesson?.title;
+      const uniqueLessonTitle = ensureUniqueTitle(
+        lessonCandidate,
+        usedLessonTitles,
+        180,
+        `Applied ${section.title} Topic`,
+      );
+      await prisma.lesson.create({
+        data: {
+          courseId: course.id,
+          sectionId: section.id,
+          topicId: bestTopic?.id || null,
+          ...(supportsLessonTopics && bestTopic?.id
+            ? {
+                lessonTopics: {
+                  create: [{ topicId: bestTopic.id }],
+                },
+              }
+            : {}),
+          title: uniqueLessonTitle,
+          description: lessonDescription || null,
+          type,
+          assignmentText:
+            type === "RESOURCE" || type === "ASSIGNMENT"
+              ? lessonDescription || null
+              : null,
+          position: lessonIndex + 1,
+          durationInSeconds,
+          isPreview: false,
+        },
+      });
+    }
+  };
+
+  const normalizeNullableAiMessage = (nextValue, fallbackValue) => {
+    if (nextValue === undefined) return fallbackValue ?? null;
+    const normalized = trimForDb(nextValue, 5000);
+    return normalized ? normalized : null;
+  };
+
+  const normalizeOperationAction = (rawAction) => {
+    const action = String(rawAction || "")
+      .trim()
+      .toLowerCase()
+      .replace(/-/g, "_");
+    if (!action) return "";
+
+    if (/(delete|remove).*(curriculum|lesson|lecture)/.test(action)) {
+      return "delete_curriculum";
+    }
+    if (/(delete|remove).*(section|module|chapter)/.test(action)) {
+      return "delete_section";
+    }
+    if (/(update).*(curriculum|lesson|lecture)/.test(action)) {
+      return "update_curriculum";
+    }
+    if (/(update).*(section|module|chapter)/.test(action)) {
+      return "update_section";
+    }
+    return action;
+  };
+
   const schemaByTarget = {
+    auto:
+      '{"operations":[{"action":"update_course_basics|update_section|update_curriculum|add_section|update_all_sections|update_all_curriculums|delete_section|delete_curriculum|delete_all_curriculums","apply_to_all":"optional boolean","section_id":"optional","section_title":"optional","curriculum_id":"optional","curriculum_title":"optional","title":"optional","subtitle":"optional","description":"optional","language":"optional","welcome_message":"optional","congratulations_message":"optional","topic_hint":"optional for curriculum","type":"optional for curriculum","lessons":"optional for add_section"}]}',
     course_basics:
-      '{"title":"string<=60","subtitle":"string<=180","description":"string<=8000","language":"string<=100"}',
+      '{"title":"string<=60","subtitle":"string<=180","description":"string<=8000","language":"string<=100","welcome_message":"string<=5000 optional","congratulations_message":"string<=5000 optional"}',
     section: '{"title":"string<=160","description":"string<=5000"}',
     curriculum:
-      '{"title":"string<=180","description":"string<=8000","type":"VIDEO|QUIZ|CODING_EXERCISE|RESOURCE|ASSIGNMENT"}',
+      '{"title":"string<=180","description":"string<=8000","topic_hint":"optional string","type":"VIDEO|QUIZ|CODING_EXERCISE|RESOURCE|ASSIGNMENT"}',
     new_section:
       '{"title":"string<=160","description":"string<=5000","lessons":[{"title":"string<=180","description":"string<=8000","type":"VIDEO|QUIZ|CODING_EXERCISE|RESOURCE|ASSIGNMENT","estimated_minutes":"number"}]}',
   };
@@ -3613,6 +4241,12 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
     "You are an expert instructional designer for course editing. " +
     "Return ONLY valid JSON (no markdown) matching the requested schema. " +
     "Keep updates practical and aligned to existing course context. " +
+    "Always ground generated section/curriculum content in the course title, description, category, intended learners, requirements, and learning goals. " +
+    "Section and curriculum titles must be descriptive and specific; avoid generic numbering-only titles. " +
+    "If the user instruction is specific, follow it, but keep all additions/updates clearly related to this course scope. " +
+    "For specific section/curriculum updates, include matching section_id/curriculum_id from context whenever possible. " +
+    "Use update_all_sections or update_all_curriculums when instruction asks for all. " +
+    "Use delete_section, delete_curriculum, or delete_all_curriculums for delete/remove instructions. " +
     "Do not include fields outside the schema.";
 
   let aiResponse;
@@ -3649,14 +4283,45 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
                 title: course.title,
                 subtitle: clipText(course.subtitle, 240),
                 description: clipText(course.description, 1000),
+                language: clipText(course.language, 100),
+                category: course.category
+                  ? {
+                      id: course.category.id,
+                      name: course.category.name,
+                      slug: course.category.slug,
+                      parent: course.category.parent
+                        ? {
+                            id: course.category.parent.id,
+                            name: course.category.parent.name,
+                            slug: course.category.parent.slug,
+                          }
+                        : null,
+                    }
+                  : null,
+                welcome_message: clipText(course.welcomeMessage, 500),
+                congratulations_message: clipText(course.congratulationsMessage, 500),
+                goals: courseGoals,
+                intended_learners: Array.isArray(courseGoals?.who_should_attend_data)
+                  ? courseGoals.who_should_attend_data
+                  : [],
+                requirements: Array.isArray(courseGoals?.requirements_data)
+                  ? courseGoals.requirements_data
+                  : [],
+                learning_outcomes: Array.isArray(courseGoals?.what_you_will_learn_data)
+                  ? courseGoals.what_you_will_learn_data
+                  : [],
               },
               current_outline: course.sections.slice(0, 16).map((section) => ({
                 id: section.id,
                 title: clipText(section.title, 120),
+                description: clipText(section.description, 400),
                 lessons: (section.lessons || []).slice(0, 20).map((lesson) => ({
                   id: lesson.id,
                   title: clipText(lesson.title, 140),
                   type: lesson.type,
+                  description: clipText(lesson.description, 500),
+                  assignment_text: clipText(lesson.assignmentText, 500),
+                  coding_instructions: clipText(lesson.codingInstructions, 500),
                 })),
               })),
             }),
@@ -3685,7 +4350,398 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
     throw new ApiError(502, "AI returned an invalid update response");
   }
 
-  if (target === "course_basics") {
+  if (target === "auto") {
+    const operations = Array.isArray(parsed?.operations) ? parsed.operations : [];
+    if (!operations.length) {
+      throw new ApiError(
+        400,
+        "AI could not determine an update action. Please be more specific in the instruction.",
+      );
+    }
+    let appliedChanges = 0;
+    const wantsAllSections = /(all sections|every section|all the sections)/i.test(prompt);
+    const wantsAllCurriculums = /(all curriculums|all curriculum|every curriculum|all lessons|every lesson|all lectures|every lecture)/i.test(
+      prompt,
+    );
+    const wantsDelete = /(delete|remove)/i.test(prompt);
+    const wantsRetitle = /(retitle|rename|title|meaningful title|improve titles|better titles)/i.test(
+      prompt,
+    );
+
+    const asBoolean = (value) =>
+      value === true || String(value || "").trim().toLowerCase() === "true";
+    const sectionByLessonId = new Map();
+    for (const section of course.sections || []) {
+      for (const lesson of section.lessons || []) {
+        sectionByLessonId.set(lesson.id, section);
+      }
+    }
+
+    const applyTopicForLesson = async (lessonId, context = {}) => {
+      const bestTopic = pickBestTopicForAIGeneratedLesson(updateTopicCatalog, {
+        topicHint: context?.topic_hint || context?.topic || "",
+        title: context?.title || "",
+        description: context?.description || "",
+        sectionTitle: context?.sectionTitle || "",
+        courseTitle: course.title,
+        courseDescription: course.description || "",
+      });
+      if (!bestTopic?.id) return null;
+
+      await prisma.lesson.update({
+        where: { id: lessonId },
+        data: { topicId: bestTopic.id },
+      });
+      if (supportsLessonTopics && prisma.lessonTopic) {
+        await prisma.lessonTopic.deleteMany({
+          where: { lessonId },
+        });
+        await prisma.lessonTopic.create({
+          data: {
+            lessonId,
+            topicId: bestTopic.id,
+          },
+        });
+      }
+      return bestTopic.id;
+    };
+
+    for (const operation of operations.slice(0, 12)) {
+      const action = normalizeOperationAction(operation?.action);
+      const applyToAll = asBoolean(operation?.apply_to_all);
+
+      if (action === "update_course_basics") {
+        await prisma.course.update({
+          where: { id: course.id },
+          data: {
+            title: trimForDb(operation?.title || course.title, 60) || course.title,
+            subtitle: trimForDb(operation?.subtitle || course.subtitle, 180) || null,
+            description:
+              trimForDb(operation?.description || course.description, 8000) || null,
+            language: trimForDb(
+              operation?.language || course.language || "English",
+              100,
+            ),
+            welcomeMessage: normalizeNullableAiMessage(
+              operation?.welcome_message ?? operation?.welcomeMessage,
+              course.welcomeMessage,
+            ),
+            congratulationsMessage: normalizeNullableAiMessage(
+              operation?.congratulations_message ?? operation?.congratulationsMessage,
+              course.congratulationsMessage,
+            ),
+          },
+        });
+        appliedChanges += 1;
+        continue;
+      }
+
+      if (
+        action === "update_section" ||
+        action === "update_sections" ||
+        action === "update_all_sections"
+      ) {
+        const shouldApplyAll =
+          action === "update_all_sections" || applyToAll || wantsAllSections;
+        if (shouldApplyAll) {
+          for (let sectionIndex = 0; sectionIndex < (course.sections || []).length; sectionIndex += 1) {
+            const section = course.sections[sectionIndex];
+            const nextDescription =
+              resolveSectionObjectiveText(
+                operation?.description || section.description,
+                section.title,
+                course.title,
+              );
+            const operationTitle = trimForDb(operation?.title, 160);
+            const sectionTerms = buildAIDraftFocusTerms(
+              `${nextDescription} ${section.title} ${course.title} ${prompt}`,
+            );
+            const generatedTitle = suggestSectionTitleFromTerms(
+              sectionIndex,
+              sectionTerms.length ? sectionTerms : aiUpdateFocusTerms,
+              course.title,
+            );
+            const nextTitleCandidate =
+              operationTitle && !looksLikeGenericSectionTitle(operationTitle)
+                ? applyToAll
+                  ? `${operationTitle} - ${toTitleCase(aiUpdateFocusTerms[sectionIndex % Math.max(1, aiUpdateFocusTerms.length)] || "Applied")}`.slice(
+                      0,
+                      160,
+                    )
+                  : operationTitle
+                : looksLikeGenericSectionTitle(section.title) || wantsRetitle
+                  ? generatedTitle
+                  : section.title;
+            const nextTitle = ensureUniqueTitle(
+              nextTitleCandidate,
+              usedSectionTitles,
+              160,
+              `Course Topic ${sectionIndex + 1}`,
+            );
+            await prisma.courseSection.update({
+              where: { id: section.id },
+              data: {
+                title: nextTitle,
+                description: nextDescription,
+              },
+            });
+            appliedChanges += 1;
+          }
+          continue;
+        }
+
+        const section =
+          findSectionByRef(operation?.section_id) ||
+          findSectionByRef(operation?.section_title);
+        if (!section) continue;
+        const operationTitle = trimForDb(operation?.title, 160);
+        const sectionTerms = buildAIDraftFocusTerms(
+          `${operation?.description || ""} ${section.description || ""} ${section.title} ${course.title} ${prompt}`,
+        );
+        const nextSectionTitleCandidate =
+          operationTitle && !looksLikeGenericSectionTitle(operationTitle)
+            ? operationTitle
+            : looksLikeGenericSectionTitle(section.title) || wantsRetitle
+              ? suggestSectionTitleFromTerms(
+                  0,
+                  sectionTerms.length ? sectionTerms : aiUpdateFocusTerms,
+                  course.title,
+                )
+              : section.title;
+        const nextSectionTitle = ensureUniqueTitle(
+          nextSectionTitleCandidate,
+          usedSectionTitles,
+          160,
+          section.title || "Course Topic",
+        );
+        await prisma.courseSection.update({
+          where: { id: section.id },
+          data: {
+            title: nextSectionTitle,
+            description:
+              resolveSectionObjectiveText(
+                operation?.description || section.description,
+                nextSectionTitle,
+                course.title,
+              ),
+          },
+        });
+        appliedChanges += 1;
+        continue;
+      }
+
+      if (
+        action === "update_curriculum" ||
+        action === "update_curriculums" ||
+        action === "update_all_curriculums" ||
+        action === "update_all_curriculum"
+      ) {
+        const shouldApplyAll =
+          action === "update_all_curriculums" ||
+          action === "update_all_curriculum" ||
+          applyToAll ||
+          wantsAllCurriculums;
+        if (shouldApplyAll) {
+          const allLessons = course.sections.flatMap((section) => section.lessons || []);
+          for (let lessonIndex = 0; lessonIndex < allLessons.length; lessonIndex += 1) {
+            const lesson = allLessons[lessonIndex];
+            const ownerSection = sectionByLessonId.get(lesson.id);
+            const usedLessonTitles =
+              usedLessonTitlesBySectionId.get(ownerSection?.id) || new Set();
+            if (ownerSection?.id && !usedLessonTitlesBySectionId.has(ownerSection.id)) {
+              usedLessonTitlesBySectionId.set(ownerSection.id, usedLessonTitles);
+            }
+            const nextType = normalizeAISuggestedLessonType(
+              operation?.type || lesson.type || "RESOURCE",
+            );
+            const operationTitle = trimForDb(operation?.title, 180);
+            const lessonTerms = buildAIDraftFocusTerms(
+              `${operation?.description || lesson.description || ""} ${lesson.title} ${ownerSection?.title || ""} ${course.title} ${prompt}`,
+            );
+            const generatedLessonTitle = suggestLessonTitleFromTerms(
+              ownerSection?.title || "Course Topic",
+              lessonIndex,
+              lessonTerms.length ? lessonTerms : aiUpdateFocusTerms,
+            );
+            const nextTitleCandidate =
+              operationTitle && !looksLikeGenericLessonTitle(operationTitle)
+                ? applyToAll
+                  ? `${operationTitle} - ${toTitleCase(aiUpdateFocusTerms[lessonIndex % Math.max(1, aiUpdateFocusTerms.length)] || "Applied")}`.slice(
+                      0,
+                      180,
+                    )
+                  : operationTitle
+                : looksLikeGenericLessonTitle(lesson.title) || wantsRetitle
+                  ? generatedLessonTitle
+                  : lesson.title;
+            const nextTitle = ensureUniqueTitle(
+              nextTitleCandidate,
+              usedLessonTitles,
+              180,
+              `Applied ${ownerSection?.title || "Course"} Topic`,
+            );
+            const nextDescription = resolveCurriculumDescriptionText(
+              operation?.description || lesson.description,
+              nextTitle,
+              ownerSection?.title || "",
+              course.title,
+            );
+            await prisma.lesson.update({
+              where: { id: lesson.id },
+              data: {
+                title: nextTitle,
+                description: nextDescription,
+                type: nextType,
+                assignmentText:
+                  nextType === "RESOURCE" || nextType === "ASSIGNMENT"
+                    ? nextDescription
+                    : null,
+              },
+            });
+            await applyTopicForLesson(lesson.id, {
+              topic_hint: operation?.topic_hint || "",
+              title: nextTitle,
+              description: nextDescription,
+              sectionTitle: ownerSection?.title || "",
+            });
+            appliedChanges += 1;
+          }
+          continue;
+        }
+
+        const lesson =
+          findLessonByRef(operation?.curriculum_id, operation?.section_id) ||
+          findLessonByRef(operation?.curriculum_title, operation?.section_title);
+        if (!lesson) continue;
+
+        const nextType = normalizeAISuggestedLessonType(
+          operation?.type || lesson.type || "RESOURCE",
+        );
+        const ownerSection = sectionByLessonId.get(lesson.id);
+        const usedLessonTitles =
+          usedLessonTitlesBySectionId.get(ownerSection?.id) || new Set();
+        if (ownerSection?.id && !usedLessonTitlesBySectionId.has(ownerSection.id)) {
+          usedLessonTitlesBySectionId.set(ownerSection.id, usedLessonTitles);
+        }
+        const operationTitle = trimForDb(operation?.title, 180);
+        const lessonTerms = buildAIDraftFocusTerms(
+          `${operation?.description || lesson.description || ""} ${lesson.title} ${ownerSection?.title || ""} ${course.title} ${prompt}`,
+        );
+        const nextTitleCandidate =
+          operationTitle && !looksLikeGenericLessonTitle(operationTitle)
+            ? operationTitle
+            : looksLikeGenericLessonTitle(lesson.title) || wantsRetitle
+              ? suggestLessonTitleFromTerms(
+                  ownerSection?.title || "Course Topic",
+                  0,
+                  lessonTerms.length ? lessonTerms : aiUpdateFocusTerms,
+                )
+              : lesson.title;
+        const nextTitle = ensureUniqueTitle(
+          nextTitleCandidate,
+          usedLessonTitles,
+          180,
+          `Applied ${ownerSection?.title || "Course"} Topic`,
+        );
+        const nextDescription = resolveCurriculumDescriptionText(
+          operation?.description || lesson.description,
+          nextTitle,
+          ownerSection?.title || "",
+          course.title,
+        );
+        await prisma.lesson.update({
+          where: { id: lesson.id },
+          data: {
+            title: nextTitle,
+            description: nextDescription,
+            type: nextType,
+            assignmentText:
+              nextType === "RESOURCE" || nextType === "ASSIGNMENT"
+                ? nextDescription
+                : null,
+          },
+        });
+        await applyTopicForLesson(lesson.id, {
+          topic_hint: operation?.topic_hint || "",
+          title: nextTitle,
+          description: nextDescription,
+          sectionTitle: ownerSection?.title || "",
+        });
+        appliedChanges += 1;
+        continue;
+      }
+
+      if (
+        action === "delete_curriculum" ||
+        action === "delete_curriculums" ||
+        action === "delete_all_curriculums" ||
+        action === "delete_all_curriculum" ||
+        action === "remove_curriculum" ||
+        action === "remove_curriculums"
+      ) {
+        const shouldApplyAll =
+          action === "delete_all_curriculums" ||
+          action === "delete_all_curriculum" ||
+          (applyToAll && wantsDelete) ||
+          (wantsDelete && wantsAllCurriculums);
+        if (shouldApplyAll) {
+          const deleted = await prisma.lesson.deleteMany({
+            where: { courseId: course.id },
+          });
+          appliedChanges += Number(deleted?.count || 0);
+          continue;
+        }
+
+        const lesson =
+          findLessonByRef(operation?.curriculum_id, operation?.section_id) ||
+          findLessonByRef(operation?.curriculum_title, operation?.section_title);
+        if (!lesson) continue;
+        await prisma.lesson.delete({
+          where: { id: lesson.id },
+        });
+        appliedChanges += 1;
+        continue;
+      }
+
+      if (
+        action === "delete_section" ||
+        action === "delete_sections" ||
+        action === "remove_section" ||
+        action === "remove_sections"
+      ) {
+        const shouldApplyAll = applyToAll && wantsDelete && wantsAllSections;
+        if (shouldApplyAll) {
+          const deleted = await prisma.courseSection.deleteMany({
+            where: { courseId: course.id },
+          });
+          appliedChanges += Number(deleted?.count || 0);
+          continue;
+        }
+
+        const section =
+          findSectionByRef(operation?.section_id) ||
+          findSectionByRef(operation?.section_title);
+        if (!section) continue;
+        await prisma.courseSection.delete({
+          where: { id: section.id },
+        });
+        appliedChanges += 1;
+        continue;
+      }
+
+      if (action === "add_section") {
+        await createSectionWithLessons(operation);
+        appliedChanges += 1;
+      }
+    }
+
+    if (appliedChanges === 0) {
+      throw new ApiError(
+        400,
+        "AI did not produce applicable section/curriculum updates. Please mention exact section or curriculum titles, or say 'all sections and all curriculums'.",
+      );
+    }
+  } else if (target === "course_basics") {
     await prisma.course.update({
       where: { id: course.id },
       data: {
@@ -3694,92 +4750,114 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
         description:
           trimForDb(parsed?.description || course.description, 8000) || null,
         language: trimForDb(parsed?.language || course.language || "English", 100),
+        welcomeMessage: normalizeNullableAiMessage(
+          parsed?.welcome_message ?? parsed?.welcomeMessage,
+          course.welcomeMessage,
+        ),
+        congratulationsMessage: normalizeNullableAiMessage(
+          parsed?.congratulations_message ?? parsed?.congratulationsMessage,
+          course.congratulationsMessage,
+        ),
       },
     });
   } else if (target === "section") {
+    const sectionTerms = buildAIDraftFocusTerms(
+      `${parsed?.description || ""} ${selectedSection?.description || ""} ${selectedSection?.title || ""} ${course.title} ${prompt}`,
+    );
+    const titleCandidate =
+      trimForDb(parsed?.title, 160) && !looksLikeGenericSectionTitle(parsed?.title)
+        ? parsed?.title
+        : suggestSectionTitleFromTerms(
+            0,
+            sectionTerms.length ? sectionTerms : aiUpdateFocusTerms,
+            course.title,
+          );
+    const nextSectionTitle = ensureUniqueTitle(
+      titleCandidate,
+      usedSectionTitles,
+      160,
+      selectedSection.title || "Course Topic",
+    );
     await prisma.courseSection.update({
       where: { id: selectedSection.id },
       data: {
-        title: trimForDb(parsed?.title || selectedSection.title, 160) || selectedSection.title,
-        description:
-          trimForDb(parsed?.description || selectedSection.description, 5000) || null,
+        title: nextSectionTitle,
+        description: resolveSectionObjectiveText(
+          parsed?.description || selectedSection.description,
+          nextSectionTitle,
+          course.title,
+        ),
       },
     });
   } else if (target === "curriculum") {
     const nextType = normalizeAISuggestedLessonType(
       parsed?.type || selectedLesson.type || "RESOURCE",
     );
-    const nextDescription =
-      trimForDb(parsed?.description || selectedLesson.description, 8000) || null;
+    const usedLessonTitles =
+      usedLessonTitlesBySectionId.get(selectedSection?.id) || new Set();
+    if (selectedSection?.id && !usedLessonTitlesBySectionId.has(selectedSection.id)) {
+      usedLessonTitlesBySectionId.set(selectedSection.id, usedLessonTitles);
+    }
+    const lessonTerms = buildAIDraftFocusTerms(
+      `${nextDescription} ${parsed?.title || ""} ${selectedLesson?.title || ""} ${selectedSection?.title || ""} ${course.title} ${prompt}`,
+    );
+    const nextTitle = ensureUniqueTitle(
+      trimForDb(parsed?.title, 180) && !looksLikeGenericLessonTitle(parsed?.title)
+        ? parsed?.title
+        : suggestLessonTitleFromTerms(
+            selectedSection?.title || "Course Topic",
+            0,
+            lessonTerms.length ? lessonTerms : aiUpdateFocusTerms,
+          ),
+      usedLessonTitles,
+      180,
+      selectedLesson.title || `Applied ${selectedSection?.title || "Course"} Topic`,
+    );
+    const nextDescription = resolveCurriculumDescriptionText(
+      parsed?.description || selectedLesson.description,
+      nextTitle,
+      selectedSection?.title || "",
+      course.title,
+    );
     await prisma.lesson.update({
       where: { id: selectedLesson.id },
       data: {
-        title: trimForDb(parsed?.title || selectedLesson.title, 180) || selectedLesson.title,
+        title: nextTitle,
         description: nextDescription,
         type: nextType,
         assignmentText:
           nextType === "RESOURCE" || nextType === "ASSIGNMENT"
-            ? trimForDb(parsed?.description || selectedLesson.assignmentText || "", 8000) ||
-              null
+            ? nextDescription
             : null,
       },
     });
-  } else if (target === "new_section") {
-    const nextSectionPosition =
-      (course.sections || []).reduce(
-        (max, section) => Math.max(max, Number(section.position || 0)),
-        0,
-      ) + 1;
-    const section = await prisma.courseSection.create({
-      data: {
-        courseId: course.id,
-        title: trimForDb(parsed?.title || "New AI Section", 160) || "New AI Section",
-        description: trimForDb(parsed?.description || "", 5000) || null,
-        position: nextSectionPosition,
-      },
+    const bestTopic = pickBestTopicForAIGeneratedLesson(updateTopicCatalog, {
+      topicHint: parsed?.topic_hint || parsed?.topic || "",
+      title: nextTitle,
+      description: nextDescription,
+      sectionTitle: selectedSection?.title || "",
+      courseTitle: course.title,
+      courseDescription: course.description || "",
     });
-
-    const lessons = Array.isArray(parsed?.lessons) ? parsed.lessons.slice(0, 40) : [];
-    const fallbackLessons =
-      lessons.length > 0
-        ? lessons
-        : [
-            {
-              title: "AI-generated lesson",
-              description: "Expand this lesson with examples and exercises.",
-              type: "RESOURCE",
-              estimated_minutes: 10,
-            },
-          ];
-
-    for (let lessonIndex = 0; lessonIndex < fallbackLessons.length; lessonIndex += 1) {
-      const lesson = fallbackLessons[lessonIndex] || {};
-      const type = normalizeAISuggestedLessonType(lesson?.type);
-      const lessonDescription = trimForDb(lesson?.description || "", 8000);
-      const estimatedMinutes = Number(lesson?.estimated_minutes || 8);
-      const durationInSeconds = Number.isFinite(estimatedMinutes)
-        ? Math.max(60, Math.min(90 * 60, Math.round(estimatedMinutes * 60)))
-        : 8 * 60;
-
-      await prisma.lesson.create({
-        data: {
-          courseId: course.id,
-          sectionId: section.id,
-          title:
-            trimForDb(lesson?.title || `Lesson ${lessonIndex + 1}`, 180) ||
-            `Lesson ${lessonIndex + 1}`,
-          description: lessonDescription || null,
-          type,
-          assignmentText:
-            type === "RESOURCE" || type === "ASSIGNMENT"
-              ? lessonDescription || null
-              : null,
-          position: lessonIndex + 1,
-          durationInSeconds,
-          isPreview: false,
-        },
+    if (bestTopic?.id) {
+      await prisma.lesson.update({
+        where: { id: selectedLesson.id },
+        data: { topicId: bestTopic.id },
       });
+      if (supportsLessonTopics && prisma.lessonTopic) {
+        await prisma.lessonTopic.deleteMany({
+          where: { lessonId: selectedLesson.id },
+        });
+        await prisma.lessonTopic.create({
+          data: {
+            lessonId: selectedLesson.id,
+            topicId: bestTopic.id,
+          },
+        });
+      }
     }
+  } else if (target === "new_section") {
+    await createSectionWithLessons(parsed);
   }
 
   const refreshedCourse = await getCourseForManagement(
