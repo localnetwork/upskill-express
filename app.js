@@ -21,6 +21,7 @@ import certificationRoutes from "./src/modules/certification/certification.route
 import analyticsRoutes from "./src/modules/analytics/analytics.routes.js";
 import communicationRoutes from "./src/modules/communication/communication.routes.js";
 import tagRoutes from "./src/modules/tag/tag.routes.js";
+import shareRoutes from "./src/modules/share/share.routes.js";
 import legacyRoutes from "./src/modules/legacy/legacy.routes.js";
 import {
   cacheGetResponse,
@@ -79,6 +80,7 @@ app.use("/api/certifications", certificationRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/communication", communicationRoutes);
 app.use("/api/tags", tagRoutes);
+app.use("/api/share", shareRoutes);
 app.use("/api", legacyRoutes);
 app.get(
   "/api/languages",

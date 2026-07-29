@@ -9,7 +9,9 @@ const envFilePath = path.resolve(
 
 dotenv.config({ path: envFilePath });
 
-const resolvedAutoPayoutIntervalMs = Number(process.env.AUTO_PAYOUT_INTERVAL_MS);
+const resolvedAutoPayoutIntervalMs = Number(
+  process.env.AUTO_PAYOUT_INTERVAL_MS,
+);
 
 export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
@@ -20,15 +22,17 @@ export const env = {
   ddosBanSeconds: Number(process.env.DDOS_BAN_SECONDS || 300),
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET || "access-secret",
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || "refresh-secret",
-  jwtAccessTtl: process.env.JWT_ACCESS_TTL || "15m",
+  jwtAccessTtl: process.env.JWT_ACCESS_TTL || "30d",
   jwtRefreshTtl: process.env.JWT_REFRESH_TTL || "30d",
-  jwtPreAuthTtl: process.env.JWT_PRE_AUTH_TTL || "10m",
+  jwtPreAuthTtl: process.env.JWT_PRE_AUTH_TTL || "30d",
   paypalBaseUrl:
     process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com",
   paypalClientId: process.env.PAYPAL_CLIENT_ID || "",
   paypalClientSecret: process.env.PAYPAL_CLIENT_SECRET || "",
   paypalWebhookId:
-    process.env.PAYPAL_WEBHOOK_ID || process.env.PAYPAL_PAYOUTS_WEBHOOK_ID || "",
+    process.env.PAYPAL_WEBHOOK_ID ||
+    process.env.PAYPAL_PAYOUTS_WEBHOOK_ID ||
+    "",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   uploadDir: process.env.UPLOAD_DIR || "uploads",
   cfAccessKeyId: process.env.CF_ACCESS_KEY_ID || "",
@@ -41,7 +45,8 @@ export const env = {
   autoPayoutEnabled:
     String(process.env.AUTO_PAYOUT_ENABLED || "false").toLowerCase() === "true",
   autoPayoutIntervalMs:
-    Number.isFinite(resolvedAutoPayoutIntervalMs) && resolvedAutoPayoutIntervalMs > 0
+    Number.isFinite(resolvedAutoPayoutIntervalMs) &&
+    resolvedAutoPayoutIntervalMs > 0
       ? resolvedAutoPayoutIntervalMs
       : 60 * 60 * 1000,
 };

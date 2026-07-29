@@ -288,6 +288,138 @@ export async function getCategoryBySlugOrId(slugOrId) {
     };
   }
 
+  const categoryIds = [
+    category.id,
+    ...(Array.isArray(category.children)
+      ? category.children.map((child) => child.id).filter(Boolean)
+      : []),
+  ];
+
+  const publishedCourses = await prisma.course.findMany({
+    where: {
+      deletedAt: null,
+      workflowStatus: "PUBLISHED",
+      categoryId: { in: categoryIds },
+    },
+    select: {
+      id: true,
+      educatorId: true,
+      educator: {
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          headline: true,
+        },
+      },
+    },
+  });
+
+  const courseIds = publishedCourses.map((course) => course.id);
+  const enrollmentsByCourseId = new Map();
+  const ratingsByCourseId = new Map();
+
+  if (courseIds.length) {
+    const [enrollmentRows, ratingRows] = await Promise.all([
+      prisma.enrollment.groupBy({
+        by: ["courseId"],
+        where: {
+          courseId: { in: courseIds },
+          status: { in: ["ACTIVE", "COMPLETED"] },
+        },
+        _count: { _all: true },
+      }),
+      prisma.review.groupBy({
+        by: ["courseId"],
+        where: {
+          courseId: { in: courseIds },
+        },
+        _avg: { rating: true },
+        _count: { rating: true },
+      }),
+    ]);
+
+    for (const row of enrollmentRows) {
+      enrollmentsByCourseId.set(row.courseId, Number(row?._count?._all || 0));
+    }
+    for (const row of ratingRows) {
+      ratingsByCourseId.set(row.courseId, {
+        average: Number(row?._avg?.rating || 0),
+        count: Number(row?._count?.rating || 0),
+      });
+    }
+  }
+
+  const educatorMap = new Map();
+  for (const course of publishedCourses) {
+    if (!course?.educator?.id) continue;
+    if (!educatorMap.has(course.educator.id)) {
+      educatorMap.set(course.educator.id, {
+        id: course.educator.id,
+        username: course.educator.username || "",
+        first_name: course.educator.firstName || "",
+        last_name: course.educator.lastName || "",
+        headline: course.educator.headline || "",
+        courses_count: 0,
+        total_enrollees: 0,
+        total_reviews: 0,
+        weighted_rating_sum: 0,
+      });
+    }
+
+    const row = educatorMap.get(course.educator.id);
+    row.courses_count += 1;
+    row.total_enrollees += Number(enrollmentsByCourseId.get(course.id) || 0);
+
+    const ratingMeta = ratingsByCourseId.get(course.id) || { average: 0, count: 0 };
+    row.total_reviews += Number(ratingMeta.count || 0);
+    row.weighted_rating_sum +=
+      Number(ratingMeta.average || 0) * Number(ratingMeta.count || 0);
+  }
+
+  const popularEducators = Array.from(educatorMap.values())
+    .map((row) => {
+      const displayName = `${row.first_name} ${row.last_name}`.trim() || row.username || "Educator";
+      const averageRating = row.total_reviews
+        ? Number((row.weighted_rating_sum / row.total_reviews).toFixed(2))
+        : 0;
+
+      return {
+        id: row.id,
+        username: row.username,
+        display_name: displayName,
+        headline: row.headline,
+        courses_count: row.courses_count,
+        total_enrollees: row.total_enrollees,
+        average_rating: averageRating,
+        total_reviews: row.total_reviews,
+      };
+    })
+    .sort((a, b) => {
+      if (b.total_enrollees !== a.total_enrollees) {
+        return b.total_enrollees - a.total_enrollees;
+      }
+      if (b.average_rating !== a.average_rating) {
+        return b.average_rating - a.average_rating;
+      }
+      return b.courses_count - a.courses_count;
+    })
+    .slice(0, 5);
+
+  const totalEnrolled = courseIds.reduce(
+    (sum, courseId) => sum + Number(enrollmentsByCourseId.get(courseId) || 0),
+    0,
+  );
+  const expertCourses = publishedCourses.length;
+
+  category = {
+    ...category,
+    expert_courses: expertCourses,
+    total_enrolled: totalEnrolled,
+    popular_educators: popularEducators,
+  };
+
   return toLegacyCategory(category);
 }
 

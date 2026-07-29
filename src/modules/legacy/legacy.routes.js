@@ -1303,6 +1303,186 @@ router.get("/user/:slug", async (req, res, next) => {
     }
 
     const extended = normalizeExtendedProfile(user);
+    const roleNames = user.roles.map((item) => String(item?.role?.name || "").toUpperCase());
+    const isEducator = roleNames.includes("EDUCATOR");
+    const isLearner = roleNames.includes("LEARNER");
+
+    const [educatorStatsRaw, completedEnrollmentsRaw, certificateIndexRows] = await Promise.all([
+      isEducator
+        ? Promise.all([
+            prisma.course.count({
+              where: {
+                educatorId: user.id,
+                workflowStatus: "PUBLISHED",
+                deletedAt: null,
+              },
+            }),
+            prisma.enrollment.count({
+              where: {
+                course: {
+                  educatorId: user.id,
+                  deletedAt: null,
+                },
+                status: { in: ["ACTIVE", "COMPLETED"] },
+              },
+            }),
+            prisma.review.count({
+              where: {
+                course: {
+                  educatorId: user.id,
+                  deletedAt: null,
+                },
+              },
+            }),
+            prisma.review.aggregate({
+              where: {
+                course: {
+                  educatorId: user.id,
+                  deletedAt: null,
+                },
+              },
+              _avg: { rating: true },
+            }),
+          ])
+        : Promise.resolve([0, 0, 0, { _avg: { rating: 0 } }]),
+      isLearner
+        ? prisma.enrollment.findMany({
+            where: {
+              userId: user.id,
+              status: { in: ["ACTIVE", "COMPLETED"] },
+              course: { deletedAt: null },
+            },
+            select: {
+              id: true,
+              completedAt: true,
+              status: true,
+              course: {
+                select: {
+                  id: true,
+                  slug: true,
+                  title: true,
+                  _count: {
+                    select: {
+                      reviews: true,
+                    },
+                  },
+                  educator: {
+                    select: {
+                      firstName: true,
+                      lastName: true,
+                      username: true,
+                    },
+                  },
+                  media: {
+                    where: {
+                      mediaType: { in: ["COVER_IMAGE", "IMAGE"] },
+                    },
+                    orderBy: { createdAt: "desc" },
+                  },
+                },
+              },
+              courseProgress: {
+                select: {
+                  progressPct: true,
+                  completedAt: true,
+                },
+              },
+            },
+            orderBy: { updatedAt: "desc" },
+          })
+        : Promise.resolve([]),
+      isLearner
+        ? prisma.platformSetting.findMany({
+            where: {
+              key: { startsWith: `certificate_index::${user.id}::` },
+            },
+            select: {
+              key: true,
+              value: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: "desc" },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const educatorStats = {
+      published_courses: Number(educatorStatsRaw?.[0] || 0),
+      total_learners: Number(educatorStatsRaw?.[1] || 0),
+      total_reviews: Number(educatorStatsRaw?.[2] || 0),
+      average_rating: Number(educatorStatsRaw?.[3]?._avg?.rating || 0),
+    };
+
+    const completed_courses = (completedEnrollmentsRaw || [])
+      .filter((row) => {
+        const progressPct = Number(row?.courseProgress?.progressPct || 0);
+        return (
+          String(row?.status || "").toUpperCase() === "COMPLETED" ||
+          progressPct >= 100 ||
+          Boolean(row?.completedAt || row?.courseProgress?.completedAt)
+        );
+      })
+      .map((row) => ({
+        cover_image: mapLegacyMedia(
+          pickLatestMediaByTypes(row?.course?.media, ["COVER_IMAGE", "IMAGE"]),
+        ),
+        enrollment_id: row.id,
+        course_id: row?.course?.id || null,
+        course_slug: row?.course?.slug || null,
+        course_title: row?.course?.title || "Course",
+        reviews_count: Number(row?.course?._count?.reviews || 0),
+        instructor_name:
+          `${row?.course?.educator?.firstName || ""} ${row?.course?.educator?.lastName || ""}`.trim() ||
+          row?.course?.educator?.username ||
+          "Instructor",
+        completed_at:
+          row?.completedAt ||
+          row?.courseProgress?.completedAt ||
+          null,
+      }));
+
+    const certificateIndexPayloads = (certificateIndexRows || [])
+      .map((row) => parseJsonOrNull(row?.value))
+      .filter((row) => row?.slug);
+    const certificateSlugs = Array.from(
+      new Set(certificateIndexPayloads.map((row) => String(row.slug || "").trim()).filter(Boolean)),
+    );
+    const certificateRows = certificateSlugs.length
+      ? await prisma.platformSetting.findMany({
+          where: {
+            key: {
+              in: certificateSlugs.map((slug) => `certificate::${slug}`),
+            },
+          },
+          select: {
+            key: true,
+            value: true,
+          },
+        })
+      : [];
+    const certificatePayloadBySlug = new Map(
+      certificateRows
+        .map((row) => [String(row.key || "").replace("certificate::", ""), parseJsonOrNull(row.value)])
+        .filter(([, value]) => value),
+    );
+
+    const certifications = certificateSlugs
+      .map((slug) => {
+        const cert = certificatePayloadBySlug.get(slug);
+        if (!cert) return null;
+        return {
+          slug,
+          certification_no: cert.certificationNo || null,
+          reference_no: cert.referenceNo || null,
+          course_title: cert.courseTitle || "Course",
+          issued_at: cert.issuedAt || null,
+          certification_url:
+            cert.certificationUrl ||
+            `${env.frontendUrl.replace(/\/+$/, "")}/certifications/${slug}`,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.issued_at || 0).getTime() - new Date(a.issued_at || 0).getTime());
 
     return res.json({
       id: user.id,
@@ -1330,6 +1510,15 @@ router.get("/user/:slug", async (req, res, next) => {
               ? "Learner"
               : item.role.name,
       })),
+      stats: {
+        educator: educatorStats,
+        learner: {
+          completed_courses_count: completed_courses.length,
+          certifications_count: certifications.length,
+        },
+      },
+      completed_courses,
+      certifications,
     });
   } catch (error) {
     return next(error);
@@ -1356,10 +1545,29 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
           },
           orderBy: { createdAt: "desc" },
         },
+        _count: {
+          select: {
+            reviews: true,
+          },
+        },
         sections: { include: { lessons: true } },
       },
       orderBy: { createdAt: "desc" },
     });
+    const courseIds = courses.map((course) => course.id);
+    const ratingsByCourseId = new Map();
+
+    if (courseIds.length) {
+      const ratingAggregates = await prisma.review.groupBy({
+        by: ["courseId"],
+        where: { courseId: { in: courseIds } },
+        _avg: { rating: true },
+      });
+
+      for (const row of ratingAggregates) {
+        ratingsByCourseId.set(row.courseId, Number(row?._avg?.rating || 0));
+      }
+    }
 
     const data = courses.map((course) => ({
       ...course,
@@ -1392,6 +1600,10 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
       resources_count: {
         section_count: course.sections.length,
         curriculum_count: course.sections.reduce((acc, section) => acc + section.lessons.length, 0),
+      },
+      stats: {
+        average_rating: ratingsByCourseId.get(course.id) || 0,
+        total_reviews: Number(course?._count?.reviews || 0),
       },
     }));
 

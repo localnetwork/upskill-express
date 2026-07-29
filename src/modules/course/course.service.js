@@ -1,4 +1,5 @@
 import { prisma } from "../../shared/database/prisma.js";
+import { Prisma } from "@prisma/client";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { slugify } from "../../shared/utils/slugify.js";
@@ -477,11 +478,38 @@ async function normalizeCoursePayload(payload) {
 }
 
 async function makeUniqueSlug(title) {
-  const base = slugify(title);
-  const count = await prisma.course.count({
-    where: { slug: { startsWith: base } },
-  });
-  return count > 0 ? `${base}-${count + 1}` : base;
+  const base = slugify(String(title || ""))
+    .slice(0, 150)
+    .replace(/-+$/g, "");
+  if (!base) {
+    throw new ApiError(400, "Slug is required");
+  }
+
+  const withSuffix = (rawBase, suffix) => {
+    const safeSuffix = String(suffix || "").trim();
+    if (!safeSuffix) return rawBase;
+    const suffixChunk = `-${safeSuffix}`;
+    const maxBaseLength = Math.max(1, 150 - suffixChunk.length);
+    const trimmedBase = rawBase.slice(0, maxBaseLength).replace(/-+$/g, "");
+    return `${trimmedBase}${suffixChunk}`;
+  };
+
+  let attempt = 0;
+  let candidate = base;
+
+  while (attempt < 500) {
+    const existing = await prisma.course.findFirst({
+      where: { slug: candidate, deletedAt: null },
+      select: { id: true },
+    });
+    if (!existing) {
+      return candidate;
+    }
+    attempt += 1;
+    candidate = withSuffix(base, attempt + 1);
+  }
+
+  throw new ApiError(409, "Unable to generate a unique slug");
 }
 
 async function assertCourseSlugAvailable(slug, excludeCourseId = null) {
@@ -506,23 +534,33 @@ async function assertCourseSlugAvailable(slug, excludeCourseId = null) {
 export async function createCourse(userId, payload) {
   const normalized = await normalizeCoursePayload(payload);
   const slug = normalized.slug || (await makeUniqueSlug(payload.title));
-  if (normalized.slug) {
-    await assertCourseSlugAvailable(normalized.slug);
+  await assertCourseSlugAvailable(slug);
+
+  let course;
+  try {
+    course = await prisma.course.create({
+      data: {
+        title: normalized.title,
+        subtitle: normalized.subtitle,
+        description: normalized.description,
+        slug,
+        language: normalized.language || "en",
+        categoryId: normalized.categoryId,
+        levelId: normalized.levelId,
+        priceTierId: normalized.priceTierId,
+        educatorId: userId,
+        isPublished: normalized.isPublished,
+      },
+    });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      throw new ApiError(409, "Slug already exists");
+    }
+    throw error;
   }
-  const course = await prisma.course.create({
-    data: {
-      title: normalized.title,
-      subtitle: normalized.subtitle,
-      description: normalized.description,
-      slug,
-      language: normalized.language || "en",
-      categoryId: normalized.categoryId,
-      levelId: normalized.levelId,
-      priceTierId: normalized.priceTierId,
-      educatorId: userId,
-      isPublished: normalized.isPublished,
-    },
-  });
 
   await recordActivityEvent({
     eventType: "INSTRUCTOR_COURSE_CREATED",
@@ -562,44 +600,55 @@ export async function updateCourse(userId, courseId, payload) {
     await assertCourseSlugAvailable(normalized.slug, course.id);
   }
 
-  const updatedCourseId = await prisma.$transaction(async (tx) => {
-    const updatedCourse = await tx.course.update({
-      where: { id: courseId },
-      data: normalized,
+  let updatedCourseId;
+  try {
+    updatedCourseId = await prisma.$transaction(async (tx) => {
+      const updatedCourse = await tx.course.update({
+        where: { id: courseId },
+        data: normalized,
+      });
+
+      const coverImageId = extractMediaId(payload.cover_image);
+      if (coverImageId) {
+        await tx.media.updateMany({
+          where: {
+            id: coverImageId,
+            userId,
+            mediaType: { in: COVER_MEDIA_TYPES },
+          },
+          data: {
+            courseId: updatedCourse.id,
+            mediaType: "COVER_IMAGE",
+          },
+        });
+      }
+
+      const promoVideoId = extractMediaId(payload.promo_video);
+      if (promoVideoId) {
+        await tx.media.updateMany({
+          where: {
+            id: promoVideoId,
+            userId,
+            mediaType: { in: ["VIDEO", ...PROMO_MEDIA_TYPES] },
+          },
+          data: {
+            courseId: updatedCourse.id,
+            mediaType: "PROMO_VIDEO",
+          },
+        });
+      }
+
+      return updatedCourse.id;
     });
-
-    const coverImageId = extractMediaId(payload.cover_image);
-    if (coverImageId) {
-      await tx.media.updateMany({
-        where: {
-          id: coverImageId,
-          userId,
-          mediaType: { in: COVER_MEDIA_TYPES },
-        },
-        data: {
-          courseId: updatedCourse.id,
-          mediaType: "COVER_IMAGE",
-        },
-      });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      throw new ApiError(409, "Slug already exists");
     }
-
-    const promoVideoId = extractMediaId(payload.promo_video);
-    if (promoVideoId) {
-      await tx.media.updateMany({
-        where: {
-          id: promoVideoId,
-          userId,
-          mediaType: { in: ["VIDEO", ...PROMO_MEDIA_TYPES] },
-        },
-        data: {
-          courseId: updatedCourse.id,
-          mediaType: "PROMO_VIDEO",
-        },
-      });
-    }
-
-    return updatedCourse.id;
-  });
+    throw error;
+  }
 
   const hydratedCourse = await prisma.course.findFirst({
     where: { id: updatedCourseId },
@@ -999,6 +1048,24 @@ export async function listCourses(query, user) {
     }),
     prisma.course.count({ where }),
   ]);
+  const courseIds = rows.map((row) => row.id);
+  const ratingsByCourseId = new Map();
+
+  if (courseIds.length) {
+    const ratingAggregates = await prisma.review.groupBy({
+      by: ["courseId"],
+      where: { courseId: { in: courseIds } },
+      _avg: { rating: true },
+      _count: { rating: true },
+    });
+
+    for (const row of ratingAggregates) {
+      ratingsByCourseId.set(row.courseId, {
+        average_rating: Number(row?._avg?.rating || 0),
+        total_reviews: Number(row?._count?.rating || 0),
+      });
+    }
+  }
 
   let cartCourseIds = new Set();
   let enrolledCourseIds = new Set();
@@ -1031,6 +1098,10 @@ export async function listCourses(query, user) {
     goals: courseGoalsMap.get(course.id) || normalizeGoalsPayload({}),
     is_in_cart: cartCourseIds.has(course.id),
     is_enrolled: enrolledCourseIds.has(course.id),
+    stats: {
+      average_rating: ratingsByCourseId.get(course.id)?.average_rating || 0,
+      total_reviews: ratingsByCourseId.get(course.id)?.total_reviews || 0,
+    },
   }));
 
   return toPagedResult(mappedRows, total, page, limit);
@@ -1753,6 +1824,42 @@ export async function getCourseStatisticsForManagement(user, slug) {
   const enrollmentTrendStart = new Date(startOfMonth);
   enrollmentTrendStart.setMonth(enrollmentTrendStart.getMonth() - 5);
 
+  const roundMoney = (value) => Number(Number(value || 0).toFixed(2));
+  const allocateByWeights = (totalAmount, weightedItems = []) => {
+    const normalizedTotal = Math.max(0, roundMoney(totalAmount));
+    if (!normalizedTotal || !weightedItems.length) return new Map();
+
+    const items = weightedItems.map((item) => ({
+      id: item.id,
+      weight: Math.max(0, Number(item.weight || 0)),
+    }));
+    const totalWeight = items.reduce((sum, item) => sum + item.weight, 0);
+    if (totalWeight <= 0) return new Map();
+
+    const totalCents = Math.round(normalizedTotal * 100);
+    const rawCents = items.map((item) => (item.weight / totalWeight) * totalCents);
+    const baseCents = rawCents.map((value) => Math.floor(value));
+    let remaining = totalCents - baseCents.reduce((sum, value) => sum + value, 0);
+
+    const ranked = rawCents
+      .map((value, index) => ({ index, remainder: value - baseCents[index] }))
+      .sort((a, b) => b.remainder - a.remainder);
+
+    let cursor = 0;
+    while (remaining > 0) {
+      const target = ranked[cursor % ranked.length];
+      baseCents[target.index] += 1;
+      remaining -= 1;
+      cursor += 1;
+    }
+
+    const allocations = new Map();
+    items.forEach((item, index) => {
+      allocations.set(item.id, Number((baseCents[index] / 100).toFixed(2)));
+    });
+    return allocations;
+  };
+
   const [
     totalStudents,
     enrollmentsThisMonth,
@@ -1760,15 +1867,10 @@ export async function getCourseStatisticsForManagement(user, slug) {
     progressRows,
     reviewAggregate,
     ratingBuckets,
-    revenueAggregate,
-    monthlyRevenueAggregate,
     enrollmentTrendRows,
     totalImpressions,
-    totalPageViews,
     uniqueImpressionUsers,
     uniqueImpressionSessions,
-    uniquePageViewUsers,
-    uniquePageViewSessions,
   ] = await Promise.all([
     prisma.enrollment.count({ where: activeEnrollmentWhere }),
     prisma.enrollment.count({
@@ -1801,21 +1903,6 @@ export async function getCourseStatisticsForManagement(user, slug) {
       where: { courseId: course.id },
       _count: { rating: true },
     }),
-    prisma.orderItem.aggregate({
-      where: {
-        courseId: course.id,
-        order: { status: "PAID" },
-      },
-      _sum: { educatorEarning: true },
-    }),
-    prisma.orderItem.aggregate({
-      where: {
-        courseId: course.id,
-        order: { status: "PAID" },
-        createdAt: { gte: startOfMonth },
-      },
-      _sum: { educatorEarning: true },
-    }),
     prisma.enrollment.findMany({
       where: {
         ...activeEnrollmentWhere,
@@ -1832,14 +1919,6 @@ export async function getCourseStatisticsForManagement(user, slug) {
         })
       : Promise.resolve(0),
     activityEventModel
-      ? activityEventModel.count({
-          where: {
-            courseId: course.id,
-            eventType: "COURSE_PAGE_VIEW",
-          },
-        })
-      : Promise.resolve(0),
-    activityEventModel
       ? activityEventModel.findMany({
           where: {
             courseId: course.id,
@@ -1855,28 +1934,6 @@ export async function getCourseStatisticsForManagement(user, slug) {
           where: {
             courseId: course.id,
             eventType: "COURSE_IMPRESSION",
-            sessionKey: { not: null },
-          },
-          distinct: ["sessionKey"],
-          select: { sessionKey: true },
-        })
-      : Promise.resolve([]),
-    activityEventModel
-      ? activityEventModel.findMany({
-          where: {
-            courseId: course.id,
-            eventType: "COURSE_PAGE_VIEW",
-            userId: { not: null },
-          },
-          distinct: ["userId"],
-          select: { userId: true },
-        })
-      : Promise.resolve([]),
-    activityEventModel
-      ? activityEventModel.findMany({
-          where: {
-            courseId: course.id,
-            eventType: "COURSE_PAGE_VIEW",
             sessionKey: { not: null },
           },
           distinct: ["sessionKey"],
@@ -1884,6 +1941,109 @@ export async function getCourseStatisticsForManagement(user, slug) {
         })
       : Promise.resolve([]),
   ]);
+
+  const paidCourseOrderItems = await prisma.orderItem.findMany({
+    where: {
+      courseId: course.id,
+      order: { status: "PAID" },
+    },
+    select: {
+      id: true,
+      orderId: true,
+      createdAt: true,
+      unitPrice: true,
+      discountAmount: true,
+      platformFeePercent: true,
+      order: {
+        select: {
+          discountAmount: true,
+        },
+      },
+    },
+  });
+
+  const relatedOrderIds = Array.from(
+    new Set(paidCourseOrderItems.map((item) => item.orderId).filter(Boolean)),
+  );
+  const relatedOrderItems = relatedOrderIds.length
+    ? await prisma.orderItem.findMany({
+        where: {
+          orderId: { in: relatedOrderIds },
+        },
+        select: {
+          id: true,
+          orderId: true,
+          unitPrice: true,
+          discountAmount: true,
+        },
+      })
+    : [];
+
+  const orderItemsMap = relatedOrderItems.reduce((map, item) => {
+    if (!map.has(item.orderId)) {
+      map.set(item.orderId, []);
+    }
+    map.get(item.orderId).push(item);
+    return map;
+  }, new Map());
+
+  const allocatedOrderDiscountByItemId = new Map();
+  for (const [orderId, items] of orderItemsMap.entries()) {
+    const sampleCourseItem = paidCourseOrderItems.find((item) => item.orderId === orderId);
+    const orderDiscount = Number(sampleCourseItem?.order?.discountAmount || 0);
+    if (orderDiscount <= 0) continue;
+
+    const explicitDiscountSum = items.reduce(
+      (sum, item) => sum + Number(item.discountAmount || 0),
+      0,
+    );
+    const remainingOrderDiscount = roundMoney(
+      Math.max(0, orderDiscount - explicitDiscountSum),
+    );
+    if (remainingOrderDiscount <= 0) continue;
+
+    const zeroDiscountItems = items.filter(
+      (item) => Number(item.discountAmount || 0) <= 0,
+    );
+    if (!zeroDiscountItems.length) continue;
+
+    const allocations = allocateByWeights(
+      remainingOrderDiscount,
+      zeroDiscountItems.map((item) => ({
+        id: item.id,
+        weight: Number(item.unitPrice || 0),
+      })),
+    );
+    allocations.forEach((value, key) => {
+      allocatedOrderDiscountByItemId.set(key, value);
+    });
+  }
+
+  let totalRevenue = 0;
+  let revenueThisMonth = 0;
+  for (const item of paidCourseOrderItems) {
+    const unitPrice = Number(item.unitPrice || 0);
+    const explicitDiscount = Number(item.discountAmount || 0);
+    const distributedDiscount = Number(
+      allocatedOrderDiscountByItemId.get(item.id) || 0,
+    );
+    const effectiveDiscount = roundMoney(
+      Math.min(unitPrice, explicitDiscount + distributedDiscount),
+    );
+    const taxableAmount = roundMoney(Math.max(0, unitPrice - effectiveDiscount));
+    const platformFeePercent = Number(item.platformFeePercent || 0);
+    const platformFeeAmount = roundMoney(
+      (taxableAmount * platformFeePercent) / 100,
+    );
+    const educatorNetRevenue = roundMoney(
+      Math.max(0, taxableAmount - platformFeeAmount),
+    );
+
+    totalRevenue += educatorNetRevenue;
+    if (item.createdAt >= startOfMonth) {
+      revenueThisMonth += educatorNetRevenue;
+    }
+  }
 
   const averageProgressPct = totalStudents
     ? Number(
@@ -1939,17 +2099,12 @@ export async function getCourseStatisticsForManagement(user, slug) {
       average_progress_pct: averageProgressPct,
       average_rating: Number(reviewAggregate?._avg?.rating || 0),
       total_reviews: totalReviews,
-      total_revenue: Number(revenueAggregate?._sum?.educatorEarning || 0),
-      revenue_this_month: Number(monthlyRevenueAggregate?._sum?.educatorEarning || 0),
+      total_revenue: roundMoney(totalRevenue),
+      revenue_this_month: roundMoney(revenueThisMonth),
       total_impressions: totalImpressions,
-      total_page_views: totalPageViews,
       unique_impression_visitors: Math.max(
         uniqueImpressionUsers.length,
         uniqueImpressionSessions.length,
-      ),
-      unique_page_view_visitors: Math.max(
-        uniquePageViewUsers.length,
-        uniquePageViewSessions.length,
       ),
     },
     distribution: {
@@ -2065,7 +2220,29 @@ export async function getCourseRoute(slug, actor = null) {
       sections: {
         orderBy: { position: "asc" },
         include: {
-          lessons: { orderBy: { position: "asc" } },
+          lessons: {
+            orderBy: { position: "asc" },
+            include: {
+              topic: {
+                select: {
+                  id: true,
+                  slug: true,
+                  name: true,
+                },
+              },
+              lessonTopics: {
+                select: {
+                  topic: {
+                    select: {
+                      id: true,
+                      slug: true,
+                      name: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
       reviews: {
@@ -2098,6 +2275,23 @@ export async function getCourseRoute(slug, actor = null) {
         }),
       ])
     : [null, null, null];
+  const totalEnrollees = await prisma.enrollment.count({
+    where: {
+      courseId: course.id,
+      status: { in: ["ACTIVE", "COMPLETED"] },
+    },
+  });
+  const totalReviews = course.reviews.length;
+  const averageRating = totalReviews
+    ? Number(
+        (
+          course.reviews.reduce((sum, review) => sum + Number(review?.rating || 0), 0) /
+          totalReviews
+        ).toFixed(1),
+      )
+    : 0;
+  const isBestseller =
+    totalEnrollees >= 100 && totalReviews >= 20 && averageRating >= 4.5;
 
   const goals = await readCourseGoals(course.id);
   const coverImage = mapLegacyMedia(
@@ -2106,6 +2300,28 @@ export async function getCourseRoute(slug, actor = null) {
   const promoVideo = mapLegacyMedia(
     pickLatestMediaByTypes(course.media, PROMO_MEDIA_TYPES),
   );
+  const topicMap = new Map();
+  for (const section of course.sections) {
+    for (const lesson of section.lessons) {
+      if (lesson?.topic?.id && !topicMap.has(lesson.topic.id)) {
+        topicMap.set(lesson.topic.id, {
+          id: lesson.topic.id,
+          slug: lesson.topic.slug,
+          title: lesson.topic.name || "",
+        });
+      }
+      for (const lessonTopic of lesson.lessonTopics || []) {
+        const row = lessonTopic?.topic;
+        if (row?.id && !topicMap.has(row.id)) {
+          topicMap.set(row.id, {
+            id: row.id,
+            slug: row.slug,
+            title: row.name || "",
+          });
+        }
+      }
+    }
+  }
 
   return {
     id: course.id,
@@ -2113,9 +2329,14 @@ export async function getCourseRoute(slug, actor = null) {
     title: course.title,
     subtitle: course.subtitle,
     description: course.description,
+    language: course.language || "English",
+    updated_at: course.updatedAt,
     categories: course.category
       ? [{ id: course.category.id, slug: course.category.slug, title: course.category.name || course.category.title }]
       : [],
+    topics: Array.from(topicMap.values()).sort((a, b) =>
+      String(a.title || "").localeCompare(String(b.title || "")),
+    ),
     sections: course.sections.map((section) => ({
       id: section.id,
       title: section.title,
@@ -2194,6 +2415,12 @@ export async function getCourseRoute(slug, actor = null) {
     cover_image: coverImage,
     goals,
     workflow_status: course.workflowStatus,
+    stats: {
+      average_rating: averageRating,
+      total_reviews: totalReviews,
+      total_enrollees: totalEnrollees,
+      is_bestseller: isBestseller,
+    },
     is_enrolled: Boolean(isEnrolled),
     is_in_cart: Boolean(isInCart),
     is_in_wishlist: Boolean(isInWishlist),
