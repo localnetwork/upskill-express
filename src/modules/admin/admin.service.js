@@ -117,7 +117,7 @@ export async function rejectCourse(adminId, courseId, note) {
     userId: updated.educatorId,
     type: "COURSE_APPROVAL",
     title: "Course rejected",
-    message: `Your course "${updated.title}" was rejected.`,
+    message: `Your course "${updated.title}" was rejected.\nReason: ${normalizedNote}`,
     metadata: { courseId: updated.id, note: normalizedNote },
   });
 

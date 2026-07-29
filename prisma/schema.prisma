@@ -154,6 +154,7 @@ model User {
   createdMedia          Media[]
   activityEvents        ActivityEvent[]
   trustedDevices        TrustedDevice[]
+  createdCoupons        Coupon[]          @relation("CouponCreator")
 
   @@index([deletedAt])
   @@map("users")
@@ -337,6 +338,7 @@ model Course {
   media               Media[]
   submissions         CourseSubmission[]
   activityEvents      ActivityEvent[]
+  coupons             Coupon[]
 
   @@index([educatorId, workflowStatus])
   @@index([categoryId])
@@ -466,6 +468,8 @@ model Wishlist {
 
 model Coupon {
   id          String      @id @default(cuid())
+  courseId    String?
+  createdById String?
   code        String      @unique
   type        CouponType
   value       Decimal     @db.Decimal(10, 2)
@@ -478,8 +482,12 @@ model Coupon {
   deletedAt   DateTime?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
+  course      Course?     @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  createdBy   User?       @relation("CouponCreator", fields: [createdById], references: [id], onDelete: SetNull)
   orders      Order[]
 
+  @@index([courseId])
+  @@index([createdById])
   @@index([isActive, startsAt, endsAt])
   @@index([deletedAt])
   @@map("coupons")

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   createCourse,
+  createCourseCoupon,
   deleteDraftCourse,
   getCourseDiscoveryData,
   getCourseForManagement,
@@ -11,6 +12,7 @@ import {
   checkCourseSlugAvailability,
   getCourseStudentsForManagement,
   listAuthoredCourses,
+  listCourseCouponsForManagement,
   listCourses,
   publishCourse,
   submitCourseForApproval,
@@ -244,4 +246,14 @@ export async function updateCourseMessagesController(req, res) {
       congratulations_message: data.congratulationsMessage || "",
     },
   });
+}
+
+export async function listCourseCouponsForManagementController(req, res) {
+  const data = await listCourseCouponsForManagement(req.user.id, req.params.courseId);
+  return res.json({ message: "Course coupons fetched", data });
+}
+
+export async function createCourseCouponController(req, res) {
+  const data = await createCourseCoupon(req.user.id, req.params.courseId, req.body);
+  return res.status(201).json({ message: "Course coupon created", data });
 }

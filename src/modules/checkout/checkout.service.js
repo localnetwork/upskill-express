@@ -17,6 +17,8 @@ import {
 
 const DEFAULT_CURRENCY = "PHP";
 const appBaseUrl = env.frontendUrl.replace(/\/$/, "");
+const TRANSACTION_MAX_WAIT_MS = 10000;
+const TRANSACTION_TIMEOUT_MS = 30000;
 const checkoutOrderInclude = {
   items: {
     include: {
@@ -251,6 +253,9 @@ async function finalizeCapturedPaymentByProviderOrderId(
       userId: payment.order.userId,
       items: payment.order.items,
     };
+  }, {
+    maxWait: TRANSACTION_MAX_WAIT_MS,
+    timeout: TRANSACTION_TIMEOUT_MS,
   });
 
   if (!wasAlreadyCaptured) {
@@ -502,6 +507,9 @@ async function markCheckoutAsCancelledByProviderOrderId(
       return Number(created?.count || 0);
     }
     return 0;
+  }, {
+    maxWait: TRANSACTION_MAX_WAIT_MS,
+    timeout: TRANSACTION_TIMEOUT_MS,
   });
 
   if (payment.order?.userId) {
@@ -607,11 +615,14 @@ async function getPlatformFeePercent() {
   return Number(setting?.value || 20);
 }
 
-async function resolveCoupon(code) {
+async function resolveCoupon(code, courseIds = []) {
   if (!code) return null;
   const coupon = await prisma.coupon.findFirst({
     where: {
-      code,
+      code: {
+        equals: String(code || "").trim().toUpperCase(),
+        mode: "insensitive",
+      },
       isActive: true,
       deletedAt: null,
       OR: [{ startsAt: null }, { startsAt: { lte: new Date() } }],
@@ -624,13 +635,56 @@ async function resolveCoupon(code) {
   if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) {
     throw new ApiError(400, "Coupon usage limit reached");
   }
+  if (coupon.courseId && !courseIds.includes(coupon.courseId)) {
+    throw new ApiError(400, "Coupon is not valid for selected courses");
+  }
   return coupon;
 }
 
-function calculateDiscount(coupon, subtotal) {
+async function resolveCoupons(payload, courseIds = []) {
+  const list = [];
+  const singleCode = String(payload?.couponCode || "").trim();
+  if (singleCode) {
+    list.push(singleCode);
+  }
+  if (Array.isArray(payload?.couponCodes)) {
+    for (const code of payload.couponCodes) {
+      const normalized = String(code || "").trim();
+      if (normalized) list.push(normalized);
+    }
+  }
+
+  const uniqueCodes = Array.from(
+    new Set(list.map((code) => code.toUpperCase()).filter(Boolean)),
+  );
+  if (!uniqueCodes.length) return [];
+
+  const coupons = [];
+  const seenCourseIds = new Set();
+
+  for (const code of uniqueCodes) {
+    const coupon = await resolveCoupon(code, courseIds);
+    const couponCourseKey = coupon.courseId || "__GLOBAL__";
+    if (seenCourseIds.has(couponCourseKey)) {
+      throw new ApiError(400, "Only one coupon can be applied per course");
+    }
+    seenCourseIds.add(couponCourseKey);
+    coupons.push(coupon);
+  }
+
+  return coupons;
+}
+
+function calculateDiscount(coupon, subtotal, options = {}) {
   if (!coupon) return 0;
+  const discountBase = coupon.courseId
+    ? Number(options?.coursePriceById?.[coupon.courseId] || 0)
+    : subtotal;
+
+  if (discountBase <= 0) return 0;
+
   if (coupon.type === "PERCENTAGE") {
-    const pctDiscount = (subtotal * decimal(coupon.value)) / 100;
+    const pctDiscount = (discountBase * decimal(coupon.value)) / 100;
     if (!coupon.maxDiscount) {
       return Number(pctDiscount.toFixed(2));
     }
@@ -638,7 +692,134 @@ function calculateDiscount(coupon, subtotal) {
       Math.min(pctDiscount, decimal(coupon.maxDiscount)).toFixed(2),
     );
   }
-  return Number(Math.min(subtotal, decimal(coupon.value)).toFixed(2));
+  return Number(Math.min(discountBase, decimal(coupon.value)).toFixed(2));
+}
+
+function roundCurrency(value) {
+  return Number(Number(value || 0).toFixed(2));
+}
+
+function allocateAmountByWeights(totalAmount, weights = []) {
+  const normalizedTotal = Math.max(0, roundCurrency(totalAmount));
+  if (!Array.isArray(weights) || weights.length === 0 || normalizedTotal <= 0) {
+    return (weights || []).map(() => 0);
+  }
+
+  const normalizedWeights = weights.map((weight) => Math.max(0, Number(weight || 0)));
+  const totalWeight = normalizedWeights.reduce((sum, weight) => sum + weight, 0);
+  if (totalWeight <= 0) {
+    return normalizedWeights.map(() => 0);
+  }
+
+  const totalCents = Math.round(normalizedTotal * 100);
+  const rawCents = normalizedWeights.map((weight) => (weight / totalWeight) * totalCents);
+  const baseCents = rawCents.map((value) => Math.floor(value));
+  let remaining = totalCents - baseCents.reduce((sum, value) => sum + value, 0);
+
+  const rankedByRemainder = rawCents
+    .map((value, index) => ({ index, remainder: value - baseCents[index] }))
+    .sort((a, b) => b.remainder - a.remainder);
+
+  let cursor = 0;
+  while (remaining > 0) {
+    const target = rankedByRemainder[cursor % rankedByRemainder.length];
+    baseCents[target.index] += 1;
+    remaining -= 1;
+    cursor += 1;
+  }
+
+  return baseCents.map((value) => Number((value / 100).toFixed(2)));
+}
+
+function buildCourseDiscountById(coupons, checkoutItems, subtotal, options = {}) {
+  const courseDiscountById = {};
+  const items = Array.isArray(checkoutItems) ? checkoutItems : [];
+
+  for (const item of items) {
+    if (item?.courseId) {
+      courseDiscountById[item.courseId] = 0;
+    }
+  }
+
+  for (const coupon of Array.isArray(coupons) ? coupons : []) {
+    const couponDiscount = calculateDiscount(coupon, subtotal, options);
+    if (couponDiscount <= 0) continue;
+
+    if (coupon.courseId) {
+      courseDiscountById[coupon.courseId] = roundCurrency(
+        Number(courseDiscountById[coupon.courseId] || 0) + couponDiscount,
+      );
+      continue;
+    }
+
+    const globalAllocations = allocateAmountByWeights(
+      couponDiscount,
+      items.map((item) => decimal(item?.course?.priceTier?.price || 0)),
+    );
+    for (let index = 0; index < items.length; index += 1) {
+      const courseId = items[index]?.courseId;
+      if (!courseId) continue;
+      courseDiscountById[courseId] = roundCurrency(
+        Number(courseDiscountById[courseId] || 0) + Number(globalAllocations[index] || 0),
+      );
+    }
+  }
+
+  for (const item of items) {
+    const courseId = item?.courseId;
+    if (!courseId) continue;
+    const unitPrice = decimal(item?.course?.priceTier?.price || 0);
+    courseDiscountById[courseId] = roundCurrency(
+      Math.min(unitPrice, Number(courseDiscountById[courseId] || 0)),
+    );
+  }
+
+  return courseDiscountById;
+}
+
+function buildOrderItemFinancials(
+  checkoutItems,
+  courseDiscountById,
+  taxAmount,
+  platformFeePercent,
+) {
+  const baseRows = (Array.isArray(checkoutItems) ? checkoutItems : []).map((item) => {
+    const unitPrice = decimal(item?.course?.priceTier?.price || 0);
+    const rawDiscount = decimal(courseDiscountById?.[item.courseId] || 0);
+    const discountAmount = roundCurrency(Math.min(unitPrice, rawDiscount));
+    const taxableAmount = roundCurrency(Math.max(0, unitPrice - discountAmount));
+
+    return {
+      item,
+      courseId: item.courseId,
+      educatorId: item.course.educatorId,
+      unitPrice: roundCurrency(unitPrice),
+      discountAmount,
+      taxableAmount,
+    };
+  });
+
+  const taxAllocations = allocateAmountByWeights(
+    taxAmount,
+    baseRows.map((row) => row.taxableAmount),
+  );
+
+  return baseRows.map((row, index) => {
+    const itemTaxAmount = Number(taxAllocations[index] || 0);
+    const itemPlatformFee = roundCurrency(
+      (row.taxableAmount * decimal(platformFeePercent)) / 100,
+    );
+    const educatorEarning = roundCurrency(row.taxableAmount - itemPlatformFee);
+    const totalLineAmount = roundCurrency(row.taxableAmount + itemTaxAmount);
+
+    return {
+      ...row,
+      taxAmount: itemTaxAmount,
+      platformFeeAmount: itemPlatformFee,
+      educatorEarning,
+      totalLineAmount,
+    };
+  });
 }
 
 async function removeCoursesFromCartByUserId(tx, userId, courseIds) {
@@ -821,8 +1002,20 @@ export async function createCheckoutOrder(userId, payload) {
     (sum, item) => sum + decimal(item.course.priceTier?.price || 0),
     0,
   );
-  const coupon = await resolveCoupon(payload.couponCode);
-  const discountAmount = calculateDiscount(coupon, subtotal);
+  const coursePriceById = checkoutItems.reduce((acc, item) => {
+    acc[item.courseId] = Number(item.course.priceTier?.price || 0);
+    return acc;
+  }, {});
+  const coupons = await resolveCoupons(payload, courseIds);
+  const courseDiscountById = buildCourseDiscountById(coupons, checkoutItems, subtotal, {
+    coursePriceById,
+  });
+  const discountAmount = roundCurrency(
+    Object.values(courseDiscountById || {}).reduce(
+      (sum, discount) => sum + Number(discount || 0),
+      0,
+    ),
+  );
   const taxableAmount = Number(
     Math.max(0, subtotal - discountAmount).toFixed(2),
   );
@@ -835,12 +1028,13 @@ export async function createCheckoutOrder(userId, payload) {
   const totalAmount = Number((taxableAmount + taxResult.taxAmount).toFixed(2));
   if (totalAmount <= 0) {
     const platformFeePercent = await getPlatformFeePercent();
+    const pendingEnrollments = [];
 
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
         data: {
           userId,
-          couponId: coupon?.id,
+          couponId: coupons.length === 1 ? coupons[0].id : null,
           status: "PAID",
           subtotalAmount: subtotal,
           discountAmount,
@@ -854,46 +1048,36 @@ export async function createCheckoutOrder(userId, payload) {
 
       let sumPlatformFee = 0;
       let sumEducatorEarnings = 0;
+      const lineItems = buildOrderItemFinancials(
+        checkoutItems,
+        courseDiscountById,
+        taxResult.taxAmount,
+        platformFeePercent,
+      );
 
-      for (const item of checkoutItems) {
-        const unitPrice = decimal(item.course.priceTier?.price || 0);
-        const proportionalTax =
-          subtotal === 0
-            ? 0
-            : Number(((unitPrice / subtotal) * taxResult.taxAmount).toFixed(2));
-        const taxableItemAmount = unitPrice;
-        const itemPlatformFee = Number(
-          ((taxableItemAmount * platformFeePercent) / 100).toFixed(2),
-        );
-        const educatorEarning = Number(
-          (taxableItemAmount - itemPlatformFee).toFixed(2),
-        );
-        const totalLineAmount = Number(
-          (taxableItemAmount + proportionalTax).toFixed(2),
-        );
-
-        sumPlatformFee += itemPlatformFee;
-        sumEducatorEarnings += educatorEarning;
+      for (const lineItem of lineItems) {
+        sumPlatformFee += lineItem.platformFeeAmount;
+        sumEducatorEarnings += lineItem.educatorEarning;
 
         const orderItem = await tx.orderItem.create({
           data: {
             orderId: order.id,
-            courseId: item.courseId,
-            educatorId: item.course.educatorId,
-            unitPrice,
-            discountAmount: 0,
-            taxableAmount: taxableItemAmount,
-            taxAmount: proportionalTax,
+            courseId: lineItem.courseId,
+            educatorId: lineItem.educatorId,
+            unitPrice: lineItem.unitPrice,
+            discountAmount: lineItem.discountAmount,
+            taxableAmount: lineItem.taxableAmount,
+            taxAmount: lineItem.taxAmount,
             platformFeePercent,
-            platformFeeAmount: itemPlatformFee,
-            educatorEarning,
-            totalAmount: totalLineAmount,
+            platformFeeAmount: lineItem.platformFeeAmount,
+            educatorEarning: lineItem.educatorEarning,
+            totalAmount: lineItem.totalLineAmount,
           },
         });
 
-        await createEnrollmentWithWelcomeNotification(tx, {
+        pendingEnrollments.push({
           userId,
-          courseId: item.courseId,
+          courseId: lineItem.courseId,
           orderId: order.id,
           orderItemId: orderItem.id,
         });
@@ -920,7 +1104,7 @@ export async function createCheckoutOrder(userId, payload) {
         },
       });
 
-      if (coupon) {
+      for (const coupon of coupons) {
         await tx.coupon.update({
           where: { id: coupon.id },
           data: {
@@ -934,7 +1118,14 @@ export async function createCheckoutOrder(userId, payload) {
       await removeCoursesFromCartByUserId(tx, userId, courseIds);
 
       return order;
+    }, {
+      maxWait: TRANSACTION_MAX_WAIT_MS,
+      timeout: TRANSACTION_TIMEOUT_MS,
     });
+
+    for (const enrollmentPayload of pendingEnrollments) {
+      await createEnrollmentWithWelcomeNotification(prisma, enrollmentPayload);
+    }
 
     await createNotification({
       userId,
@@ -986,7 +1177,7 @@ export async function createCheckoutOrder(userId, payload) {
       const order = await tx.order.create({
         data: {
           userId,
-          couponId: coupon?.id,
+          couponId: coupons.length === 1 ? coupons[0].id : null,
           status: "CREATED",
           subtotalAmount: subtotal,
           discountAmount,
@@ -1000,40 +1191,30 @@ export async function createCheckoutOrder(userId, payload) {
 
       let sumPlatformFee = 0;
       let sumEducatorEarnings = 0;
+      const lineItems = buildOrderItemFinancials(
+        checkoutItems,
+        courseDiscountById,
+        taxResult.taxAmount,
+        platformFeePercent,
+      );
 
-      for (const item of checkoutItems) {
-        const unitPrice = decimal(item.course.priceTier?.price || 0);
-        const proportionalTax =
-          subtotal === 0
-            ? 0
-            : Number(((unitPrice / subtotal) * taxResult.taxAmount).toFixed(2));
-        const taxableItemAmount = unitPrice;
-        const itemPlatformFee = Number(
-          ((taxableItemAmount * platformFeePercent) / 100).toFixed(2),
-        );
-        const educatorEarning = Number(
-          (taxableItemAmount - itemPlatformFee).toFixed(2),
-        );
-        const totalLineAmount = Number(
-          (taxableItemAmount + proportionalTax).toFixed(2),
-        );
-
-        sumPlatformFee += itemPlatformFee;
-        sumEducatorEarnings += educatorEarning;
+      for (const lineItem of lineItems) {
+        sumPlatformFee += lineItem.platformFeeAmount;
+        sumEducatorEarnings += lineItem.educatorEarning;
 
         await tx.orderItem.create({
           data: {
             orderId: order.id,
-            courseId: item.courseId,
-            educatorId: item.course.educatorId,
-            unitPrice,
-            discountAmount: 0,
-            taxableAmount: taxableItemAmount,
-            taxAmount: proportionalTax,
+            courseId: lineItem.courseId,
+            educatorId: lineItem.educatorId,
+            unitPrice: lineItem.unitPrice,
+            discountAmount: lineItem.discountAmount,
+            taxableAmount: lineItem.taxableAmount,
+            taxAmount: lineItem.taxAmount,
             platformFeePercent,
-            platformFeeAmount: itemPlatformFee,
-            educatorEarning,
-            totalAmount: totalLineAmount,
+            platformFeeAmount: lineItem.platformFeeAmount,
+            educatorEarning: lineItem.educatorEarning,
+            totalAmount: lineItem.totalLineAmount,
           },
         });
       }
@@ -1069,7 +1250,7 @@ export async function createCheckoutOrder(userId, payload) {
         },
       });
 
-      if (coupon) {
+      for (const coupon of coupons) {
         await tx.coupon.update({
           where: { id: coupon.id },
           data: {
@@ -1094,6 +1275,9 @@ export async function createCheckoutOrder(userId, payload) {
           totalAmount,
         },
       };
+    }, {
+      maxWait: TRANSACTION_MAX_WAIT_MS,
+      timeout: TRANSACTION_TIMEOUT_MS,
     })
     .then(async (result) => {
       await recordActivityEvent({

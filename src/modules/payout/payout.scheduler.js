@@ -17,7 +17,17 @@ async function executeAutoPayout(triggeredBy) {
     }
     return summary;
   } catch (error) {
-    console.error("[payout-auto-job] failed", error);
+    const isDbUnavailable =
+      String(error?.name || "") === "PrismaClientInitializationError" ||
+      String(error?.message || "").includes("Can't reach database server");
+
+    if (isDbUnavailable) {
+      console.warn(
+        "[payout-auto-job] skipped: database is unavailable. Set AUTO_PAYOUT_ENABLED=false to disable auto payouts locally.",
+      );
+    } else {
+      console.error("[payout-auto-job] failed", error);
+    }
     return null;
   } finally {
     payoutSchedulerRunning = false;
@@ -40,4 +50,12 @@ export function startAutoPayoutScheduler() {
   payoutSchedulerTimer = setInterval(() => {
     executeAutoPayout("scheduler");
   }, env.autoPayoutIntervalMs);
+}
+
+export function stopAutoPayoutScheduler() {
+  if (payoutSchedulerTimer) {
+    clearInterval(payoutSchedulerTimer);
+    payoutSchedulerTimer = null;
+    console.log("[payout-scheduler] Stopped.");
+  }
 }

@@ -154,6 +154,116 @@ function addDays(date, days) {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
+function roundCurrency(value) {
+  return Number(Number(value || 0).toFixed(2));
+}
+
+function allocateByWeights(totalAmount, weights = []) {
+  const normalizedTotal = Math.max(0, roundCurrency(totalAmount));
+  if (!Array.isArray(weights) || weights.length === 0 || normalizedTotal <= 0) {
+    return (weights || []).map(() => 0);
+  }
+
+  const normalizedWeights = weights.map((weight) => Math.max(0, Number(weight || 0)));
+  const totalWeight = normalizedWeights.reduce((sum, weight) => sum + weight, 0);
+  if (totalWeight <= 0) {
+    return normalizedWeights.map(() => 0);
+  }
+
+  const totalCents = Math.round(normalizedTotal * 100);
+  const rawCents = normalizedWeights.map((weight) => (weight / totalWeight) * totalCents);
+  const baseCents = rawCents.map((value) => Math.floor(value));
+  let remaining = totalCents - baseCents.reduce((sum, value) => sum + value, 0);
+
+  const ranked = rawCents
+    .map((value, index) => ({ index, remainder: value - baseCents[index] }))
+    .sort((a, b) => b.remainder - a.remainder);
+
+  let cursor = 0;
+  while (remaining > 0) {
+    const target = ranked[cursor % ranked.length];
+    baseCents[target.index] += 1;
+    remaining -= 1;
+    cursor += 1;
+  }
+
+  return baseCents.map((value) => Number((value / 100).toFixed(2)));
+}
+
+function normalizeOrderItemsForPayout(rows = []) {
+  const grouped = new Map();
+  for (const row of rows) {
+    const orderId = String(row?.orderId || row?.order?.id || "");
+    if (!orderId) continue;
+    if (!grouped.has(orderId)) grouped.set(orderId, []);
+    grouped.get(orderId).push(row);
+  }
+
+  const normalizedByItemId = new Map();
+
+  for (const groupRows of grouped.values()) {
+    const orderDiscountAmount = roundCurrency(
+      Number(groupRows[0]?.order?.discountAmount || 0),
+    );
+
+    const explicitDiscountByIndex = groupRows.map((row) =>
+      roundCurrency(Number(row?.discountAmount || 0)),
+    );
+    const explicitDiscountSum = roundCurrency(
+      explicitDiscountByIndex.reduce((sum, value) => sum + value, 0),
+    );
+    const remainingOrderDiscount = roundCurrency(
+      Math.max(0, orderDiscountAmount - explicitDiscountSum),
+    );
+
+    const allocationTargets = groupRows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => Number(row?.discountAmount || 0) <= 0);
+
+    const allocatedDiscounts = new Map();
+    if (remainingOrderDiscount > 0 && allocationTargets.length > 0) {
+      const allocations = allocateByWeights(
+        remainingOrderDiscount,
+        allocationTargets.map(({ row }) => Number(row?.unitPrice || 0)),
+      );
+      for (let index = 0; index < allocationTargets.length; index += 1) {
+        allocatedDiscounts.set(allocationTargets[index].index, Number(allocations[index] || 0));
+      }
+    }
+
+    groupRows.forEach((row, index) => {
+      const unitPrice = roundCurrency(Number(row?.unitPrice || 0));
+      const itemDiscountAmount = roundCurrency(
+        Math.min(
+          unitPrice,
+          Number(explicitDiscountByIndex[index] || 0) +
+            Number(allocatedDiscounts.get(index) || 0),
+        ),
+      );
+      const payoutTaxableAmount = roundCurrency(
+        Math.max(0, unitPrice - itemDiscountAmount),
+      );
+      const platformFeePercent = Number(row?.platformFeePercent || 0);
+      const payoutPlatformFeeAmount = roundCurrency(
+        (payoutTaxableAmount * platformFeePercent) / 100,
+      );
+      const payoutEducatorAmount = roundCurrency(
+        Math.max(0, payoutTaxableAmount - payoutPlatformFeeAmount),
+      );
+
+      normalizedByItemId.set(row.id, {
+        ...row,
+        payoutDiscountAmount: itemDiscountAmount,
+        payoutTaxableAmount,
+        payoutPlatformFeeAmount,
+        payoutEducatorAmount,
+      });
+    });
+  }
+
+  return rows.map((row) => normalizedByItemId.get(row.id) || row);
+}
+
 function buildPayoutCycleProgress({
   hasVerifiedPayoutAccount,
   availableBalance,
@@ -235,6 +345,7 @@ function buildPayoutCycleProgress({
 function buildPayoutEstimate({
   now,
   nextPayoutDate,
+  payoutCycle,
   hasVerifiedPayoutAccount,
   availableBalance,
   minimumPayoutAmount,
@@ -271,6 +382,36 @@ function buildPayoutEstimate({
       estimatedPayoutAt: addDays(requestAt, PAYOUT_REVIEW_ESTIMATE_DAYS),
       processingDays: PAYOUT_REVIEW_ESTIMATE_DAYS,
       message: "Payout request is queued for admin review.",
+    };
+  }
+
+  if (String(payoutCycle || "").toUpperCase() === "ANYTIME") {
+    if (!hasVerifiedPayoutAccount) {
+      return {
+        waitingOn: "ACCOUNT_VERIFICATION",
+        earliestRequestAt: null,
+        estimatedPayoutAt: null,
+        processingDays: PAYOUT_REVIEW_ESTIMATE_DAYS,
+        message: "Connect a verified payout account to start receiving payouts.",
+      };
+    }
+
+    if (availableBalance < minimumPayoutAmount) {
+      return {
+        waitingOn: "MINIMUM_BALANCE",
+        earliestRequestAt: null,
+        estimatedPayoutAt: null,
+        processingDays: PAYOUT_REVIEW_ESTIMATE_DAYS,
+        message: "No fixed payout date for Anytime cycle until minimum balance is reached.",
+      };
+    }
+
+    return {
+      waitingOn: "NONE",
+      earliestRequestAt: null,
+      estimatedPayoutAt: null,
+      processingDays: PAYOUT_REVIEW_ESTIMATE_DAYS,
+      message: "You can request payout anytime.",
     };
   }
 
@@ -736,7 +877,7 @@ export async function connectPayoutAccount(userId, payload) {
 }
 
 async function getAvailableOrderItems(educatorId, eligibilityCutoff) {
-  return prisma.orderItem.findMany({
+  const rows = await prisma.orderItem.findMany({
     where: {
       educatorId,
       createdAt: eligibilityCutoff ? { lt: eligibilityCutoff } : undefined,
@@ -750,10 +891,17 @@ async function getAvailableOrderItems(educatorId, eligibilityCutoff) {
       },
     },
     include: {
-      order: true,
+      order: {
+        select: {
+          id: true,
+          discountAmount: true,
+        },
+      },
     },
     orderBy: { createdAt: "asc" },
   });
+
+  return normalizeOrderItemsForPayout(rows);
 }
 
 export async function getMyPayoutSummary(educatorId) {
@@ -765,32 +913,16 @@ export async function getMyPayoutSummary(educatorId) {
 
   const [
     payoutAccount,
-    eligibleAggregate,
-    currentMonthAggregate,
+    eligibleItems,
+    currentMonthItems,
     currentMonthRequest,
     latestPayout,
   ] = await Promise.all([
     prisma.payoutAccount.findUnique({
       where: { userId: educatorId },
     }),
-    prisma.orderItem.aggregate({
-      where: {
-        educatorId,
-        createdAt: eligibilityCutoff ? { lt: eligibilityCutoff } : undefined,
-        order: {
-          is: {
-            status: "PAID",
-          },
-        },
-        payoutItems: {
-          none: {},
-        },
-      },
-      _sum: {
-        educatorEarning: true,
-      },
-    }),
-    prisma.orderItem.aggregate({
+    getAvailableOrderItems(educatorId, eligibilityCutoff),
+    prisma.orderItem.findMany({
       where: {
         educatorId,
         createdAt: eligibilityCutoff ? { gte: eligibilityCutoff } : undefined,
@@ -803,8 +935,18 @@ export async function getMyPayoutSummary(educatorId) {
           none: {},
         },
       },
-      _sum: {
-        educatorEarning: true,
+      select: {
+        id: true,
+        orderId: true,
+        unitPrice: true,
+        discountAmount: true,
+        platformFeePercent: true,
+        order: {
+          select: {
+            id: true,
+            discountAmount: true,
+          },
+        },
       },
     }),
     prisma.payoutRequest.findFirst({
@@ -843,10 +985,15 @@ export async function getMyPayoutSummary(educatorId) {
   ]);
 
   const availableBalance = Number(
-    eligibleAggregate?._sum?.educatorEarning || 0,
+    (eligibleItems || [])
+      .reduce((sum, item) => sum + Number(item?.payoutEducatorAmount || 0), 0)
+      .toFixed(2),
   );
+  const normalizedCurrentMonthItems = normalizeOrderItemsForPayout(currentMonthItems || []);
   const thisMonthEarnings = Number(
-    currentMonthAggregate?._sum?.educatorEarning || 0,
+    normalizedCurrentMonthItems
+      .reduce((sum, item) => sum + Number(item?.payoutEducatorAmount || 0), 0)
+      .toFixed(2),
   );
   const hasVerifiedPayoutAccount = Boolean(payoutAccount?.isVerified);
 
@@ -860,6 +1007,7 @@ export async function getMyPayoutSummary(educatorId) {
   const payoutEstimate = buildPayoutEstimate({
     now,
     nextPayoutDate,
+    payoutCycle: cycleWindow.payoutCycle,
     hasVerifiedPayoutAccount,
     availableBalance,
     minimumPayoutAmount: MIN_PAYOUT_AMOUNT_PHP,
@@ -955,7 +1103,8 @@ export async function requestPayout(educatorId, payload) {
   const selected = [];
   let running = 0;
   for (const item of items) {
-    const nextAmount = running + Number(item.educatorEarning);
+    const itemEarning = Number(item?.payoutEducatorAmount || 0);
+    const nextAmount = running + itemEarning;
     if (desiredAmount && nextAmount > desiredAmount && selected.length > 0) {
       break;
     }
@@ -1003,8 +1152,12 @@ export async function requestPayout(educatorId, payload) {
             (sum, item) => sum + Number(item.unitPrice),
             0,
           ),
+          discounts: selected.reduce(
+            (sum, item) => sum + Number(item.discountAmount || 0),
+            0,
+          ),
           platformFees: selected.reduce(
-            (sum, item) => sum + Number(item.platformFeeAmount),
+            (sum, item) => sum + Number(item.payoutPlatformFeeAmount || 0),
             0,
           ),
           educatorEarnings: grossPayoutAmount,
@@ -1026,7 +1179,7 @@ export async function requestPayout(educatorId, payload) {
         data: {
           payoutRequestId: payout.id,
           orderItemId: item.id,
-          amount: item.educatorEarning,
+          amount: Number(item.payoutEducatorAmount || 0),
         },
       });
     }

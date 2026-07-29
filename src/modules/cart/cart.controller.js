@@ -1,4 +1,9 @@
-import { addToCart, getCart, removeFromCart } from "./cart.service.js";
+import {
+  addToCart,
+  getCart,
+  removeFromCart,
+  validateCartCoupon,
+} from "./cart.service.js";
 
 function pickLatestMediaByTypes(mediaList = [], types = []) {
   return mediaList.find((item) => types.includes(item.mediaType)) || null;
@@ -84,4 +89,10 @@ export async function removeFromCartController(req, res) {
   const itemOrCourseId = req.params.courseId || req.params.itemId;
   const data = await removeFromCart(req.user.id, itemOrCourseId);
   return res.json({ message: "Removed from cart", data: toLegacyCart(data) });
+}
+
+export async function applyCartCouponController(req, res) {
+  const couponCode = req.body.couponCode;
+  const data = await validateCartCoupon(req.user.id, couponCode);
+  return res.json({ message: "Coupon applied", data });
 }

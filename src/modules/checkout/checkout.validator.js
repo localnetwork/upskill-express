@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const createCheckoutValidator = z.object({
   couponCode: z.string().optional(),
+  couponCodes: z.array(z.string().min(3).max(64)).optional(),
   taxRegionCode: z.string().optional(),
   courseId: z.string().optional(),
   course_id: z.string().optional(),

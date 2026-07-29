@@ -8,6 +8,56 @@ async function getOrCreateCart(userId) {
   return prisma.cart.create({ data: { userId } });
 }
 
+function decimal(value) {
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function calculateDiscountForSubtotal(coupon, subtotal) {
+  if (!coupon) return 0;
+  const safeSubtotal = decimal(subtotal);
+  if (safeSubtotal <= 0) return 0;
+
+  if (coupon.type === "PERCENTAGE") {
+    const pctDiscount = (safeSubtotal * decimal(coupon.value)) / 100;
+    if (!coupon.maxDiscount) return Number(pctDiscount.toFixed(2));
+    return Number(Math.min(pctDiscount, decimal(coupon.maxDiscount)).toFixed(2));
+  }
+
+  return Number(Math.min(safeSubtotal, decimal(coupon.value)).toFixed(2));
+}
+
+async function resolveActiveCouponForCart(code, courseIds) {
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  if (!normalizedCode) {
+    throw new ApiError(400, "Coupon code is required");
+  }
+
+  const coupon = await prisma.coupon.findFirst({
+    where: {
+      code: {
+        equals: normalizedCode,
+        mode: "insensitive",
+      },
+      isActive: true,
+      deletedAt: null,
+      OR: [{ startsAt: null }, { startsAt: { lte: new Date() } }],
+      AND: [{ OR: [{ endsAt: null }, { endsAt: { gte: new Date() } }] }],
+    },
+  });
+
+  if (!coupon) {
+    throw new ApiError(400, "Invalid coupon");
+  }
+  if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) {
+    throw new ApiError(400, "Coupon usage limit reached");
+  }
+  if (coupon.courseId && !courseIds.includes(coupon.courseId)) {
+    throw new ApiError(400, "Coupon is not valid for items in your cart");
+  }
+  return coupon;
+}
+
 export async function getCart(userId) {
   const cart = await getOrCreateCart(userId);
   return prisma.cart.findUnique({
@@ -113,3 +163,41 @@ export async function removeFromCart(userId, itemOrCourseId) {
 
   return getCart(userId);
 }
+
+export async function validateCartCoupon(userId, couponCode) {
+  const cart = await getCart(userId);
+  const items = Array.isArray(cart?.items) ? cart.items : [];
+  if (!items.length) {
+    throw new ApiError(400, "Cart is empty");
+  }
+
+  const courseIds = items.map((item) => item.courseId);
+  const coupon = await resolveActiveCouponForCart(couponCode, courseIds);
+
+  const subtotal = items.reduce(
+    (sum, item) => sum + decimal(item?.course?.priceTier?.price),
+    0,
+  );
+
+  const discountBase = coupon.courseId
+    ? items
+        .filter((item) => item.courseId === coupon.courseId)
+        .reduce((sum, item) => sum + decimal(item?.course?.priceTier?.price), 0)
+    : subtotal;
+
+  const discountAmount = calculateDiscountForSubtotal(coupon, discountBase);
+  const totalAmount = Number(Math.max(0, subtotal - discountAmount).toFixed(2));
+
+  return {
+    coupon: {
+      id: coupon.id,
+      code: coupon.code,
+      courseId: coupon.courseId || null,
+    },
+    subtotal: Number(subtotal.toFixed(2)),
+    discountAmount,
+    totalAmount,
+    currency: "PHP",
+  };
+}
+

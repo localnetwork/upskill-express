@@ -44,3 +44,14 @@ export const createCourseValidator = z.object({
 });
 
 export const updateCourseValidator = createCourseValidator.partial();
+
+export const createCourseCouponValidator = z.object({
+  code: z.string().min(3).max(64),
+  couponType: z
+    .enum(["CURRENT_BEST_PRICE", "CUSTOM_PRICE", "FREE_OPEN", "FREE_TARGETED"])
+    .optional(),
+  salePrice: z.coerce.number().min(0),
+  startAt: z.string().optional().nullable(),
+  endAt: z.string().optional().nullable(),
+  maxRedemptions: z.coerce.number().int().positive().optional().nullable(),
+});

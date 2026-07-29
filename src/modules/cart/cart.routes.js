@@ -6,11 +6,13 @@ import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
   addToCartController,
+  applyCartCouponController,
   getCartController,
   getCartCountController,
   removeFromCartController,
 } from "./cart.controller.js";
 import { addToCartValidator } from "./cart.validator.js";
+import { applyCartCouponValidator } from "./cart.validator.js";
 
 const router = Router();
 
@@ -37,6 +39,7 @@ router.get(
 );
 router.post("/items", validate(addToCartValidator), asyncHandler(addToCartController));
 router.delete("/items/:courseId", asyncHandler(removeFromCartController));
+router.post("/coupon/validate", validate(applyCartCouponValidator), asyncHandler(applyCartCouponController));
 router.post("/", validate(addToCartValidator), asyncHandler(addToCartController));
 router.delete("/:courseId", asyncHandler(removeFromCartController));
 

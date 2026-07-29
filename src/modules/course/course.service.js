@@ -562,7 +562,7 @@ export async function updateCourse(userId, courseId, payload) {
     await assertCourseSlugAvailable(normalized.slug, course.id);
   }
 
-  return prisma.$transaction(async (tx) => {
+  const updatedCourseId = await prisma.$transaction(async (tx) => {
     const updatedCourse = await tx.course.update({
       where: { id: courseId },
       data: normalized,
@@ -598,24 +598,29 @@ export async function updateCourse(userId, courseId, payload) {
       });
     }
 
-    const hydratedCourse = await tx.course.findFirst({
-      where: { id: updatedCourse.id },
-      include: getCourseInclude(),
-    });
-
-    const coverImage = mapLegacyMedia(
-      pickLatestMediaByTypes(hydratedCourse?.media, COVER_MEDIA_TYPES),
-    );
-    const promoVideo = mapLegacyMedia(
-      pickLatestMediaByTypes(hydratedCourse?.media, PROMO_MEDIA_TYPES),
-    );
-
-    return {
-      ...hydratedCourse,
-      cover_image: coverImage,
-      promo_video: promoVideo,
-    };
+    return updatedCourse.id;
   });
+
+  const hydratedCourse = await prisma.course.findFirst({
+    where: { id: updatedCourseId },
+    include: getCourseInclude(),
+  });
+  if (!hydratedCourse) {
+    throw new ApiError(404, "Course not found");
+  }
+
+  const coverImage = mapLegacyMedia(
+    pickLatestMediaByTypes(hydratedCourse?.media, COVER_MEDIA_TYPES),
+  );
+  const promoVideo = mapLegacyMedia(
+    pickLatestMediaByTypes(hydratedCourse?.media, PROMO_MEDIA_TYPES),
+  );
+
+  return {
+    ...hydratedCourse,
+    cover_image: coverImage,
+    promo_video: promoVideo,
+  };
 }
 
 export async function checkCourseSlugAvailability(slug, excludeCourseId = null) {
@@ -2361,4 +2366,175 @@ export async function updateCoursePricing(userId, courseId, priceTierId) {
     data: { priceTierId: priceTierId || null },
     include: { priceTier: true },
   });
+}
+
+function inferCouponTypeLabel(coupon, basePrice) {
+  const usageLimit = Number(coupon?.usageLimit || 0);
+  const discountValue = Number(coupon?.value || 0);
+  const salePrice = Math.max(0, Number(basePrice || 0) - discountValue);
+
+  if (salePrice <= 0) {
+    if (usageLimit === 10) return "Free: Open";
+    if (usageLimit === 100) return "Free: Targeted";
+    return "Free";
+  }
+
+  return "Custom price";
+}
+
+function mapCouponForManagement(coupon, basePrice) {
+  const safeBasePrice = Number(basePrice || 0);
+  const safeDiscount = Number(coupon?.value || 0);
+  const salePrice = Math.max(0, safeBasePrice - safeDiscount);
+  const usedCount = Number(coupon.usedCount || 0);
+  const maxRedemptions =
+    coupon.usageLimit === null || coupon.usageLimit === undefined
+      ? null
+      : Number(coupon.usageLimit);
+  const remainingRedemptions =
+    maxRedemptions === null ? null : Math.max(0, maxRedemptions - usedCount);
+
+  return {
+    id: coupon.id,
+    code: coupon.code,
+    couponType: coupon.type,
+    couponTypeLabel: inferCouponTypeLabel(coupon, safeBasePrice),
+    basePrice: Number(safeBasePrice.toFixed(2)),
+    salePrice: Number(salePrice.toFixed(2)),
+    discountAmount: Number(safeDiscount.toFixed(2)),
+    startAt: coupon.startsAt,
+    endAt: coupon.endsAt,
+    maxRedemptions,
+    usedCount,
+    remainingRedemptions,
+    isActive: Boolean(coupon.isActive),
+    createdAt: coupon.createdAt,
+    updatedAt: coupon.updatedAt,
+  };
+}
+
+function ensureCouponModelSupportsCourseScope() {
+  const couponFields =
+    prisma?._runtimeDataModel?.models?.Coupon?.fields?.map((field) => field.name) ||
+    [];
+  const hasCourseId = couponFields.includes("courseId");
+  const hasCreatedById = couponFields.includes("createdById");
+
+  if (hasCourseId && hasCreatedById) return;
+
+  throw new ApiError(
+    500,
+    "Coupon model is outdated. Run `npm run prisma:generate`, apply migrations, and restart backend.",
+  );
+}
+
+async function resolveOwnedCourseForCoupon(userId, courseId) {
+  const course = await prisma.course.findFirst({
+    where: { id: courseId, deletedAt: null },
+    include: { priceTier: true },
+  });
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+  if (course.educatorId !== userId) {
+    throw new ApiError(403, "You can only manage your own course coupons");
+  }
+  return course;
+}
+
+export async function listCourseCouponsForManagement(userId, courseId) {
+  ensureCouponModelSupportsCourseScope();
+  const course = await resolveOwnedCourseForCoupon(userId, courseId);
+
+  const coupons = await prisma.coupon.findMany({
+    where: {
+      courseId: course.id,
+      deletedAt: null,
+    },
+    orderBy: [{ createdAt: "desc" }],
+  });
+
+  const basePrice = Number(course?.priceTier?.price || 0);
+  return coupons.map((coupon) => mapCouponForManagement(coupon, basePrice));
+}
+
+export async function createCourseCoupon(userId, courseId, payload) {
+  ensureCouponModelSupportsCourseScope();
+  const course = await resolveOwnedCourseForCoupon(userId, courseId);
+  const basePrice = Number(course?.priceTier?.price || 0);
+  if (basePrice <= 0) {
+    throw new ApiError(400, "Set a paid course price before creating coupons");
+  }
+
+  const code = String(payload?.code || "").trim().toUpperCase();
+  if (!code) {
+    throw new ApiError(400, "Coupon code is required");
+  }
+
+  const existingCoupon = await prisma.coupon.findFirst({
+    where: {
+      code: {
+        equals: code,
+        mode: "insensitive",
+      },
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+  if (existingCoupon) {
+    throw new ApiError(409, "Coupon code already exists");
+  }
+
+  const salePriceInput = Number(payload?.salePrice || 0);
+  if (!Number.isFinite(salePriceInput) || salePriceInput < 0) {
+    throw new ApiError(400, "Invalid sale price");
+  }
+  if (salePriceInput >= basePrice) {
+    throw new ApiError(400, "Sale price must be lower than the base course price");
+  }
+
+  const startAt = payload?.startAt ? new Date(payload.startAt) : null;
+  const endAt = payload?.endAt ? new Date(payload.endAt) : null;
+  if (startAt && Number.isNaN(startAt.getTime())) {
+    throw new ApiError(400, "Invalid coupon start date");
+  }
+  if (endAt && Number.isNaN(endAt.getTime())) {
+    throw new ApiError(400, "Invalid coupon end date");
+  }
+  if (startAt && endAt && endAt.getTime() <= startAt.getTime()) {
+    throw new ApiError(400, "Coupon end date should be after start date");
+  }
+
+  const usageLimitRaw = payload?.maxRedemptions;
+  const usageLimit =
+    usageLimitRaw === null || usageLimitRaw === undefined || usageLimitRaw === ""
+      ? null
+      : Number(usageLimitRaw);
+  if (
+    usageLimit !== null &&
+    (!Number.isInteger(usageLimit) || usageLimit <= 0)
+  ) {
+    throw new ApiError(400, "Max redemptions must be a positive whole number");
+  }
+
+  const discountValue = Number(Math.max(0, basePrice - salePriceInput).toFixed(2));
+  if (discountValue <= 0) {
+    throw new ApiError(400, "Coupon must provide a valid discount");
+  }
+
+  const createdCoupon = await prisma.coupon.create({
+    data: {
+      courseId: course.id,
+      createdById: userId,
+      code,
+      type: "FIXED",
+      value: discountValue,
+      usageLimit,
+      startsAt: startAt,
+      endsAt: endAt,
+      isActive: true,
+    },
+  });
+
+  return mapCouponForManagement(createdCoupon, basePrice);
 }

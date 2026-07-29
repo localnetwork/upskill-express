@@ -39,7 +39,7 @@ export const env = {
   googleClientId: process.env.GOOGLE_CLIENT_ID || "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
   autoPayoutEnabled:
-    String(process.env.AUTO_PAYOUT_ENABLED || "true").toLowerCase() === "true",
+    String(process.env.AUTO_PAYOUT_ENABLED || "false").toLowerCase() === "true",
   autoPayoutIntervalMs:
     Number.isFinite(resolvedAutoPayoutIntervalMs) && resolvedAutoPayoutIntervalMs > 0
       ? resolvedAutoPayoutIntervalMs
