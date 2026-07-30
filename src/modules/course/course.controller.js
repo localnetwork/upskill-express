@@ -25,6 +25,10 @@ import {
   updateCourse,
   updateCourseMessages,
 } from "./course.service.js";
+import {
+  createCourseAIDraftJob,
+  getCourseAIDraftJob,
+} from "./course-ai-draft-job.service.js";
 
 const submitSchema = z.object({
   note: z.string().optional(),
@@ -100,6 +104,16 @@ export async function createCourseController(req, res) {
 export async function createCourseAIDraftController(req, res) {
   const data = await createCourseAIDraft(req.user.id, req.body);
   return res.status(201).json({ message: "AI draft course created", data });
+}
+
+export async function createCourseAIDraftJobController(req, res) {
+  const data = createCourseAIDraftJob(req.user.id, req.body);
+  return res.status(202).json({ message: "AI draft job started", data });
+}
+
+export async function getCourseAIDraftJobController(req, res) {
+  const data = getCourseAIDraftJob(req.user.id, req.params.jobId);
+  return res.json({ message: "AI draft job fetched", data });
 }
 
 export async function updateCourseWithAIController(req, res) {

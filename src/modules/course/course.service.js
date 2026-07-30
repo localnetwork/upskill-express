@@ -647,6 +647,140 @@ function normalizeAIDraftLessonType(input) {
   return "RESOURCE";
 }
 
+function buildDefaultQuizQuestions({
+  courseTitle,
+  sectionTitle,
+  lessonTitle,
+  lessonDescription,
+}) {
+  const safeCourseTitle = trimForDb(courseTitle, 120) || "this course";
+  const safeSectionTitle = trimForDb(sectionTitle, 120) || "this section";
+  const safeLessonTitle = trimForDb(lessonTitle, 120) || "this lesson";
+  const safeLessonDescription = trimForDb(lessonDescription, 240);
+
+  return [
+    {
+      id: `q-${Date.now()}-1`,
+      type: "multiple_choice",
+      prompt: `Which statement best describes the main objective of "${safeLessonTitle}" in ${safeSectionTitle}?`,
+      options: [
+        {
+          text: `Apply the key concept to a practical scenario in ${safeCourseTitle}`,
+          isCorrect: true,
+        },
+        { text: "Memorize terms without practical application", isCorrect: false },
+        { text: "Skip foundational concepts and jump to advanced topics", isCorrect: false },
+      ],
+      explanation:
+        "The correct answer focuses on practical application of the core concept.",
+    },
+    {
+      id: `q-${Date.now()}-2`,
+      type: "true_false",
+      prompt: `True or False: "${safeLessonTitle}" should be approached with step-by-step understanding before optimization.`,
+      correctAnswer: true,
+      explanation:
+        "Building understanding step-by-step improves long-term retention and execution quality.",
+    },
+    {
+      id: `q-${Date.now()}-3`,
+      type: "short_answer",
+      prompt: safeLessonDescription
+        ? `In one sentence, explain how this idea applies in practice: ${safeLessonDescription}`
+        : `In one sentence, explain how "${safeLessonTitle}" can be used in a real-world task.`,
+      acceptedAnswers: ["practical", "implementation"],
+      explanation: "Focus on practical implementation, not abstract definitions only.",
+    },
+  ];
+}
+
+function buildDefaultCodingStarterCode({
+  courseTitle,
+  sectionTitle,
+  lessonTitle,
+}) {
+  const safeCourseTitle = trimForDb(courseTitle, 120) || "this course";
+  const safeSectionTitle = trimForDb(sectionTitle, 120) || "this section";
+  const safeLessonTitle = trimForDb(lessonTitle, 120) || "this lesson";
+
+  return {
+    languages: ["javascript"],
+    hints: [
+      "Start with a minimal working solution, then refactor.",
+      "Test each step before moving to the next one.",
+    ],
+    step_challenges: {
+      javascript: [
+        {
+          id: `step-${Date.now()}-1`,
+          title: "Create a baseline solution",
+          step_number: 1,
+          instruction: `Write a basic JavaScript snippet for "${safeLessonTitle}" from ${safeSectionTitle} in ${safeCourseTitle}.`,
+          starter_code:
+            "function solve() {\n  // TODO: implement the lesson objective\n  return 'done';\n}\n\nconsole.log(solve());",
+          validation_mode: "CODE_INCLUDES",
+          expected_output: "function solve",
+          input: "",
+          comparison_mode: "INCLUDES",
+        },
+      ],
+    },
+    metadata: {
+      status: "Draft",
+    },
+  };
+}
+
+function hasCodingStepChallenges(rawStarterCode) {
+  const parsed = safeParseJson(rawStarterCode);
+  const stepChallenges =
+    parsed?.step_challenges && typeof parsed.step_challenges === "object"
+      ? parsed.step_challenges
+      : {};
+
+  return Object.values(stepChallenges).some(
+    (steps) => Array.isArray(steps) && steps.length > 0,
+  );
+}
+
+function buildAIGeneratedLessonTypeFields({
+  lessonType,
+  courseTitle,
+  sectionTitle,
+  lessonTitle,
+  lessonDescription,
+}) {
+  if (lessonType === "QUIZ") {
+    return {
+      quizQuestions: {
+        questions: buildDefaultQuizQuestions({
+          courseTitle,
+          sectionTitle,
+          lessonTitle,
+          lessonDescription,
+        }),
+      },
+    };
+  }
+
+  if (lessonType === "CODING_EXERCISE") {
+    return {
+      codingInstructions:
+        trimForDb(lessonDescription, 5000) ||
+        `Implement the objective of "${trimForDb(lessonTitle, 180) || "this coding lesson"}".`,
+      codingStarterCode: JSON.stringify(
+        buildDefaultCodingStarterCode({
+          courseTitle,
+          sectionTitle,
+          lessonTitle,
+        }),
+      ),
+    };
+  }
+
+  return {};
+}
+
 function looksLikeGenericSectionTitle(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized) return true;
@@ -1275,7 +1409,15 @@ async function generateCourseDraftViaAI(prompt, options = {}) {
   return normalizeAIDraftPayload(parsed, prompt);
 }
 
-export async function createCourseAIDraft(userId, payload) {
+export async function createCourseAIDraft(userId, payload, options = {}) {
+  const onProgress = typeof options?.onProgress === "function" ? options.onProgress : null;
+  const emitProgress = (progressPayload = {}) => {
+    if (!onProgress) return;
+    try {
+      onProgress(progressPayload);
+    } catch (_error) {}
+  };
+
   const prompt = String(payload?.prompt || "")
     .trim()
     .slice(0, 4000);
@@ -1283,15 +1425,52 @@ export async function createCourseAIDraft(userId, payload) {
     throw new ApiError(400, "Prompt must be at least 20 characters");
   }
 
+  emitProgress({
+    step: "drafting_course_outline",
+    message: "Generating title, subtitle, description, and curriculum draft",
+    progressPercent: 15,
+  });
+
   const aiDraft = await generateCourseDraftViaAI(prompt, {
     language: payload?.language,
     instructionalLevel: payload?.instructional_level,
+  });
+
+  const totalLessonsPlanned = aiDraft.sections.reduce(
+    (sum, section) => sum + (Array.isArray(section.lessons) ? section.lessons.length : 0),
+    0,
+  );
+  emitProgress({
+    step: "ai_draft_ready",
+    message: "AI draft is ready. Preparing metadata and category mapping",
+    progressPercent: 35,
+    preview: {
+      title: aiDraft.title,
+      subtitle: aiDraft.subtitle,
+      description: aiDraft.description,
+      language: aiDraft.language,
+      instructionalLevel: aiDraft.instructionalLevel,
+      whatYouWillLearn: aiDraft.whatYouWillLearn,
+      requirements: aiDraft.requirements,
+      whoShouldAttend: aiDraft.whoShouldAttend,
+      sections: aiDraft.sections,
+      counts: {
+        sections: aiDraft.sections.length,
+        lessons: totalLessonsPlanned,
+      },
+    },
   });
 
   const [categoryId, levelId] = await Promise.all([
     resolveAICategoryId(aiDraft.categoryHint),
     resolveLevelId(aiDraft.instructionalLevel),
   ]);
+
+  emitProgress({
+    step: "creating_course_basics",
+    message: "Creating course basics (title, subtitle, description)",
+    progressPercent: 45,
+  });
 
   const course = await createCourse(userId, {
     title: aiDraft.title,
@@ -1303,6 +1482,12 @@ export async function createCourseAIDraft(userId, payload) {
     categoryId,
     levelId,
     published: false,
+  });
+
+  emitProgress({
+    step: "saving_goals",
+    message: "Saving learning goals, requirements, and audience",
+    progressPercent: 55,
   });
 
   if (
@@ -1321,6 +1506,20 @@ export async function createCourseAIDraft(userId, payload) {
   const aiDraftFocusTerms = buildAIDraftFocusTerms(
     `${course.title} ${course.description || ""} ${prompt || ""}`,
   );
+  let createdSections = 0;
+  let createdLessons = 0;
+
+  emitProgress({
+    step: "creating_curriculum",
+    message: "Creating sections and curriculums",
+    progressPercent: 60,
+    draftProgress: {
+      sectionsCreated: createdSections,
+      totalSections: aiDraft.sections.length,
+      lessonsCreated: createdLessons,
+      totalLessons: totalLessonsPlanned,
+    },
+  });
 
   for (let sectionIndex = 0; sectionIndex < aiDraft.sections.length; sectionIndex += 1) {
     const sectionPayload = aiDraft.sections[sectionIndex];
@@ -1387,6 +1586,13 @@ export async function createCourseAIDraft(userId, payload) {
             sectionPayload.title,
             course.title,
           ),
+          ...buildAIGeneratedLessonTypeFields({
+            lessonType,
+            courseTitle: course.title,
+            sectionTitle: sectionPayload.title,
+            lessonTitle: resolvedLessonTitle,
+            lessonDescription: lessonPayload.description,
+          }),
           assignmentText:
             lessonType === "RESOURCE" || lessonType === "ASSIGNMENT"
               ? resolveCurriculumDescriptionText(
@@ -1401,8 +1607,44 @@ export async function createCourseAIDraft(userId, payload) {
           isPreview: sectionIndex === 0 && lessonIndex === 0,
         },
       });
+      createdLessons += 1;
+      emitProgress({
+        step: "creating_curriculum",
+        message: `Adding curriculum: ${resolvedLessonTitle}`,
+        progressPercent: Math.min(
+          95,
+          60 + Math.round((createdLessons / Math.max(totalLessonsPlanned, 1)) * 30),
+        ),
+        draftProgress: {
+          sectionsCreated: createdSections,
+          totalSections: aiDraft.sections.length,
+          lessonsCreated: createdLessons,
+          totalLessons: totalLessonsPlanned,
+        },
+      });
     }
+    createdSections += 1;
+    emitProgress({
+      step: "creating_curriculum",
+      message: `Completed section: ${sectionPayload.title}`,
+      progressPercent: Math.min(
+        96,
+        62 + Math.round((createdSections / Math.max(aiDraft.sections.length, 1)) * 28),
+      ),
+      draftProgress: {
+        sectionsCreated: createdSections,
+        totalSections: aiDraft.sections.length,
+        lessonsCreated: createdLessons,
+        totalLessons: totalLessonsPlanned,
+      },
+    });
   }
+
+  emitProgress({
+    step: "completed",
+    message: "Draft course created successfully",
+    progressPercent: 100,
+  });
 
   return {
     id: course.id,
@@ -2399,7 +2641,7 @@ function mapCourseDetails(course, goals) {
               ? "quiz"
               : lesson.type === "CODING_EXERCISE"
                 ? "coding_exercise"
-                : lesson.videoUrl || lesson.type === "VIDEO"
+                : lesson.type === "VIDEO" || lesson.videoUrl
                   ? "video"
                   : lesson.assignmentText || lesson.type === "RESOURCE"
                     ? "article"
@@ -2430,7 +2672,7 @@ function mapCourseDetails(course, goals) {
                     checklist: normalizeStringArray(parsedStarterCode?.checklist),
                     hints: normalizeStringArray(parsedStarterCode?.hints),
                   }
-                : lesson.videoUrl || lesson.type === "VIDEO"
+                : lesson.videoUrl
                   ? {
                       id: lesson.id,
                       path: `/stream.php?id=${encodeURIComponent(lesson.id)}`,
@@ -3279,7 +3521,7 @@ export async function getCourseRoute(slug, actor = null) {
             ? "quiz"
             : lesson.type === "CODING_EXERCISE"
               ? "coding_exercise"
-              : lesson.videoUrl || lesson.type === "VIDEO"
+              : lesson.type === "VIDEO" || lesson.videoUrl
                 ? "video"
                 : lesson.assignmentText || lesson.type === "RESOURCE"
                   ? "article"
@@ -3299,7 +3541,7 @@ export async function getCourseRoute(slug, actor = null) {
               ? {
                   instructions: lesson.codingInstructions || "",
                 }
-              : lesson.videoUrl || lesson.type === "VIDEO"
+              : lesson.videoUrl
                 ? {
                     path: `/stream.php?id=${encodeURIComponent(lesson.id)}`,
                   }
@@ -3482,7 +3724,7 @@ export async function getCourseForLearner(userId, slug) {
                   ? "quiz"
                   : lesson.type === "CODING_EXERCISE"
                     ? "coding_exercise"
-                    : lesson.videoUrl || lesson.type === "VIDEO"
+                    : lesson.type === "VIDEO" || lesson.videoUrl
                 ? "video"
                 : lesson.assignmentText
                   ? "article"
@@ -3513,7 +3755,7 @@ export async function getCourseForLearner(userId, slug) {
                       checklist: normalizeStringArray(parsedStarterCode?.checklist),
                       hints: normalizeStringArray(parsedStarterCode?.hints),
                     }
-                : lesson.videoUrl || lesson.type === "VIDEO"
+                : lesson.videoUrl
                 ? {
                     id: lesson.id,
                     path: `/stream.php?id=${encodeURIComponent(lesson.id)}`,
@@ -4197,6 +4439,13 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
           title: uniqueLessonTitle,
           description: lessonDescription || null,
           type,
+          ...buildAIGeneratedLessonTypeFields({
+            lessonType: type,
+            courseTitle: course.title,
+            sectionTitle: section.title,
+            lessonTitle: uniqueLessonTitle,
+            lessonDescription,
+          }),
           assignmentText:
             type === "RESOURCE" || type === "ASSIGNMENT"
               ? lessonDescription || null
@@ -4604,6 +4853,26 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
                 title: nextTitle,
                 description: nextDescription,
                 type: nextType,
+                ...(nextType === "QUIZ" &&
+                normalizeQuizQuestions(lesson.quizQuestions).length === 0
+                  ? buildAIGeneratedLessonTypeFields({
+                      lessonType: "QUIZ",
+                      courseTitle: course.title,
+                      sectionTitle: ownerSection?.title || "",
+                      lessonTitle: nextTitle,
+                      lessonDescription: nextDescription,
+                    })
+                  : {}),
+                ...(nextType === "CODING_EXERCISE" &&
+                !hasCodingStepChallenges(lesson.codingStarterCode)
+                  ? buildAIGeneratedLessonTypeFields({
+                      lessonType: "CODING_EXERCISE",
+                      courseTitle: course.title,
+                      sectionTitle: ownerSection?.title || "",
+                      lessonTitle: nextTitle,
+                      lessonDescription: nextDescription,
+                    })
+                  : {}),
                 assignmentText:
                   nextType === "RESOURCE" || nextType === "ASSIGNMENT"
                     ? nextDescription
@@ -4667,6 +4936,26 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
             title: nextTitle,
             description: nextDescription,
             type: nextType,
+            ...(nextType === "QUIZ" &&
+            normalizeQuizQuestions(lesson.quizQuestions).length === 0
+              ? buildAIGeneratedLessonTypeFields({
+                  lessonType: "QUIZ",
+                  courseTitle: course.title,
+                  sectionTitle: ownerSection?.title || "",
+                  lessonTitle: nextTitle,
+                  lessonDescription: nextDescription,
+                })
+              : {}),
+            ...(nextType === "CODING_EXERCISE" &&
+            !hasCodingStepChallenges(lesson.codingStarterCode)
+              ? buildAIGeneratedLessonTypeFields({
+                  lessonType: "CODING_EXERCISE",
+                  courseTitle: course.title,
+                  sectionTitle: ownerSection?.title || "",
+                  lessonTitle: nextTitle,
+                  lessonDescription: nextDescription,
+                })
+              : {}),
             assignmentText:
               nextType === "RESOURCE" || nextType === "ASSIGNMENT"
                 ? nextDescription
@@ -4837,6 +5126,26 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
         title: nextTitle,
         description: nextDescription,
         type: nextType,
+        ...(nextType === "QUIZ" &&
+        normalizeQuizQuestions(selectedLesson.quizQuestions).length === 0
+          ? buildAIGeneratedLessonTypeFields({
+              lessonType: "QUIZ",
+              courseTitle: course.title,
+              sectionTitle: selectedSection?.title || "",
+              lessonTitle: nextTitle,
+              lessonDescription: nextDescription,
+            })
+          : {}),
+        ...(nextType === "CODING_EXERCISE" &&
+        !hasCodingStepChallenges(selectedLesson.codingStarterCode)
+          ? buildAIGeneratedLessonTypeFields({
+              lessonType: "CODING_EXERCISE",
+              courseTitle: course.title,
+              sectionTitle: selectedSection?.title || "",
+              lessonTitle: nextTitle,
+              lessonDescription: nextDescription,
+            })
+          : {}),
         assignmentText:
           nextType === "RESOURCE" || nextType === "ASSIGNMENT"
             ? nextDescription

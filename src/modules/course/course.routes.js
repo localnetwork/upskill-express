@@ -7,6 +7,8 @@ import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import {
   createCourseController,
   createCourseAIDraftController,
+  createCourseAIDraftJobController,
+  getCourseAIDraftJobController,
   askCourseLearningAssistantController,
   updateCourseWithAIController,
   deleteDraftCourseController,
@@ -144,6 +146,19 @@ router.get(
     tags: ["courses"],
   }),
   asyncHandler(checkCourseSlugAvailabilityController),
+);
+router.post(
+  "/ai-draft/jobs",
+  authenticate,
+  authorize("EDUCATOR"),
+  validate(createCourseAIDraftValidator),
+  asyncHandler(createCourseAIDraftJobController),
+);
+router.get(
+  "/ai-draft/jobs/:jobId",
+  authenticate,
+  authorize("EDUCATOR"),
+  asyncHandler(getCourseAIDraftJobController),
 );
 router.get(
   "/:slug",

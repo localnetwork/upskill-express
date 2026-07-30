@@ -387,6 +387,22 @@ function getInvalidationTagsFromRequest(req) {
     push("admin-revenue", "orders", "payouts");
   }
 
+  if (
+    path.startsWith("/api/course-sections") ||
+    path.startsWith("/api/course-curriculums") ||
+    path.startsWith("/api/course-resources")
+  ) {
+    push(
+      "courses",
+      "reviews",
+      "enrollments",
+      "progress",
+      "certifications",
+      "notifications",
+      "legacy",
+    );
+  }
+
   if (path.startsWith("/api/")) {
     push("legacy");
   }
