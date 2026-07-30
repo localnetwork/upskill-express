@@ -53,7 +53,16 @@ router.get(
   }),
   asyncHandler(revenueReportController),
 );
-router.get("/platform-settings", asyncHandler(getPlatformSettingsController));
+router.get(
+  "/platform-settings",
+  cacheGetResponse({
+    prefix: "admin:platform-settings",
+    ttlSeconds: 120,
+    varyByUser: true,
+    tags: ["admin-revenue", "courses"],
+  }),
+  asyncHandler(getPlatformSettingsController),
+);
 router.put(
   "/platform-settings",
   validate(updatePlatformSettingsValidator),

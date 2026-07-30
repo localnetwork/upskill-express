@@ -21,7 +21,16 @@ router.get(
   }),
   asyncHandler(listNotificationsController),
 );
-router.get("/:notificationId", asyncHandler(getNotificationController));
+router.get(
+  "/:notificationId",
+  cacheGetResponse({
+    prefix: "notifications:detail",
+    ttlSeconds: 20,
+    varyByUser: true,
+    tags: ["notifications"],
+  }),
+  asyncHandler(getNotificationController),
+);
 router.post("/:notificationId/read", asyncHandler(markNotificationReadController));
 
 export default router;

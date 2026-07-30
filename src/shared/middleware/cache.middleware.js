@@ -1,7 +1,10 @@
 import { Redis } from "@upstash/redis";
+import { createHash } from "node:crypto";
 
 let redisClient = null;
 const TAG_KEY_PREFIX = "cache-tag::";
+const memoryCacheStore = new Map();
+const memoryTagStore = new Map();
 
 function getRedisClient() {
   if (redisClient) return redisClient;
@@ -14,6 +17,48 @@ function getRedisClient() {
 
   redisClient = new Redis({ url, token });
   return redisClient;
+}
+
+function getMemoryEntry(key) {
+  const entry = memoryCacheStore.get(key);
+  if (!entry) return null;
+
+  if (entry.expiresAt <= Date.now()) {
+    memoryCacheStore.delete(key);
+    return null;
+  }
+
+  return entry.value;
+}
+
+function setMemoryEntry(key, value, ttlSeconds) {
+  const ttlMs = Math.max(Number(ttlSeconds || 0), 1) * 1000;
+  memoryCacheStore.set(key, {
+    value,
+    expiresAt: Date.now() + ttlMs,
+  });
+}
+
+function indexMemoryKeyByTags(cacheKey, tags = []) {
+  for (const tag of normalizeTags(tags)) {
+    if (!memoryTagStore.has(tag)) {
+      memoryTagStore.set(tag, new Set());
+    }
+    memoryTagStore.get(tag).add(cacheKey);
+  }
+}
+
+function invalidateMemoryByTags(tags = []) {
+  for (const tag of normalizeTags(tags)) {
+    const keys = memoryTagStore.get(tag);
+    if (!keys || !keys.size) continue;
+
+    for (const key of keys) {
+      memoryCacheStore.delete(key);
+    }
+
+    memoryTagStore.delete(tag);
+  }
 }
 
 function serializeQuery(query = {}) {
@@ -74,20 +119,73 @@ async function indexCacheKeyByTags(redis, cacheKey, tags = []) {
   );
 }
 
+function logCacheRedisError(action, error) {
+  const message = error?.message || error;
+  console.error(`[cache] Redis ${action} failed:`, message);
+}
+
+function normalizeCachedEntry(raw) {
+  if (!raw) return null;
+  if (typeof raw === "object") return raw;
+
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function normalizeRoutePath(req) {
+  const raw = `${String(req.baseUrl || "")}${String(req.path || "")}` || "/";
+  if (raw.length > 1 && raw.endsWith("/")) {
+    return raw.slice(0, -1);
+  }
+  return raw || "/";
+}
+
+function resolveUserCacheScope(req, varyByUser) {
+  if (!varyByUser) return "public";
+  if (req.user?.id) return `user:${req.user.id}`;
+
+  const authHeader = String(req.headers?.authorization || "").trim();
+  if (authHeader) {
+    const fingerprint = createHash("sha256")
+      .update(authHeader)
+      .digest("hex")
+      .slice(0, 16);
+    return `auth:${fingerprint}`;
+  }
+
+  return "guest";
+}
+
 export async function invalidateCacheByTags(tags = []) {
   const redis = getRedisClient();
-  if (!redis) return;
-
   const normalizedTags = normalizeTags(tags);
   if (!normalizedTags.length) return;
 
+  invalidateMemoryByTags(normalizedTags);
+  if (!redis) return;
+
   for (const tag of normalizedTags) {
     const tagKey = getTagKey(tag);
-    const keys = await redis.smembers(tagKey).catch(() => []);
+    const keys = await redis.smembers(tagKey).catch((error) => {
+      logCacheRedisError(`smembers(${tagKey})`, error);
+      return [];
+    });
     if (Array.isArray(keys) && keys.length) {
-      await redis.del(...keys).catch(() => {});
+      await redis.del(...keys).catch((error) => {
+        logCacheRedisError(`del(keys:${keys.length})`, error);
+      });
     }
-    await redis.del(tagKey).catch(() => {});
+    await redis.del(tagKey).catch((error) => {
+      logCacheRedisError(`del(${tagKey})`, error);
+    });
   }
 }
 
@@ -101,29 +199,48 @@ export function cacheGetResponse(options = {}) {
 
   return async function cacheMiddleware(req, res, next) {
     const redis = getRedisClient();
-    const cacheControl = String(req.headers?.["cache-control"] || "").toLowerCase();
+    const cacheControl = String(
+      req.headers?.["cache-control"] || "",
+    ).toLowerCase();
     const shouldBypassCache =
       String(req.query?.nocache || "") === "true" ||
       cacheControl.includes("no-cache");
 
-    if (!redis || req.method !== "GET") {
-      return next();
-    }
+    // if (req.method !== "GET") {
+    //   return next();
+    // }
 
-    if (shouldBypassCache) {
-      return next();
-    }
+    // if (shouldBypassCache) {
+    //   return next();
+    // }
 
     const queryPart = serializeQuery(req.query);
-    const userPart = varyByUser ? `user:${req.user?.id || "guest"}` : "public";
-    const key = `${prefix}:${userPart}:${req.path}${queryPart ? `?${queryPart}` : ""}`;
+    const userPart = resolveUserCacheScope(req, varyByUser);
+    const routePath = normalizeRoutePath(req);
+    const key = `${prefix}:${userPart}:${routePath}${queryPart ? `?${queryPart}` : ""}`;
     const resolvedTags = normalizeTags(
       typeof tags === "function" ? tags(req) : tags,
     );
 
     try {
-      const cached = await redis.get(key);
-      if (cached && typeof cached === "object") {
+      console.log("Try here");
+      let cachedRaw = null;
+      if (redis) {
+        try {
+          cachedRaw = await redis.get(key);
+          console.log("Try here", cachedRaw);
+        } catch (error) {
+          logCacheRedisError(`get(${key})`, error);
+          cachedRaw = null;
+        }
+      }
+      if (!cachedRaw) {
+        cachedRaw = getMemoryEntry(key);
+      }
+
+      const cached = normalizeCachedEntry(cachedRaw);
+      if (cached) {
+        res.setHeader("X-CACHE", "HIT");
         return res.status(Number(cached.statusCode || 200)).json(
           enrichResponsePayload(cached.payload, {
             isCached: true,
@@ -133,22 +250,31 @@ export function cacheGetResponse(options = {}) {
       }
     } catch (_error) {}
 
+    if (!res.headersSent && !res.getHeader("X-CACHE")) {
+      res.setHeader("X-CACHE", "MISS");
+    }
+
     const originalJson = res.json.bind(res);
     res.json = (payload) => {
       const cachedAt = new Date().toISOString();
       if (res.statusCode >= 200 && res.statusCode < 300) {
-        redis
-          .set(
-            key,
-            {
-              statusCode: res.statusCode,
-              payload,
-              cachedAt,
-            },
-            { ex: ttlSeconds },
-          )
-          .then(() => indexCacheKeyByTags(redis, key, resolvedTags))
-          .catch(() => {});
+        const cachePayload = {
+          statusCode: res.statusCode,
+          payload,
+          cachedAt,
+        };
+
+        setMemoryEntry(key, cachePayload, ttlSeconds);
+        indexMemoryKeyByTags(key, resolvedTags);
+
+        if (redis) {
+          redis
+            .set(key, cachePayload, { ex: ttlSeconds })
+            .then(() => indexCacheKeyByTags(redis, key, resolvedTags))
+            .catch((error) => {
+              logCacheRedisError(`set(${key})`, error);
+            });
+        }
       }
 
       return originalJson(

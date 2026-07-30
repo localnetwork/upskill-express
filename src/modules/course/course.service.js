@@ -3008,13 +3008,21 @@ export async function listAuthoredCourses(userId, query) {
   startOfMonth.setDate(1);
   startOfMonth.setHours(0, 0, 0, 0);
 
-  const [monthlyEnrollments, ratingAggregates] = await Promise.all([
+  const [monthlyEnrollments, totalEnrollments, ratingAggregates] = await Promise.all([
     prisma.enrollment.groupBy({
       by: ["courseId"],
       where: {
         courseId: { in: courseIds },
         status: { in: ["ACTIVE", "COMPLETED"] },
         enrolledAt: { gte: startOfMonth },
+      },
+      _count: { _all: true },
+    }),
+    prisma.enrollment.groupBy({
+      by: ["courseId"],
+      where: {
+        courseId: { in: courseIds },
+        status: { in: ["ACTIVE", "COMPLETED"] },
       },
       _count: { _all: true },
     }),
@@ -3028,6 +3036,9 @@ export async function listAuthoredCourses(userId, query) {
 
   const monthlyByCourseId = new Map(
     monthlyEnrollments.map((row) => [row.courseId, Number(row?._count?._all || 0)]),
+  );
+  const totalEnrollmentsByCourseId = new Map(
+    totalEnrollments.map((row) => [row.courseId, Number(row?._count?._all || 0)]),
   );
   const ratingsByCourseId = new Map(
     ratingAggregates.map((row) => [
@@ -3049,6 +3060,7 @@ export async function listAuthoredCourses(userId, query) {
       : null,
     stats: {
       enrollments_this_month: monthlyByCourseId.get(row.id) || 0,
+      total_enrollments: totalEnrollmentsByCourseId.get(row.id) || 0,
       average_rating: ratingsByCourseId.get(row.id)?.average_rating || 0,
       total_reviews: ratingsByCourseId.get(row.id)?.total_reviews || 0,
     },

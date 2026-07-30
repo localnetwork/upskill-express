@@ -106,10 +106,15 @@ app.get(
         }
       }
 
-      const languages = Array.from(languageSet).sort((a, b) => a.localeCompare(b));
+      const languages = Array.from(languageSet).sort((a, b) =>
+        a.localeCompare(b),
+      );
       return res.json({
         message: "Languages fetched",
-        data: languages.map((language) => ({ value: language, label: language })),
+        data: languages.map((language) => ({
+          value: language,
+          label: language,
+        })),
       });
     } catch (error) {
       return next(error);

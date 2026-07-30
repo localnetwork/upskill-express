@@ -175,7 +175,18 @@ router.put("/:courseId", authenticate, authorize("EDUCATOR"), validate(updateCou
 router.put("/:courseId/pricing", authenticate, authorize("EDUCATOR"), asyncHandler(updateCoursePricingController));
 router.put("/:courseId/goals", authenticate, authorize("EDUCATOR"), asyncHandler(updateCourseGoalsController));
 router.put("/:courseId/messages", authenticate, authorize("EDUCATOR"), asyncHandler(updateCourseMessagesController));
-router.get("/:courseId/coupons", authenticate, authorize("EDUCATOR"), asyncHandler(listCourseCouponsForManagementController));
+router.get(
+  "/:courseId/coupons",
+  authenticate,
+  authorize("EDUCATOR"),
+  cacheGetResponse({
+    prefix: "courses:coupons",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["courses"],
+  }),
+  asyncHandler(listCourseCouponsForManagementController),
+);
 router.post("/:courseId/coupons", authenticate, authorize("EDUCATOR"), validate(createCourseCouponValidator), asyncHandler(createCourseCouponController));
 router.delete("/:courseId", authenticate, authorize("EDUCATOR"), asyncHandler(deleteDraftCourseController));
 router.post("/:courseId/submit", authenticate, authorize("EDUCATOR"), asyncHandler(submitCourseController));

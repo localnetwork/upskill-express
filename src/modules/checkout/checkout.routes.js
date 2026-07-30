@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { authenticate, authenticateOptional } from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
+import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
@@ -44,6 +45,12 @@ router.post(
 router.get(
   "/status/:providerOrderId",
   authenticateOptional,
+  cacheGetResponse({
+    prefix: "checkout:status",
+    ttlSeconds: 20,
+    varyByUser: true,
+    tags: ["orders", "checkout"],
+  }),
   validate(checkoutStatusValidator, "params"),
   asyncHandler(getCheckoutStatusController),
 );

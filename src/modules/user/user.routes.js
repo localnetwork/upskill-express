@@ -42,7 +42,17 @@ router.get(
   }),
   asyncHandler(listMyActivityController),
 );
-router.get("/me/devices", authenticate, asyncHandler(listMyDevicesController));
+router.get(
+  "/me/devices",
+  authenticate,
+  cacheGetResponse({
+    prefix: "users:me:devices",
+    ttlSeconds: 30,
+    varyByUser: true,
+    tags: ["users", "activity"],
+  }),
+  asyncHandler(listMyDevicesController),
+);
 router.delete("/me/devices/:deviceId", authenticate, asyncHandler(removeMyDeviceController));
 router.post(
   "/me/change-password",
