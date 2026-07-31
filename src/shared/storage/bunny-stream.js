@@ -1,5 +1,6 @@
 import { env } from "../config/env.js";
 import { createHash } from "crypto";
+import { isIP } from "node:net";
 
 const BUNNY_STREAM_BASE_URL = "https://video.bunnycdn.com";
 
@@ -80,20 +81,45 @@ function normalizeIpv4Address(value) {
   const normalized = unwrapped.startsWith("::ffff:")
     ? unwrapped.slice("::ffff:".length)
     : unwrapped;
-  const parts = normalized.split(".");
+  const withOptionalPort = normalized.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+  const candidate = withOptionalPort ? withOptionalPort[1] : normalized;
+  const parts = candidate.split(".");
   if (parts.length !== 4) return "";
   for (const part of parts) {
     if (!/^\d+$/.test(part)) return "";
     const n = Number(part);
     if (!Number.isInteger(n) || n < 0 || n > 255) return "";
   }
-  return normalized;
+  return candidate;
+}
+
+function normalizeIpAddressForToken(value) {
+  const raw = String(value || "")
+    .trim()
+    .split(",")[0]
+    .trim();
+  if (!raw) return "";
+
+  const unwrapped = raw.replace(/^\[|\]$/g, "");
+  if (unwrapped === "::1" || unwrapped.toLowerCase() === "localhost") {
+    return "127.0.0.1";
+  }
+
+  const normalizedIpv4 = normalizeIpv4Address(unwrapped);
+  if (normalizedIpv4) return normalizedIpv4;
+
+  const normalized = unwrapped.startsWith("::ffff:")
+    ? unwrapped.slice("::ffff:".length)
+    : unwrapped;
+
+  return isIP(normalized) ? normalized : "";
 }
 
 export function buildBunnySignedEmbedUrl(
   videoId,
   { ttlSeconds = 300, userIp = "" } = {},
 ) {
+  console.log("userIp", userIp);
   const id = String(videoId || "").trim();
   if (!id) return "";
 
@@ -109,7 +135,7 @@ export function buildBunnySignedEmbedUrl(
     return `${baseUrl}?autoplay=false&loop=false&muted=false&preload=true&responsive=true`;
   }
 
-  const normalizedIp = normalizeIpv4Address(userIp);
+  const normalizedIp = normalizeIpAddressForToken(userIp);
   if (env.streamTokenIpValidation && !normalizedIp) {
     return "";
   }

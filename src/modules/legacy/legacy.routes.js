@@ -11,7 +11,11 @@ import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { upload } from "../../shared/middleware/upload.middleware.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
-import { signAccessToken, signRefreshToken, verifyPreAuthToken } from "../../shared/utils/jwt.js";
+import {
+  signAccessToken,
+  signRefreshToken,
+  verifyPreAuthToken,
+} from "../../shared/utils/jwt.js";
 import { hashToken } from "../../shared/utils/security.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import {
@@ -52,7 +56,9 @@ const router = Router();
 const supportsLessonTopics = Boolean(prisma.lessonTopic);
 const QUIZ_ATTEMPT_KEY_PREFIX = "quiz_attempt::";
 const codingSubmissionStore = new Map();
-const JUDGE0_BASE_URL = String(process.env.JUDGE0_BASE_URL || "https://ce.judge0.com").replace(/\/+$/, "");
+const JUDGE0_BASE_URL = String(
+  process.env.JUDGE0_BASE_URL || "https://ce.judge0.com",
+).replace(/\/+$/, "");
 const JUDGE0_LANGUAGE_IDS = {
   javascript: 63,
   typescript: 74,
@@ -136,7 +142,10 @@ function toBoolean(value, fallback = false) {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
-async function notifyNewDeviceLogin(userId, { deviceName, locationLabel, ipAddress, provider }) {
+async function notifyNewDeviceLogin(
+  userId,
+  { deviceName, locationLabel, ipAddress, provider },
+) {
   await createNotification({
     userId,
     type: "SYSTEM",
@@ -299,7 +308,8 @@ function mapLessonToLegacyCurriculum(lesson) {
         category_id: lesson.topic.categoryId,
       }
     : null;
-  const topics = topicRows.length > 0 ? topicRows : fallbackTopic ? [fallbackTopic] : [];
+  const topics =
+    topicRows.length > 0 ? topicRows : fallbackTopic ? [fallbackTopic] : [];
   const primaryTopicId = topics[0]?.id || lesson.topicId || null;
 
   return {
@@ -315,7 +325,10 @@ function mapLessonToLegacyCurriculum(lesson) {
             ? "assignment"
             : "lecture",
     curriculum_description: lesson.description || "",
-    curriculum_resource_type: mapLessonTypeToLegacyResource(lesson.type, lesson),
+    curriculum_resource_type: mapLessonTypeToLegacyResource(
+      lesson.type,
+      lesson,
+    ),
     estimated_duration: lesson.durationInSeconds || 0,
     topic_id: primaryTopicId,
     topic_ids: topics.map((topic) => topic.id),
@@ -334,7 +347,9 @@ function mapLessonToLegacyCurriculum(lesson) {
           ? {
               instructions: lesson.codingInstructions || "",
               starter_code:
-                parsedCodingStarterCode?.starter_code || parsedCodingStarterCode || {},
+                parsedCodingStarterCode?.starter_code ||
+                parsedCodingStarterCode ||
+                {},
               expected_output: parsedCodingStarterCode?.expected_output || {},
               languages: parsedCodingStarterCode?.languages || [],
               test_cases: parsedCodingStarterCode?.test_cases || {},
@@ -468,9 +483,13 @@ async function resolveCurriculumTopicsForCourse(course, topicIds) {
       throw new ApiError(400, "One or more topics are invalid");
     }
     const belongsToCourseCategory =
-      topic.categoryId === course.categoryId || topic.category.parentId === course.categoryId;
+      topic.categoryId === course.categoryId ||
+      topic.category.parentId === course.categoryId;
     if (!belongsToCourseCategory) {
-      throw new ApiError(400, "Topic does not belong to the selected course category");
+      throw new ApiError(
+        400,
+        "Topic does not belong to the selected course category",
+      );
     }
   }
 
@@ -554,16 +573,30 @@ function normalizeCodingAsset(rawValue) {
   }
 
   return {
-    languages: Array.isArray(parsed.languages) && parsed.languages.length ? parsed.languages : ["javascript"],
-    starter_code: parsed.starter_code && typeof parsed.starter_code === "object" ? parsed.starter_code : {},
-    expected_output: parsed.expected_output && typeof parsed.expected_output === "object" ? parsed.expected_output : {},
-    test_cases: parsed.test_cases && typeof parsed.test_cases === "object" ? parsed.test_cases : {},
+    languages:
+      Array.isArray(parsed.languages) && parsed.languages.length
+        ? parsed.languages
+        : ["javascript"],
+    starter_code:
+      parsed.starter_code && typeof parsed.starter_code === "object"
+        ? parsed.starter_code
+        : {},
+    expected_output:
+      parsed.expected_output && typeof parsed.expected_output === "object"
+        ? parsed.expected_output
+        : {},
+    test_cases:
+      parsed.test_cases && typeof parsed.test_cases === "object"
+        ? parsed.test_cases
+        : {},
     step_challenges:
       parsed.step_challenges && typeof parsed.step_challenges === "object"
         ? parsed.step_challenges
         : {},
     checklist: Array.isArray(parsed.checklist)
-      ? parsed.checklist.map((item) => String(item || "").trim()).filter(Boolean)
+      ? parsed.checklist
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
     hints: Array.isArray(parsed.hints)
       ? parsed.hints.map((item) => String(item || "").trim()).filter(Boolean)
@@ -578,8 +611,11 @@ function normalizeCodingStepsForLanguage(asset, language) {
 
   return fromAsset
     .map((item, index) => {
-      const fallbackExpected = item?.expected_output ?? item?.expectedOutput ?? "";
-      const fallbackMode = String(item?.validation_mode || item?.validationMode || "").toUpperCase();
+      const fallbackExpected =
+        item?.expected_output ?? item?.expectedOutput ?? "";
+      const fallbackMode = String(
+        item?.validation_mode || item?.validationMode || "",
+      ).toUpperCase();
       const normalizedMode =
         fallbackMode === "EXACT_CODE"
           ? "EXACT_CODE"
@@ -590,9 +626,14 @@ function normalizeCodingStepsForLanguage(asset, language) {
       const validators = Array.isArray(item?.validators)
         ? item.validators
             .map((validator, validatorIndex) => ({
-              id: String(validator?.id || `step-${index + 1}-validator-${validatorIndex + 1}`),
+              id: String(
+                validator?.id ||
+                  `step-${index + 1}-validator-${validatorIndex + 1}`,
+              ),
               name: String(validator?.name || `Check ${validatorIndex + 1}`),
-              mode: String(validator?.mode || normalizedMode || "CODE_INCLUDES").toUpperCase(),
+              mode: String(
+                validator?.mode || normalizedMode || "CODE_INCLUDES",
+              ).toUpperCase(),
               input: String(validator?.input || ""),
               expectedOutput: String(
                 validator?.expected_output !== undefined
@@ -600,15 +641,22 @@ function normalizeCodingStepsForLanguage(asset, language) {
                   : validator?.expectedOutput || fallbackExpected,
               ),
               visibility:
-                String(validator?.visibility || "VISIBLE").toUpperCase() === "HIDDEN"
+                String(validator?.visibility || "VISIBLE").toUpperCase() ===
+                "HIDDEN"
                   ? "HIDDEN"
                   : "VISIBLE",
               comparisonMode:
-                String(validator?.comparison_mode || validator?.comparisonMode || "EXACT").toUpperCase() ===
-                "INCLUDES"
+                String(
+                  validator?.comparison_mode ||
+                    validator?.comparisonMode ||
+                    "EXACT",
+                ).toUpperCase() === "INCLUDES"
                   ? "INCLUDES"
-                  : String(validator?.comparison_mode || validator?.comparisonMode || "EXACT").toUpperCase() ===
-                      "REGEX"
+                  : String(
+                        validator?.comparison_mode ||
+                          validator?.comparisonMode ||
+                          "EXACT",
+                      ).toUpperCase() === "REGEX"
                     ? "REGEX"
                     : "EXACT",
             }))
@@ -626,13 +674,20 @@ function normalizeCodingStepsForLanguage(asset, language) {
                 input: String(item?.input || ""),
                 expectedOutput: String(fallbackExpected),
                 visibility:
-                  String(item?.visibility || "VISIBLE").toUpperCase() === "HIDDEN"
+                  String(item?.visibility || "VISIBLE").toUpperCase() ===
+                  "HIDDEN"
                     ? "HIDDEN"
                     : "VISIBLE",
                 comparisonMode:
-                  String(item?.comparison_mode || item?.comparisonMode || "EXACT").toUpperCase() === "INCLUDES"
+                  String(
+                    item?.comparison_mode || item?.comparisonMode || "EXACT",
+                  ).toUpperCase() === "INCLUDES"
                     ? "INCLUDES"
-                    : String(item?.comparison_mode || item?.comparisonMode || "EXACT").toUpperCase() === "REGEX"
+                    : String(
+                          item?.comparison_mode ||
+                            item?.comparisonMode ||
+                            "EXACT",
+                        ).toUpperCase() === "REGEX"
                       ? "REGEX"
                       : "EXACT",
               },
@@ -652,20 +707,31 @@ function normalizeCodingStepsForLanguage(asset, language) {
 }
 
 function normalizeCodingTestsForLanguage(asset, language) {
-  const fromAsset = Array.isArray(asset.test_cases?.[language]) ? asset.test_cases[language] : [];
+  const fromAsset = Array.isArray(asset.test_cases?.[language])
+    ? asset.test_cases[language]
+    : [];
   const normalized = fromAsset
     .map((testCase, index) => ({
       id: String(testCase.id || `${language}-tc-${index + 1}`),
       name: String(testCase.name || `Test #${index + 1}`),
       input: String(testCase.input || ""),
       expectedOutput: String(
-        testCase.expected_output !== undefined ? testCase.expected_output : testCase.expectedOutput || "",
+        testCase.expected_output !== undefined
+          ? testCase.expected_output
+          : testCase.expectedOutput || "",
       ),
-      visibility: String(testCase.visibility || "VISIBLE").toUpperCase() === "HIDDEN" ? "HIDDEN" : "VISIBLE",
+      visibility:
+        String(testCase.visibility || "VISIBLE").toUpperCase() === "HIDDEN"
+          ? "HIDDEN"
+          : "VISIBLE",
       comparisonMode:
-        String(testCase.comparison_mode || testCase.comparisonMode || "EXACT").toUpperCase() === "INCLUDES"
+        String(
+          testCase.comparison_mode || testCase.comparisonMode || "EXACT",
+        ).toUpperCase() === "INCLUDES"
           ? "INCLUDES"
-          : String(testCase.comparison_mode || testCase.comparisonMode || "EXACT").toUpperCase() === "REGEX"
+          : String(
+                testCase.comparison_mode || testCase.comparisonMode || "EXACT",
+              ).toUpperCase() === "REGEX"
             ? "REGEX"
             : "EXACT",
     }))
@@ -784,7 +850,10 @@ async function processCodingSubmission(submissionId) {
   submission.updatedAt = new Date().toISOString();
 
   try {
-    const { lesson } = await ensureLearnerOwnsCodingLesson(submission.userId, submission.lessonId);
+    const { lesson } = await ensureLearnerOwnsCodingLesson(
+      submission.userId,
+      submission.lessonId,
+    );
     const asset = normalizeCodingAsset(lesson.codingStarterCode);
     const tests = normalizeCodingTestsForLanguage(asset, submission.language);
     if (!tests.length) {
@@ -798,7 +867,13 @@ async function processCodingSubmission(submissionId) {
         sourceCode: submission.sourceCode,
         stdin: testCase.input,
       });
-      const passed = !run.hasExecutionError && compareCodingOutput(run.actualOutput, testCase.expectedOutput, testCase.comparisonMode);
+      const passed =
+        !run.hasExecutionError &&
+        compareCodingOutput(
+          run.actualOutput,
+          testCase.expectedOutput,
+          testCase.comparisonMode,
+        );
       resultItems.push({
         id: testCase.id,
         name: testCase.name,
@@ -859,7 +934,10 @@ async function processCodingSubmission(submissionId) {
   } catch (error) {
     submission.status = "FAILED";
     submission.updatedAt = new Date().toISOString();
-    submission.error = error instanceof ApiError ? error.message : "Failed to run coding submission";
+    submission.error =
+      error instanceof ApiError
+        ? error.message
+        : "Failed to run coding submission";
   }
 }
 
@@ -884,7 +962,9 @@ function normalizeQuizPayload(quizQuestions) {
     passingScore: Number(parsed?.settings?.passingScore || 80),
     allowSkip: Boolean(parsed?.settings?.allowSkip || false),
     hintPenalty: Number(parsed?.settings?.hintPenalty || 1),
-    allowRetakeAfterPass: Boolean(parsed?.settings?.allowRetakeAfterPass || false),
+    allowRetakeAfterPass: Boolean(
+      parsed?.settings?.allowRetakeAfterPass || false,
+    ),
     quizTimerSeconds: Number(parsed?.settings?.quizTimerSeconds || 0),
   };
 
@@ -915,8 +995,15 @@ function getCorrectAnswerPayload(question) {
     return Boolean(question.correctAnswer);
   }
 
-  if (question.type === "fill_in_the_blanks" || question.type === "short_answer") {
-    return (question.acceptedAnswers || []).map((value) => String(value || "").trim().toLowerCase());
+  if (
+    question.type === "fill_in_the_blanks" ||
+    question.type === "short_answer"
+  ) {
+    return (question.acceptedAnswers || []).map((value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase(),
+    );
   }
 
   return null;
@@ -940,13 +1027,24 @@ function validateAnswer(question, submittedAnswer) {
 
   if (question.type === "true_false") {
     const normalized = String(submittedAnswer).toLowerCase() === "true";
-    return { isCorrect: normalized === Boolean(correctAnswer), correctAnswer: Boolean(correctAnswer) };
+    return {
+      isCorrect: normalized === Boolean(correctAnswer),
+      correctAnswer: Boolean(correctAnswer),
+    };
   }
 
-  if (question.type === "fill_in_the_blanks" || question.type === "short_answer") {
-    const normalized = String(submittedAnswer || "").trim().toLowerCase();
+  if (
+    question.type === "fill_in_the_blanks" ||
+    question.type === "short_answer"
+  ) {
+    const normalized = String(submittedAnswer || "")
+      .trim()
+      .toLowerCase();
     const accepted = Array.isArray(correctAnswer) ? correctAnswer : [];
-    return { isCorrect: accepted.includes(normalized), correctAnswer: accepted };
+    return {
+      isCorrect: accepted.includes(normalized),
+      correctAnswer: accepted,
+    };
   }
 
   return { isCorrect: false, correctAnswer: null };
@@ -958,15 +1056,26 @@ function computeQuizMetrics(state, totalQuestions, passingScore) {
   const correctAnswers = resultEntries.filter((item) => item?.isCorrect).length;
   const incorrectAnswers = answeredQuestions - correctAnswers;
   const hintsUsed = Object.values(state.hintUsage || {}).filter(Boolean).length;
-  const score = resultEntries.reduce((sum, item) => sum + Number(item?.awardedPoints || 0), 0);
-  const maxScore = resultEntries.reduce((sum, item) => sum + Number(item?.maxPoints || 0), 0);
-  const scorePercentage = maxScore > 0 ? Number(((score / maxScore) * 100).toFixed(2)) : 0;
+  const score = resultEntries.reduce(
+    (sum, item) => sum + Number(item?.awardedPoints || 0),
+    0,
+  );
+  const maxScore = resultEntries.reduce(
+    (sum, item) => sum + Number(item?.maxPoints || 0),
+    0,
+  );
+  const scorePercentage =
+    maxScore > 0 ? Number(((score / maxScore) * 100).toFixed(2)) : 0;
   const completionPercentage =
-    totalQuestions > 0 ? Number(((answeredQuestions / totalQuestions) * 100).toFixed(2)) : 0;
+    totalQuestions > 0
+      ? Number(((answeredQuestions / totalQuestions) * 100).toFixed(2))
+      : 0;
   const completed = answeredQuestions >= totalQuestions && totalQuestions > 0;
   const passed = completed ? scorePercentage >= passingScore : false;
   const startedAt = state.startedAt ? new Date(state.startedAt) : new Date();
-  const lastActivityAt = state.lastActivityAt ? new Date(state.lastActivityAt) : new Date();
+  const lastActivityAt = state.lastActivityAt
+    ? new Date(state.lastActivityAt)
+    : new Date();
   const timeSpentSeconds = Math.max(
     0,
     Math.floor((lastActivityAt.getTime() - startedAt.getTime()) / 1000),
@@ -996,7 +1105,11 @@ function buildDefaultQuizState(quizPayload) {
     answers: {},
     hintUsage: {},
     questionResults: {},
-    metrics: computeQuizMetrics({ questionResults: {}, hintUsage: {} }, quizPayload.questions.length, quizPayload.settings.passingScore),
+    metrics: computeQuizMetrics(
+      { questionResults: {}, hintUsage: {} },
+      quizPayload.questions.length,
+      quizPayload.settings.passingScore,
+    ),
     completed: false,
     passed: false,
     attemptNumber: 1,
@@ -1040,7 +1153,11 @@ async function saveQuizAttemptState(key, state) {
 }
 
 async function finalizeQuizCompletion(userId, lessonId, state, quizPayload) {
-  const metrics = computeQuizMetrics(state, quizPayload.questions.length, quizPayload.settings.passingScore);
+  const metrics = computeQuizMetrics(
+    state,
+    quizPayload.questions.length,
+    quizPayload.settings.passingScore,
+  );
   state.metrics = metrics;
   state.completed = metrics.completed;
   state.passed = metrics.passed;
@@ -1050,7 +1167,9 @@ async function finalizeQuizCompletion(userId, lessonId, state, quizPayload) {
   }
 
   if (!state.completionRecorded) {
-    state.attemptHistory = Array.isArray(state.attemptHistory) ? state.attemptHistory : [];
+    state.attemptHistory = Array.isArray(state.attemptHistory)
+      ? state.attemptHistory
+      : [];
     state.attemptHistory.push({
       attemptNumber: state.attemptNumber || 1,
       completedAt: new Date().toISOString(),
@@ -1190,7 +1309,8 @@ async function resolvePublicPreviewMediaByQueryId(id) {
   }
 
   const isCoursePublic =
-    lesson.course.workflowStatus === "PUBLISHED" || lesson.course.isPublished === true;
+    lesson.course.workflowStatus === "PUBLISHED" ||
+    lesson.course.isPublished === true;
   if (!isCoursePublic) {
     return null;
   }
@@ -1214,7 +1334,10 @@ async function sendMediaStoragePath(storagePath, req, res) {
   if (rangeHeader) {
     res.setHeader("Accept-Ranges", "bytes");
   }
-  res.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
+  res.setHeader(
+    "Cache-Control",
+    "private, no-store, no-cache, must-revalidate",
+  );
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -1310,7 +1433,9 @@ function extractOriginFromHeader(value) {
 
 function assertPlaybackStreamRequest(req) {
   const fetchDest = String(req.get("sec-fetch-dest") || "").toLowerCase();
-  const streamIntent = String(req.get("x-upskill-stream-intent") || "").toLowerCase();
+  const streamIntent = String(
+    req.get("x-upskill-stream-intent") || "",
+  ).toLowerCase();
   const isMediaFetchDest = fetchDest === "video" || fetchDest === "audio";
 
   if (!isMediaFetchDest && streamIntent !== "playback") {
@@ -1388,11 +1513,18 @@ router.get("/user/:slug", async (req, res, next) => {
     }
 
     const extended = normalizeExtendedProfile(user);
-    const roleNames = user.roles.map((item) => String(item?.role?.name || "").toUpperCase());
+    const roleNames = user.roles.map((item) =>
+      String(item?.role?.name || "").toUpperCase(),
+    );
     const isEducator = roleNames.includes("EDUCATOR");
     const isLearner = roleNames.includes("LEARNER");
 
-    const [educatorStatsRaw, completedEnrollmentsRaw, certificateIndexRows, userPicture] = await Promise.all([
+    const [
+      educatorStatsRaw,
+      completedEnrollmentsRaw,
+      certificateIndexRows,
+      userPicture,
+    ] = await Promise.all([
       isEducator
         ? Promise.all([
             prisma.course.count({
@@ -1496,7 +1628,9 @@ router.get("/user/:slug", async (req, res, next) => {
         });
 
         const parsed = parseJsonOrNull(setting?.value);
-        const mediaId = String(parsed?.mediaId || parsed?.id || setting?.value || "").trim();
+        const mediaId = String(
+          parsed?.mediaId || parsed?.id || setting?.value || "",
+        ).trim();
         if (!mediaId) return null;
 
         const media = await prisma.media.findFirst({
@@ -1551,16 +1685,18 @@ router.get("/user/:slug", async (req, res, next) => {
           row?.course?.educator?.username ||
           "Instructor",
         completed_at:
-          row?.completedAt ||
-          row?.courseProgress?.completedAt ||
-          null,
+          row?.completedAt || row?.courseProgress?.completedAt || null,
       }));
 
     const certificateIndexPayloads = (certificateIndexRows || [])
       .map((row) => parseJsonOrNull(row?.value))
       .filter((row) => row?.slug);
     const certificateSlugs = Array.from(
-      new Set(certificateIndexPayloads.map((row) => String(row.slug || "").trim()).filter(Boolean)),
+      new Set(
+        certificateIndexPayloads
+          .map((row) => String(row.slug || "").trim())
+          .filter(Boolean),
+      ),
     );
     const certificateRows = certificateSlugs.length
       ? await prisma.platformSetting.findMany({
@@ -1577,7 +1713,10 @@ router.get("/user/:slug", async (req, res, next) => {
       : [];
     const certificatePayloadBySlug = new Map(
       certificateRows
-        .map((row) => [String(row.key || "").replace("certificate::", ""), parseJsonOrNull(row.value)])
+        .map((row) => [
+          String(row.key || "").replace("certificate::", ""),
+          parseJsonOrNull(row.value),
+        ])
         .filter(([, value]) => value),
     );
 
@@ -1597,7 +1736,11 @@ router.get("/user/:slug", async (req, res, next) => {
         };
       })
       .filter(Boolean)
-      .sort((a, b) => new Date(b.issued_at || 0).getTime() - new Date(a.issued_at || 0).getTime());
+      .sort(
+        (a, b) =>
+          new Date(b.issued_at || 0).getTime() -
+          new Date(a.issued_at || 0).getTime(),
+      );
 
     return res.json({
       id: user.id,
@@ -1651,7 +1794,13 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
       },
       include: {
         educator: {
-          select: { id: true, username: true, firstName: true, lastName: true, headline: true },
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            headline: true,
+          },
         },
         level: true,
         priceTier: true,
@@ -1742,12 +1891,16 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
           firstname: course.educator.firstName || "",
           lastname: course.educator.lastName || "",
           headline: course.educator.headline || "",
-          user_picture: educatorPicturesByUserId.get(course.educator.id) || null,
+          user_picture:
+            educatorPicturesByUserId.get(course.educator.id) || null,
         },
       },
       resources_count: {
         section_count: course.sections.length,
-        curriculum_count: course.sections.reduce((acc, section) => acc + section.lessons.length, 0),
+        curriculum_count: course.sections.reduce(
+          (acc, section) => acc + section.lessons.length,
+          0,
+        ),
       },
       stats: {
         average_rating: ratingsByCourseId.get(course.id) || 0,
@@ -1767,23 +1920,42 @@ router.put("/profile", authenticate, async (req, res, next) => {
       where: { id: req.user.id },
       data: {
         firstName:
-          req.body.firstName === undefined ? req.body.firstname : req.body.firstName,
+          req.body.firstName === undefined
+            ? req.body.firstname
+            : req.body.firstName,
         lastName:
-          req.body.lastName === undefined ? req.body.lastname : req.body.lastName,
-        headline: req.body.headline === undefined ? undefined : req.body.headline,
-        biography: req.body.biography === undefined ? undefined : req.body.biography,
-        link_website: req.body.link_website === undefined ? undefined : req.body.link_website,
+          req.body.lastName === undefined
+            ? req.body.lastname
+            : req.body.lastName,
+        headline:
+          req.body.headline === undefined ? undefined : req.body.headline,
+        biography:
+          req.body.biography === undefined ? undefined : req.body.biography,
+        link_website:
+          req.body.link_website === undefined
+            ? undefined
+            : req.body.link_website,
         link_facebook:
-          req.body.link_facebook === undefined ? undefined : req.body.link_facebook,
+          req.body.link_facebook === undefined
+            ? undefined
+            : req.body.link_facebook,
         link_instagram:
-          req.body.link_instagram === undefined ? undefined : req.body.link_instagram,
+          req.body.link_instagram === undefined
+            ? undefined
+            : req.body.link_instagram,
         link_linkedin:
-          req.body.link_linkedin === undefined ? undefined : req.body.link_linkedin,
-        link_tiktok: req.body.link_tiktok === undefined ? undefined : req.body.link_tiktok,
+          req.body.link_linkedin === undefined
+            ? undefined
+            : req.body.link_linkedin,
+        link_tiktok:
+          req.body.link_tiktok === undefined ? undefined : req.body.link_tiktok,
         link_x: req.body.link_x === undefined ? undefined : req.body.link_x,
         link_youtube:
-          req.body.link_youtube === undefined ? undefined : req.body.link_youtube,
-        link_github: req.body.link_github === undefined ? undefined : req.body.link_github,
+          req.body.link_youtube === undefined
+            ? undefined
+            : req.body.link_youtube,
+        link_github:
+          req.body.link_github === undefined ? undefined : req.body.link_github,
       },
     });
 
@@ -1813,7 +1985,9 @@ router.put("/profile", authenticate, async (req, res, next) => {
 
 router.put("/profile/user-picture", authenticate, async (req, res, next) => {
   try {
-    const mediaId = req.body.user_picture ? String(req.body.user_picture) : null;
+    const mediaId = req.body.user_picture
+      ? String(req.body.user_picture)
+      : null;
     if (!mediaId) {
       throw new ApiError(400, "user_picture is required");
     }
@@ -1855,57 +2029,67 @@ router.put("/profile/user-picture", authenticate, async (req, res, next) => {
   }
 });
 
-router.post("/media", authenticate, upload.single("file"), async (req, res, next) => {
-  try {
-    if (!req.file) {
-      throw new ApiError(400, "File is required");
+router.post(
+  "/media",
+  authenticate,
+  upload.single("file"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        throw new ApiError(400, "File is required");
+      }
+
+      const media = await prisma.media.create({
+        data: {
+          userId: req.user.id,
+          storagePath: mediaPath(req.file),
+          originalName: req.file.originalname,
+          mimeType: req.file.mimetype,
+          mediaType: "IMAGE",
+          sizeInBytes: req.file.size,
+        },
+      });
+      return res.status(201).json({
+        id: media.id,
+        path: media.storagePath,
+        title: media.originalName,
+      });
+    } catch (error) {
+      return next(error);
     }
+  },
+);
 
-    const media = await prisma.media.create({
-      data: {
-        userId: req.user.id,
-        storagePath: mediaPath(req.file),
-        originalName: req.file.originalname,
-        mimeType: req.file.mimetype,
-        mediaType: "IMAGE",
-        sizeInBytes: req.file.size,
-      },
-    });
-    return res.status(201).json({
-      id: media.id,
-      path: media.storagePath,
-      title: media.originalName,
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+router.post(
+  "/videos",
+  authenticate,
+  upload.single("file"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        throw new ApiError(400, "File is required");
+      }
 
-router.post("/videos", authenticate, upload.single("file"), async (req, res, next) => {
-  try {
-    if (!req.file) {
-      throw new ApiError(400, "File is required");
+      const media = await prisma.media.create({
+        data: {
+          userId: req.user.id,
+          storagePath: mediaPath(req.file),
+          originalName: req.file.originalname,
+          mimeType: req.file.mimetype,
+          mediaType: "VIDEO",
+          sizeInBytes: req.file.size,
+        },
+      });
+      return res.status(201).json({
+        id: media.id,
+        path: media.storagePath,
+        title: media.originalName,
+      });
+    } catch (error) {
+      return next(error);
     }
-
-    const media = await prisma.media.create({
-      data: {
-        userId: req.user.id,
-        storagePath: mediaPath(req.file),
-        originalName: req.file.originalname,
-        mimeType: req.file.mimetype,
-        mediaType: "VIDEO",
-        sizeInBytes: req.file.size,
-      },
-    });
-    return res.status(201).json({
-      id: media.id,
-      path: media.storagePath,
-      title: media.originalName,
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+  },
+);
 
 router.post(
   "/courses/:courseId/promo-video",
@@ -1973,7 +2157,10 @@ router.get(
   authorize("EDUCATOR"),
   async (req, res, next) => {
     try {
-      const course = await ensureEducatorOwnsCourse(req.user.id, req.params.courseId);
+      const course = await ensureEducatorOwnsCourse(
+        req.user.id,
+        req.params.courseId,
+      );
       if (!course.categoryId) {
         return res.json({ data: [] });
       }
@@ -1983,10 +2170,7 @@ router.get(
           deletedAt: null,
           category: {
             deletedAt: null,
-            OR: [
-              { id: course.categoryId },
-              { parentId: course.categoryId },
-            ],
+            OR: [{ id: course.categoryId }, { parentId: course.categoryId }],
           },
         },
         include: {
@@ -2024,58 +2208,71 @@ router.get(
   },
 );
 
-router.post("/course-sections", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
-  try {
-    const courseId = req.body.course_id;
-    await ensureEducatorOwnsCourse(req.user.id, courseId);
+router.post(
+  "/course-sections",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const courseId = req.body.course_id;
+      await ensureEducatorOwnsCourse(req.user.id, courseId);
 
-    const lastSection = await prisma.courseSection.findFirst({
-      where: { courseId },
-      orderBy: { position: "desc" },
-    });
+      const lastSection = await prisma.courseSection.findFirst({
+        where: { courseId },
+        orderBy: { position: "desc" },
+      });
 
-    const section = await prisma.courseSection.create({
-      data: {
-        courseId,
-        title: req.body.title,
-        description: req.body.description || "",
-        position: (lastSection?.position || 0) + 1,
-      },
-    });
+      const section = await prisma.courseSection.create({
+        data: {
+          courseId,
+          title: req.body.title,
+          description: req.body.description || "",
+          position: (lastSection?.position || 0) + 1,
+        },
+      });
 
-    return res.status(201).json({
-      data: {
-        ...section,
-        section_description: section.description || "",
-      },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+      return res.status(201).json({
+        data: {
+          ...section,
+          section_description: section.description || "",
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
-router.put("/course-sections/:sectionId", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
-  try {
-    const section = await ensureEducatorOwnsSection(req.user.id, req.params.sectionId);
+router.put(
+  "/course-sections/:sectionId",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const section = await ensureEducatorOwnsSection(
+        req.user.id,
+        req.params.sectionId,
+      );
 
-    const updated = await prisma.courseSection.update({
-      where: { id: section.id },
-      data: {
-        title: req.body.title,
-        description: req.body.description || "",
-      },
-    });
+      const updated = await prisma.courseSection.update({
+        where: { id: section.id },
+        data: {
+          title: req.body.title,
+          description: req.body.description || "",
+        },
+      });
 
-    return res.json({
-      data: {
-        ...updated,
-        section_description: updated.description || "",
-      },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+      return res.json({
+        data: {
+          ...updated,
+          section_description: updated.description || "",
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.delete(
   "/course-sections/:sectionId",
@@ -2083,7 +2280,10 @@ router.delete(
   authorize("EDUCATOR"),
   async (req, res, next) => {
     try {
-      const section = await ensureEducatorOwnsSection(req.user.id, req.params.sectionId);
+      const section = await ensureEducatorOwnsSection(
+        req.user.id,
+        req.params.sectionId,
+      );
       await prisma.courseSection.delete({ where: { id: section.id } });
       return res.json({ success: true });
     } catch (error) {
@@ -2098,7 +2298,10 @@ router.get(
   authorize("EDUCATOR"),
   async (req, res, next) => {
     try {
-      const section = await ensureEducatorOwnsSection(req.user.id, req.params.sectionId);
+      const section = await ensureEducatorOwnsSection(
+        req.user.id,
+        req.params.sectionId,
+      );
       const lessons = await prisma.lesson.findMany({
         where: { sectionId: section.id },
         include: lessonIncludeForTopics(),
@@ -2119,7 +2322,10 @@ router.put(
   authorize("EDUCATOR"),
   async (req, res, next) => {
     try {
-      const section = await ensureEducatorOwnsSection(req.user.id, req.params.sectionId);
+      const section = await ensureEducatorOwnsSection(
+        req.user.id,
+        req.params.sectionId,
+      );
       const itemIds = Array.isArray(req.body.items) ? req.body.items : [];
       await prisma.$transaction(
         itemIds.map((id, index) =>
@@ -2136,159 +2342,187 @@ router.put(
   },
 );
 
-router.post("/course-curriculums", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
-  try {
-    const section = await ensureEducatorOwnsSection(req.user.id, req.body.course_section_id);
-    const topicIds = extractTopicIdsFromRequestBody(req.body) || [];
-    const topics = await resolveCurriculumTopicsForCourse(section.course, topicIds);
-    const lesson = await prisma.lesson.create({
-      include: lessonIncludeForTopics(),
-      data: {
-        sectionId: section.id,
-        courseId: section.courseId,
-        topicId: topics[0]?.id || null,
-        ...(supportsLessonTopics && topics.length > 0
-          ? {
-              lessonTopics: {
-                create: topics.map((topic) => ({
-                  topicId: topic.id,
-                })),
-              },
-            }
-          : {}),
-        type:
-          req.body.curriculum_type === "quiz"
-            ? "QUIZ"
-            : req.body.curriculum_type === "coding_exercise"
-              ? "CODING_EXERCISE"
-              : req.body.curriculum_type === "assignment"
-                ? "ASSIGNMENT"
-                : "RESOURCE",
+router.post(
+  "/course-curriculums",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const section = await ensureEducatorOwnsSection(
+        req.user.id,
+        req.body.course_section_id,
+      );
+      const topicIds = extractTopicIdsFromRequestBody(req.body) || [];
+      const topics = await resolveCurriculumTopicsForCourse(
+        section.course,
+        topicIds,
+      );
+      const lesson = await prisma.lesson.create({
+        include: lessonIncludeForTopics(),
+        data: {
+          sectionId: section.id,
+          courseId: section.courseId,
+          topicId: topics[0]?.id || null,
+          ...(supportsLessonTopics && topics.length > 0
+            ? {
+                lessonTopics: {
+                  create: topics.map((topic) => ({
+                    topicId: topic.id,
+                  })),
+                },
+              }
+            : {}),
+          type:
+            req.body.curriculum_type === "quiz"
+              ? "QUIZ"
+              : req.body.curriculum_type === "coding_exercise"
+                ? "CODING_EXERCISE"
+                : req.body.curriculum_type === "assignment"
+                  ? "ASSIGNMENT"
+                  : "RESOURCE",
+          title: req.body.title,
+          description: req.body.description || "",
+          isPreview:
+            req.body.is_public_preview === true ||
+            req.body.is_public_preview === "1" ||
+            req.body.is_preview === true ||
+            req.body.is_preview === "1" ||
+            req.body.published === true ||
+            req.body.published === "1",
+          position:
+            ((
+              await prisma.lesson.findFirst({
+                where: { sectionId: section.id },
+                orderBy: { position: "desc" },
+              })
+            )?.position || 0) + 1,
+        },
+      });
+
+      return res
+        .status(201)
+        .json({ data: mapLessonToLegacyCurriculum(lesson) });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.put(
+  "/course-curriculums/:lessonId",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const quizQuestions =
+        req.body.quizQuestions !== undefined
+          ? req.body.quizQuestions
+          : req.body.quiz_questions;
+      const codingInstructions =
+        req.body.codingInstructions !== undefined
+          ? req.body.codingInstructions
+          : req.body.coding_instructions;
+      const codingStarterCode =
+        req.body.codingStarterCode !== undefined
+          ? req.body.codingStarterCode
+          : req.body.coding_starter_code;
+      const topicIds = extractTopicIdsFromRequestBody(req.body);
+
+      const data = {
         title: req.body.title,
         description: req.body.description || "",
-        isPreview:
+      };
+
+      if (
+        req.body.is_public_preview !== undefined ||
+        req.body.is_preview !== undefined ||
+        req.body.published !== undefined
+      ) {
+        data.isPreview =
           req.body.is_public_preview === true ||
           req.body.is_public_preview === "1" ||
           req.body.is_preview === true ||
           req.body.is_preview === "1" ||
           req.body.published === true ||
-          req.body.published === "1",
-        position:
-          ((await prisma.lesson.findFirst({
-            where: { sectionId: section.id },
-            orderBy: { position: "desc" },
-          }))?.position || 0) + 1,
-      },
-    });
+          req.body.published === "1";
+      }
 
-    return res.status(201).json({ data: mapLessonToLegacyCurriculum(lesson) });
-  } catch (error) {
-    return next(error);
-  }
-});
+      if (quizQuestions !== undefined) {
+        data.quizQuestions = quizQuestions;
+      }
 
-router.put("/course-curriculums/:lessonId", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
-  try {
-    const lesson = await ensureEducatorOwnsLesson(req.user.id, req.params.lessonId);
-    const quizQuestions =
-      req.body.quizQuestions !== undefined ? req.body.quizQuestions : req.body.quiz_questions;
-    const codingInstructions =
-      req.body.codingInstructions !== undefined
-        ? req.body.codingInstructions
-        : req.body.coding_instructions;
-    const codingStarterCode =
-      req.body.codingStarterCode !== undefined
-        ? req.body.codingStarterCode
-        : req.body.coding_starter_code;
-    const topicIds = extractTopicIdsFromRequestBody(req.body);
+      if (codingInstructions !== undefined) {
+        data.codingInstructions = String(codingInstructions || "");
+      }
 
-    const data = {
-      title: req.body.title,
-      description: req.body.description || "",
-    };
+      if (codingStarterCode !== undefined) {
+        data.codingStarterCode =
+          typeof codingStarterCode === "string"
+            ? codingStarterCode
+            : JSON.stringify(codingStarterCode || {});
+      }
 
-    if (
-      req.body.is_public_preview !== undefined ||
-      req.body.is_preview !== undefined ||
-      req.body.published !== undefined
-    ) {
-      data.isPreview =
-        req.body.is_public_preview === true ||
-        req.body.is_public_preview === "1" ||
-        req.body.is_preview === true ||
-        req.body.is_preview === "1" ||
-        req.body.published === true ||
-        req.body.published === "1";
-    }
+      if (topicIds !== undefined) {
+        const topics = await resolveCurriculumTopicsForCourse(
+          lesson.course,
+          topicIds,
+        );
+        data.topicId = topics[0]?.id || null;
 
-    if (quizQuestions !== undefined) {
-      data.quizQuestions = quizQuestions;
-    }
-
-    if (codingInstructions !== undefined) {
-      data.codingInstructions = String(codingInstructions || "");
-    }
-
-    if (codingStarterCode !== undefined) {
-      data.codingStarterCode =
-        typeof codingStarterCode === "string"
-          ? codingStarterCode
-          : JSON.stringify(codingStarterCode || {});
-    }
-
-    if (topicIds !== undefined) {
-      const topics = await resolveCurriculumTopicsForCourse(lesson.course, topicIds);
-      data.topicId = topics[0]?.id || null;
-
-      if (!supportsLessonTopics) {
-        if (topics.length > 1) {
-          throw new ApiError(
-            400,
-            "Multiple topics require the latest migration and Prisma client generation",
-          );
+        if (!supportsLessonTopics) {
+          if (topics.length > 1) {
+            throw new ApiError(
+              400,
+              "Multiple topics require the latest migration and Prisma client generation",
+            );
+          }
+          const updated = await prisma.lesson.update({
+            where: { id: lesson.id },
+            data,
+            include: lessonIncludeForTopics(),
+          });
+          return res.json({ data: mapLessonToLegacyCurriculum(updated) });
         }
-        const updated = await prisma.lesson.update({
-          where: { id: lesson.id },
-          data,
-          include: lessonIncludeForTopics(),
+
+        const updated = await prisma.$transaction(async (tx) => {
+          await tx.lesson.update({
+            where: { id: lesson.id },
+            data,
+          });
+          await tx.lessonTopic.deleteMany({
+            where: { lessonId: lesson.id },
+          });
+          if (topics.length > 0) {
+            await tx.lessonTopic.createMany({
+              data: topics.map((topic) => ({
+                lessonId: lesson.id,
+                topicId: topic.id,
+              })),
+            });
+          }
+          return tx.lesson.findUnique({
+            where: { id: lesson.id },
+            include: lessonIncludeForTopics(),
+          });
         });
         return res.json({ data: mapLessonToLegacyCurriculum(updated) });
       }
 
-      const updated = await prisma.$transaction(async (tx) => {
-        await tx.lesson.update({
-          where: { id: lesson.id },
-          data,
-        });
-        await tx.lessonTopic.deleteMany({
-          where: { lessonId: lesson.id },
-        });
-        if (topics.length > 0) {
-          await tx.lessonTopic.createMany({
-            data: topics.map((topic) => ({
-              lessonId: lesson.id,
-              topicId: topic.id,
-            })),
-          });
-        }
-        return tx.lesson.findUnique({
-          where: { id: lesson.id },
-          include: lessonIncludeForTopics(),
-        });
+      const updated = await prisma.lesson.update({
+        where: { id: lesson.id },
+        data,
+        include: lessonIncludeForTopics(),
       });
       return res.json({ data: mapLessonToLegacyCurriculum(updated) });
+    } catch (error) {
+      return next(error);
     }
-
-    const updated = await prisma.lesson.update({
-      where: { id: lesson.id },
-      data,
-      include: lessonIncludeForTopics(),
-    });
-    return res.json({ data: mapLessonToLegacyCurriculum(updated) });
-  } catch (error) {
-    return next(error);
-  }
-});
+  },
+);
 
 router.delete(
   "/course-curriculums/:lessonId",
@@ -2296,7 +2530,10 @@ router.delete(
   authorize("EDUCATOR"),
   async (req, res, next) => {
     try {
-      const lesson = await ensureEducatorOwnsLesson(req.user.id, req.params.lessonId);
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
       await prisma.lesson.delete({ where: { id: lesson.id } });
       return res.json({ success: true });
     } catch (error) {
@@ -2305,206 +2542,248 @@ router.delete(
   },
 );
 
-router.post("/course-curriculums/add-progress", authenticate, async (req, res, next) => {
-  try {
-    const data = await updateLessonProgress(req.user.id, {
-      lessonId: req.body.curriculum_id,
-      progressPct: 100,
-      isCompleted: true,
-      lastPosition: 0,
-    });
-    return res.json({ data });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-router.post("/course-curriculums/:lessonId/coding-submissions", authenticate, authorize("LEARNER"), async (req, res, next) => {
-  try {
-    const { lesson } = await ensureLearnerOwnsCodingLesson(req.user.id, req.params.lessonId);
-    const language = String(req.body.language || "").trim().toLowerCase();
-    const sourceCode = String(req.body.sourceCode || "");
-    const mode = String(req.body.mode || "RUN").toUpperCase() === "SUBMIT" ? "SUBMIT" : "RUN";
-
-    if (!language || !JUDGE0_LANGUAGE_IDS[language]) {
-      throw new ApiError(400, "Unsupported coding language");
-    }
-    if (!sourceCode.trim()) {
-      throw new ApiError(400, "Source code is required");
-    }
-
-    const submissionId = randomUUID();
-    codingSubmissionStore.set(submissionId, {
-      id: submissionId,
-      lessonId: lesson.id,
-      userId: req.user.id,
-      language,
-      sourceCode,
-      mode,
-      status: "QUEUED",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      summary: null,
-      error: null,
-    });
-
-    setTimeout(() => {
-      processCodingSubmission(submissionId).catch(() => {});
-    }, 0);
-
-    return res.status(202).json({
-      data: {
-        submissionId,
-        status: "QUEUED",
-      },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-router.post("/course-curriculums/:lessonId/coding-step-check", authenticate, authorize("LEARNER"), async (req, res, next) => {
-  try {
-    const { lesson } = await ensureLearnerOwnsCodingLesson(req.user.id, req.params.lessonId);
-    const language = String(req.body.language || "").trim().toLowerCase();
-    const sourceCode = String(req.body.sourceCode || "");
-    const requestedStepNumber = Number(req.body.stepNumber || 1);
-
-    if (!language) {
-      throw new ApiError(400, "Language is required");
-    }
-    if (!sourceCode.trim()) {
-      throw new ApiError(400, "Source code is required");
-    }
-    if (!Number.isFinite(requestedStepNumber) || requestedStepNumber < 1) {
-      throw new ApiError(400, "Valid step number is required");
-    }
-
-    const asset = normalizeCodingAsset(lesson.codingStarterCode);
-    const steps = normalizeCodingStepsForLanguage(asset, language);
-    if (!steps.length) {
-      throw new ApiError(400, "No step challenges configured for this language");
-    }
-
-    const activeStep = steps.find((item) => item.stepNumber === requestedStepNumber);
-    if (!activeStep) {
-      throw new ApiError(404, "Step challenge not found");
-    }
-
-    const results = [];
-    for (const validator of activeStep.validators) {
-      if (validator.mode === "RUN_OUTPUT") {
-        if (!JUDGE0_LANGUAGE_IDS[language]) {
-          throw new ApiError(
-            400,
-            `RUN_OUTPUT validation is not supported for ${language}. Use CODE_INCLUDES or EXACT_CODE.`,
-          );
-        }
-        const run = await executeJudge0Code({
-          language,
-          sourceCode,
-          stdin: validator.input,
-        });
-        const passed =
-          !run.hasExecutionError &&
-          compareCodingOutput(run.actualOutput, validator.expectedOutput, validator.comparisonMode);
-        results.push({
-          id: validator.id,
-          name: validator.name,
-          mode: validator.mode,
-          visibility: validator.visibility,
-          expectedOutput: validator.expectedOutput,
-          actualOutput: run.actualOutput,
-          passed,
-          stderr: run.stderr,
-          compileOutput: run.compileOutput,
-          statusDescription: run.statusDescription,
-        });
-      } else {
-        const passed = compareCodingSource(
-          sourceCode,
-          validator.expectedOutput,
-          validator.mode,
-          validator.comparisonMode,
-        );
-        results.push({
-          id: validator.id,
-          name: validator.name,
-          mode: validator.mode,
-          visibility: validator.visibility,
-          expectedOutput: validator.expectedOutput,
-          actualOutput: sourceCode,
-          passed,
-          stderr: "",
-          compileOutput: "",
-          statusDescription: passed ? "Matched source" : "Source mismatch",
-        });
-      }
-    }
-
-    const allPassed = results.every((item) => item.passed);
-    const currentStepIndex = steps.findIndex((item) => item.stepNumber === activeStep.stepNumber);
-    const nextStep = allPassed ? steps[currentStepIndex + 1] || null : activeStep;
-    const isFinalStep = currentStepIndex === steps.length - 1;
-    const lessonCompleted = allPassed && isFinalStep;
-
-    if (lessonCompleted) {
-      await updateLessonProgress(req.user.id, {
-        lessonId: lesson.id,
+router.post(
+  "/course-curriculums/add-progress",
+  authenticate,
+  async (req, res, next) => {
+    try {
+      const data = await updateLessonProgress(req.user.id, {
+        lessonId: req.body.curriculum_id,
         progressPct: 100,
         isCompleted: true,
         lastPosition: 0,
       });
+      return res.json({ data });
+    } catch (error) {
+      return next(error);
     }
+  },
+);
 
-    const visibleResults = results
-      .filter((item) => item.visibility === "VISIBLE")
-      .map((item) => ({
-        id: item.id,
-        name: item.name,
-        mode: item.mode,
-        expectedOutput: item.expectedOutput,
-        actualOutput: item.actualOutput,
-        passed: item.passed,
-        statusDescription: item.statusDescription,
-      }));
-    const hiddenResults = results.filter((item) => item.visibility === "HIDDEN");
+router.post(
+  "/course-curriculums/:lessonId/coding-submissions",
+  authenticate,
+  authorize("LEARNER"),
+  async (req, res, next) => {
+    try {
+      const { lesson } = await ensureLearnerOwnsCodingLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const language = String(req.body.language || "")
+        .trim()
+        .toLowerCase();
+      const sourceCode = String(req.body.sourceCode || "");
+      const mode =
+        String(req.body.mode || "RUN").toUpperCase() === "SUBMIT"
+          ? "SUBMIT"
+          : "RUN";
 
-    return res.json({
-      data: {
+      if (!language || !JUDGE0_LANGUAGE_IDS[language]) {
+        throw new ApiError(400, "Unsupported coding language");
+      }
+      if (!sourceCode.trim()) {
+        throw new ApiError(400, "Source code is required");
+      }
+
+      const submissionId = randomUUID();
+      codingSubmissionStore.set(submissionId, {
+        id: submissionId,
         lessonId: lesson.id,
+        userId: req.user.id,
         language,
-        step: {
-          id: activeStep.id,
-          stepNumber: activeStep.stepNumber,
-          title: activeStep.title,
-          instruction: activeStep.instruction,
+        sourceCode,
+        mode,
+        status: "QUEUED",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        summary: null,
+        error: null,
+      });
+
+      setTimeout(() => {
+        processCodingSubmission(submissionId).catch(() => {});
+      }, 0);
+
+      return res.status(202).json({
+        data: {
+          submissionId,
+          status: "QUEUED",
         },
-        summary: {
-          allPassed,
-          totalChecks: results.length,
-          passedChecks: results.filter((item) => item.passed).length,
-          visibleResults,
-          hiddenSummary: {
-            total: hiddenResults.length,
-            passed: hiddenResults.filter((item) => item.passed).length,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/course-curriculums/:lessonId/coding-step-check",
+  authenticate,
+  authorize("LEARNER"),
+  async (req, res, next) => {
+    try {
+      const { lesson } = await ensureLearnerOwnsCodingLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const language = String(req.body.language || "")
+        .trim()
+        .toLowerCase();
+      const sourceCode = String(req.body.sourceCode || "");
+      const requestedStepNumber = Number(req.body.stepNumber || 1);
+
+      if (!language) {
+        throw new ApiError(400, "Language is required");
+      }
+      if (!sourceCode.trim()) {
+        throw new ApiError(400, "Source code is required");
+      }
+      if (!Number.isFinite(requestedStepNumber) || requestedStepNumber < 1) {
+        throw new ApiError(400, "Valid step number is required");
+      }
+
+      const asset = normalizeCodingAsset(lesson.codingStarterCode);
+      const steps = normalizeCodingStepsForLanguage(asset, language);
+      if (!steps.length) {
+        throw new ApiError(
+          400,
+          "No step challenges configured for this language",
+        );
+      }
+
+      const activeStep = steps.find(
+        (item) => item.stepNumber === requestedStepNumber,
+      );
+      if (!activeStep) {
+        throw new ApiError(404, "Step challenge not found");
+      }
+
+      const results = [];
+      for (const validator of activeStep.validators) {
+        if (validator.mode === "RUN_OUTPUT") {
+          if (!JUDGE0_LANGUAGE_IDS[language]) {
+            throw new ApiError(
+              400,
+              `RUN_OUTPUT validation is not supported for ${language}. Use CODE_INCLUDES or EXACT_CODE.`,
+            );
+          }
+          const run = await executeJudge0Code({
+            language,
+            sourceCode,
+            stdin: validator.input,
+          });
+          const passed =
+            !run.hasExecutionError &&
+            compareCodingOutput(
+              run.actualOutput,
+              validator.expectedOutput,
+              validator.comparisonMode,
+            );
+          results.push({
+            id: validator.id,
+            name: validator.name,
+            mode: validator.mode,
+            visibility: validator.visibility,
+            expectedOutput: validator.expectedOutput,
+            actualOutput: run.actualOutput,
+            passed,
+            stderr: run.stderr,
+            compileOutput: run.compileOutput,
+            statusDescription: run.statusDescription,
+          });
+        } else {
+          const passed = compareCodingSource(
+            sourceCode,
+            validator.expectedOutput,
+            validator.mode,
+            validator.comparisonMode,
+          );
+          results.push({
+            id: validator.id,
+            name: validator.name,
+            mode: validator.mode,
+            visibility: validator.visibility,
+            expectedOutput: validator.expectedOutput,
+            actualOutput: sourceCode,
+            passed,
+            stderr: "",
+            compileOutput: "",
+            statusDescription: passed ? "Matched source" : "Source mismatch",
+          });
+        }
+      }
+
+      const allPassed = results.every((item) => item.passed);
+      const currentStepIndex = steps.findIndex(
+        (item) => item.stepNumber === activeStep.stepNumber,
+      );
+      const nextStep = allPassed
+        ? steps[currentStepIndex + 1] || null
+        : activeStep;
+      const isFinalStep = currentStepIndex === steps.length - 1;
+      const lessonCompleted = allPassed && isFinalStep;
+
+      if (lessonCompleted) {
+        await updateLessonProgress(req.user.id, {
+          lessonId: lesson.id,
+          progressPct: 100,
+          isCompleted: true,
+          lastPosition: 0,
+        });
+      }
+
+      const visibleResults = results
+        .filter((item) => item.visibility === "VISIBLE")
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          mode: item.mode,
+          expectedOutput: item.expectedOutput,
+          actualOutput: item.actualOutput,
+          passed: item.passed,
+          statusDescription: item.statusDescription,
+        }));
+      const hiddenResults = results.filter(
+        (item) => item.visibility === "HIDDEN",
+      );
+
+      return res.json({
+        data: {
+          lessonId: lesson.id,
+          language,
+          step: {
+            id: activeStep.id,
+            stepNumber: activeStep.stepNumber,
+            title: activeStep.title,
+            instruction: activeStep.instruction,
           },
+          summary: {
+            allPassed,
+            totalChecks: results.length,
+            passedChecks: results.filter((item) => item.passed).length,
+            visibleResults,
+            hiddenSummary: {
+              total: hiddenResults.length,
+              passed: hiddenResults.filter((item) => item.passed).length,
+            },
+          },
+          next: nextStep
+            ? {
+                stepNumber: nextStep.stepNumber,
+                title: nextStep.title,
+                instruction: nextStep.instruction,
+                starterCode: nextStep.starterCode,
+              }
+            : null,
+          lessonCompleted,
         },
-        next: nextStep
-          ? {
-              stepNumber: nextStep.stepNumber,
-              title: nextStep.title,
-              instruction: nextStep.instruction,
-              starterCode: nextStep.starterCode,
-            }
-          : null,
-        lessonCompleted,
-      },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.post(
   "/course-curriculums/:lessonId/coding-submit",
@@ -2512,10 +2791,17 @@ router.post(
   authorize("LEARNER"),
   async (req, res, next) => {
     try {
-      const { lesson } = await ensureLearnerOwnsCodingLesson(req.user.id, req.params.lessonId);
-      const language = String(req.body.language || "").trim().toLowerCase();
+      const { lesson } = await ensureLearnerOwnsCodingLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const language = String(req.body.language || "")
+        .trim()
+        .toLowerCase();
       const sourceCode = String(req.body.sourceCode || "");
-      const action = String(req.body.action || req.body.mode || "submit").toUpperCase();
+      const action = String(
+        req.body.action || req.body.mode || "submit",
+      ).toUpperCase();
 
       if (!language) {
         throw new ApiError(400, "Language is required");
@@ -2550,7 +2836,9 @@ router.post(
         }
       });
 
-      return res.status(202).json({ data: { submissionId, status: submission.status } });
+      return res
+        .status(202)
+        .json({ data: { submissionId, status: submission.status } });
     } catch (error) {
       return next(error);
     }
@@ -2565,7 +2853,10 @@ router.get(
     try {
       await ensureLearnerOwnsCodingLesson(req.user.id, req.params.lessonId);
       const submission = getCodingSubmissionStatus(req.params.submissionId);
-      if (submission.userId !== req.user.id || submission.lessonId !== req.params.lessonId) {
+      if (
+        submission.userId !== req.user.id ||
+        submission.lessonId !== req.params.lessonId
+      ) {
         throw new ApiError(403, "Not allowed to view this submission");
       }
 
@@ -2587,165 +2878,231 @@ router.get(
   },
 );
 
-router.get("/course-curriculums/:lessonId/quiz-attempt", authenticate, authorize("LEARNER"), async (req, res, next) => {
-  try {
-    const { lesson } = await ensureLearnerOwnsQuizLesson(req.user.id, req.params.lessonId);
-    const { key, quizPayload, state } = await loadQuizAttemptState(req.user.id, lesson);
-    await saveQuizAttemptState(key, state);
-
-    return res.json({
-      data: {
-        lessonId: lesson.id,
-        settings: quizPayload.settings,
-        totalQuestions: quizPayload.questions.length,
-        state,
-      },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-router.post("/course-curriculums/:lessonId/quiz-attempt/hint", authenticate, authorize("LEARNER"), async (req, res, next) => {
-  try {
-    const questionIndex = Number(req.body.questionIndex);
-    if (!Number.isInteger(questionIndex) || questionIndex < 0) {
-      throw new ApiError(400, "Invalid questionIndex");
-    }
-
-    const { lesson } = await ensureLearnerOwnsQuizLesson(req.user.id, req.params.lessonId);
-    const { key, quizPayload, state } = await loadQuizAttemptState(req.user.id, lesson);
-    const question = quizPayload.questions[questionIndex];
-    if (!question) {
-      throw new ApiError(404, "Question not found");
-    }
-    if (state.completed) {
-      throw new ApiError(400, "Quiz already completed");
-    }
-
-    const questionKey = question.id || `q-${questionIndex + 1}`;
-    const alreadyUsed = Boolean(state.hintUsage?.[questionKey]);
-    if (!alreadyUsed) {
-      state.hintUsage = state.hintUsage || {};
-      state.hintUsage[questionKey] = true;
-      state.lastActivityAt = new Date().toISOString();
-      state.metrics = computeQuizMetrics(state, quizPayload.questions.length, quizPayload.settings.passingScore);
+router.get(
+  "/course-curriculums/:lessonId/quiz-attempt",
+  authenticate,
+  authorize("LEARNER"),
+  async (req, res, next) => {
+    try {
+      const { lesson } = await ensureLearnerOwnsQuizLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const { key, quizPayload, state } = await loadQuizAttemptState(
+        req.user.id,
+        lesson,
+      );
       await saveQuizAttemptState(key, state);
-    }
 
-    return res.json({
-      data: {
+      return res.json({
+        data: {
+          lessonId: lesson.id,
+          settings: quizPayload.settings,
+          totalQuestions: quizPayload.questions.length,
+          state,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/course-curriculums/:lessonId/quiz-attempt/hint",
+  authenticate,
+  authorize("LEARNER"),
+  async (req, res, next) => {
+    try {
+      const questionIndex = Number(req.body.questionIndex);
+      if (!Number.isInteger(questionIndex) || questionIndex < 0) {
+        throw new ApiError(400, "Invalid questionIndex");
+      }
+
+      const { lesson } = await ensureLearnerOwnsQuizLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const { key, quizPayload, state } = await loadQuizAttemptState(
+        req.user.id,
+        lesson,
+      );
+      const question = quizPayload.questions[questionIndex];
+      if (!question) {
+        throw new ApiError(404, "Question not found");
+      }
+      if (state.completed) {
+        throw new ApiError(400, "Quiz already completed");
+      }
+
+      const questionKey = question.id || `q-${questionIndex + 1}`;
+      const alreadyUsed = Boolean(state.hintUsage?.[questionKey]);
+      if (!alreadyUsed) {
+        state.hintUsage = state.hintUsage || {};
+        state.hintUsage[questionKey] = true;
+        state.lastActivityAt = new Date().toISOString();
+        state.metrics = computeQuizMetrics(
+          state,
+          quizPayload.questions.length,
+          quizPayload.settings.passingScore,
+        );
+        await saveQuizAttemptState(key, state);
+      }
+
+      return res.json({
+        data: {
+          questionIndex,
+          hint:
+            question.hint ||
+            "Focus on key concepts in the question prompt and eliminate unlikely options.",
+          alreadyUsed,
+          hintUsed: true,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/course-curriculums/:lessonId/quiz-attempt/validate",
+  authenticate,
+  authorize("LEARNER"),
+  async (req, res, next) => {
+    try {
+      const questionIndex = Number(req.body.questionIndex);
+      if (!Number.isInteger(questionIndex) || questionIndex < 0) {
+        throw new ApiError(400, "Invalid questionIndex");
+      }
+
+      const { lesson } = await ensureLearnerOwnsQuizLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const { key, quizPayload, state } = await loadQuizAttemptState(
+        req.user.id,
+        lesson,
+      );
+      if (state.completed) {
+        throw new ApiError(400, "Quiz already completed");
+      }
+
+      if (
+        !quizPayload.settings.allowSkip &&
+        questionIndex !== Number(state.currentQuestionIndex || 0)
+      ) {
+        throw new ApiError(400, "You must answer questions in order");
+      }
+
+      const question = quizPayload.questions[questionIndex];
+      if (!question) {
+        throw new ApiError(404, "Question not found");
+      }
+
+      const questionKey = question.id || `q-${questionIndex + 1}`;
+      const submittedAnswer = req.body.answer;
+      const validation = validateAnswer(question, submittedAnswer);
+      const hintUsed = Boolean(state.hintUsage?.[questionKey]);
+      const maxPoints = Number(question.points || 10);
+      const deduction = hintUsed
+        ? Number(quizPayload.settings.hintPenalty || 0)
+        : 0;
+      const awardedPoints = validation.isCorrect
+        ? Math.max(0, maxPoints - deduction)
+        : 0;
+
+      state.answers = state.answers || {};
+      state.answers[questionKey] = submittedAnswer;
+      state.questionResults = state.questionResults || {};
+      state.questionResults[questionKey] = {
         questionIndex,
-        hint: question.hint || "Focus on key concepts in the question prompt and eliminate unlikely options.",
-        alreadyUsed,
-        hintUsed: true,
-      },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+        submittedAnswer,
+        isCorrect: validation.isCorrect,
+        correctAnswer: validation.correctAnswer,
+        explanation:
+          question.explanation ||
+          "Review this concept before your next attempt.",
+        awardedPoints,
+        maxPoints,
+        hintUsed,
+        answeredAt: new Date().toISOString(),
+      };
 
-router.post("/course-curriculums/:lessonId/quiz-attempt/validate", authenticate, authorize("LEARNER"), async (req, res, next) => {
-  try {
-    const questionIndex = Number(req.body.questionIndex);
-    if (!Number.isInteger(questionIndex) || questionIndex < 0) {
-      throw new ApiError(400, "Invalid questionIndex");
+      if (!quizPayload.settings.allowSkip) {
+        state.currentQuestionIndex = Math.min(
+          questionIndex + 1,
+          Math.max(quizPayload.questions.length - 1, 0),
+        );
+      } else {
+        state.currentQuestionIndex = Number(
+          req.body.nextQuestionIndex ?? questionIndex + 1,
+        );
+      }
+      state.lastActivityAt = new Date().toISOString();
+
+      await finalizeQuizCompletion(req.user.id, lesson.id, state, quizPayload);
+      await saveQuizAttemptState(key, state);
+
+      return res.json({
+        data: {
+          questionIndex,
+          validation: state.questionResults[questionKey],
+          metrics: state.metrics,
+          completed: state.completed,
+          passed: state.passed,
+          nextQuestionIndex: state.currentQuestionIndex,
+        },
+      });
+    } catch (error) {
+      return next(error);
     }
+  },
+);
 
-    const { lesson } = await ensureLearnerOwnsQuizLesson(req.user.id, req.params.lessonId);
-    const { key, quizPayload, state } = await loadQuizAttemptState(req.user.id, lesson);
-    if (state.completed) {
-      throw new ApiError(400, "Quiz already completed");
+router.post(
+  "/course-curriculums/:lessonId/quiz-attempt/retry",
+  authenticate,
+  authorize("LEARNER"),
+  async (req, res, next) => {
+    try {
+      const { lesson } = await ensureLearnerOwnsQuizLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const { key, quizPayload, state } = await loadQuizAttemptState(
+        req.user.id,
+        lesson,
+      );
+
+      if (state.passed && !quizPayload.settings.allowRetakeAfterPass) {
+        throw new ApiError(400, "Retake is not allowed for this quiz");
+      }
+
+      const nextAttemptNumber = Number(state.attemptNumber || 1) + 1;
+      const resetState = {
+        ...buildDefaultQuizState(quizPayload),
+        attemptNumber: nextAttemptNumber,
+        attemptHistory: Array.isArray(state.attemptHistory)
+          ? state.attemptHistory
+          : [],
+      };
+
+      await saveQuizAttemptState(key, resetState);
+
+      return res.json({
+        data: {
+          lessonId: lesson.id,
+          settings: quizPayload.settings,
+          totalQuestions: quizPayload.questions.length,
+          state: resetState,
+        },
+      });
+    } catch (error) {
+      return next(error);
     }
-
-    if (!quizPayload.settings.allowSkip && questionIndex !== Number(state.currentQuestionIndex || 0)) {
-      throw new ApiError(400, "You must answer questions in order");
-    }
-
-    const question = quizPayload.questions[questionIndex];
-    if (!question) {
-      throw new ApiError(404, "Question not found");
-    }
-
-    const questionKey = question.id || `q-${questionIndex + 1}`;
-    const submittedAnswer = req.body.answer;
-    const validation = validateAnswer(question, submittedAnswer);
-    const hintUsed = Boolean(state.hintUsage?.[questionKey]);
-    const maxPoints = Number(question.points || 10);
-    const deduction = hintUsed ? Number(quizPayload.settings.hintPenalty || 0) : 0;
-    const awardedPoints = validation.isCorrect ? Math.max(0, maxPoints - deduction) : 0;
-
-    state.answers = state.answers || {};
-    state.answers[questionKey] = submittedAnswer;
-    state.questionResults = state.questionResults || {};
-    state.questionResults[questionKey] = {
-      questionIndex,
-      submittedAnswer,
-      isCorrect: validation.isCorrect,
-      correctAnswer: validation.correctAnswer,
-      explanation: question.explanation || "Review this concept before your next attempt.",
-      awardedPoints,
-      maxPoints,
-      hintUsed,
-      answeredAt: new Date().toISOString(),
-    };
-
-    if (!quizPayload.settings.allowSkip) {
-      state.currentQuestionIndex = Math.min(questionIndex + 1, Math.max(quizPayload.questions.length - 1, 0));
-    } else {
-      state.currentQuestionIndex = Number(req.body.nextQuestionIndex ?? questionIndex + 1);
-    }
-    state.lastActivityAt = new Date().toISOString();
-
-    await finalizeQuizCompletion(req.user.id, lesson.id, state, quizPayload);
-    await saveQuizAttemptState(key, state);
-
-    return res.json({
-      data: {
-        questionIndex,
-        validation: state.questionResults[questionKey],
-        metrics: state.metrics,
-        completed: state.completed,
-        passed: state.passed,
-        nextQuestionIndex: state.currentQuestionIndex,
-      },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-router.post("/course-curriculums/:lessonId/quiz-attempt/retry", authenticate, authorize("LEARNER"), async (req, res, next) => {
-  try {
-    const { lesson } = await ensureLearnerOwnsQuizLesson(req.user.id, req.params.lessonId);
-    const { key, quizPayload, state } = await loadQuizAttemptState(req.user.id, lesson);
-
-    if (state.passed && !quizPayload.settings.allowRetakeAfterPass) {
-      throw new ApiError(400, "Retake is not allowed for this quiz");
-    }
-
-    const nextAttemptNumber = Number(state.attemptNumber || 1) + 1;
-    const resetState = {
-      ...buildDefaultQuizState(quizPayload),
-      attemptNumber: nextAttemptNumber,
-      attemptHistory: Array.isArray(state.attemptHistory) ? state.attemptHistory : [],
-    };
-
-    await saveQuizAttemptState(key, resetState);
-
-    return res.json({
-      data: {
-        lessonId: lesson.id,
-        settings: quizPayload.settings,
-        totalQuestions: quizPayload.questions.length,
-        state: resetState,
-      },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+  },
+);
 
 router.post(
   "/course-resources/videos",
@@ -2754,7 +3111,10 @@ router.post(
   upload.single("file"),
   async (req, res, next) => {
     try {
-      const lesson = await ensureEducatorOwnsLesson(req.user.id, req.body.curriculum_id);
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.body.curriculum_id,
+      );
       if (!req.file) {
         throw new ApiError(400, "File is required");
       }
@@ -2828,7 +3188,9 @@ async function streamTokenHandler(req, res, next) {
       userId: req.user.id,
       mediaId: queryId,
     });
-    const bunnyVideoId = extractBunnyVideoIdFromPlaybackUrl(mediaSource.storagePath);
+    const bunnyVideoId = extractBunnyVideoIdFromPlaybackUrl(
+      mediaSource.storagePath,
+    );
     const requestIpAddress = getRequestIpAddress(req);
     const embedUrl = bunnyVideoId
       ? buildBunnySignedEmbedUrl(bunnyVideoId, {
@@ -2864,7 +3226,8 @@ async function streamHandler(req, res, next) {
     }
 
     if (!streamToken) {
-      const publicPreviewMedia = await resolvePublicPreviewMediaByQueryId(queryId);
+      const publicPreviewMedia =
+        await resolvePublicPreviewMediaByQueryId(queryId);
       if (!publicPreviewMedia) {
         throw new ApiError(403, "Missing stream token");
       }
@@ -2901,7 +3264,10 @@ router.delete(
   authorize("EDUCATOR"),
   async (req, res, next) => {
     try {
-      const lesson = await ensureEducatorOwnsLesson(req.user.id, req.params.lessonId);
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
       const existingBunnyVideoId = isBunnyStreamEnabled()
         ? extractBunnyVideoIdFromPlaybackUrl(lesson.videoUrl)
         : "";
@@ -2924,26 +3290,34 @@ router.delete(
   },
 );
 
-router.post("/course-resources/articles", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
-  try {
-    const lesson = await ensureEducatorOwnsLesson(req.user.id, req.body.curriculum_id);
-    const updatedLesson = await prisma.lesson.update({
-      where: { id: lesson.id },
-      data: {
-        assignmentText: req.body.content,
-      },
-    });
+router.post(
+  "/course-resources/articles",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.body.curriculum_id,
+      );
+      const updatedLesson = await prisma.lesson.update({
+        where: { id: lesson.id },
+        data: {
+          assignmentText: req.body.content,
+        },
+      });
 
-    return res.status(201).json({
-      data: {
-        curriculum: mapLessonToLegacyCurriculum(updatedLesson),
-        asset: { content: updatedLesson.assignmentText || "" },
-      },
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+      return res.status(201).json({
+        data: {
+          curriculum: mapLessonToLegacyCurriculum(updatedLesson),
+          asset: { content: updatedLesson.assignmentText || "" },
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.delete(
   "/course-resources/articles/:lessonId",
@@ -2951,7 +3325,10 @@ router.delete(
   authorize("EDUCATOR"),
   async (req, res, next) => {
     try {
-      const lesson = await ensureEducatorOwnsLesson(req.user.id, req.params.lessonId);
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
       const updatedLesson = await prisma.lesson.update({
         where: { id: lesson.id },
         data: {
@@ -2970,49 +3347,59 @@ router.delete(
   },
 );
 
-router.post("/payout-accounts/paypal", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
-  try {
-    const account = await prisma.payoutAccount.upsert({
-      where: { userId: req.user.id },
-      update: {
-        paypalEmail: req.body.email,
-        paypalMerchantId: req.body.accountId || null,
-        isVerified: true,
-      },
-      create: {
-        userId: req.user.id,
-        paypalEmail: req.body.email,
-        paypalMerchantId: req.body.accountId || null,
-        isVerified: true,
-      },
-    });
+router.post(
+  "/payout-accounts/paypal",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const account = await prisma.payoutAccount.upsert({
+        where: { userId: req.user.id },
+        update: {
+          paypalEmail: req.body.email,
+          paypalMerchantId: req.body.accountId || null,
+          isVerified: true,
+        },
+        create: {
+          userId: req.user.id,
+          paypalEmail: req.body.email,
+          paypalMerchantId: req.body.accountId || null,
+          isVerified: true,
+        },
+      });
 
-    return res.status(201).json({ data: account });
-  } catch (error) {
-    return next(error);
-  }
-});
+      return res.status(201).json({ data: account });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
-router.get("/payout-accounts", authenticate, authorize("EDUCATOR"), async (req, res, next) => {
-  try {
-    const account = await prisma.payoutAccount.findUnique({
-      where: { userId: req.user.id },
-    });
-    const data = account
-      ? [
-          {
-            provider: "paypal",
-            provider_email: account.paypalEmail,
-            provider_account_id: account.paypalMerchantId,
-            is_default: "1",
-          },
-        ]
-      : [];
-    return res.json(data);
-  } catch (error) {
-    return next(error);
-  }
-});
+router.get(
+  "/payout-accounts",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const account = await prisma.payoutAccount.findUnique({
+        where: { userId: req.user.id },
+      });
+      const data = account
+        ? [
+            {
+              provider: "paypal",
+              provider_email: account.paypalEmail,
+              provider_account_id: account.paypalMerchantId,
+              is_default: "1",
+            },
+          ]
+        : [];
+      return res.json(data);
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.get("/2fa-status", authenticate, async (req, res, next) => {
   try {
@@ -3034,7 +3421,9 @@ router.get("/2fa-status", authenticate, async (req, res, next) => {
     return res.json({
       enabled: Boolean(user.twoFactorEnabled),
       totp_enabled: Boolean(user.twoFactorEnabled),
-      setup_required: Boolean(!user.twoFactorEnabled && user.twoFactorTempSecret),
+      setup_required: Boolean(
+        !user.twoFactorEnabled && user.twoFactorTempSecret,
+      ),
       backup_codes_remaining: backupCodesRemaining,
     });
   } catch (error) {
@@ -3173,9 +3562,15 @@ router.post("/verify-2fa", async (req, res, next) => {
 
     const requestUserAgent = getRequestUserAgent(req);
     const requestIpAddress = getRequestIpAddress(req);
-    const requestLocationLabel = resolveDeviceLocationLabel(req, clientLocationLabel);
+    const requestLocationLabel = resolveDeviceLocationLabel(
+      req,
+      clientLocationLabel,
+    );
     const deviceName = claimedDeviceName || buildDeviceName(requestUserAgent);
-    const knownDeviceBefore = await hasActiveTrustedDeviceByIdentifier(user.id, deviceIdentifier);
+    const knownDeviceBefore = await hasActiveTrustedDeviceByIdentifier(
+      user.id,
+      deviceIdentifier,
+    );
     let trustedDeviceToken = null;
     let isNewDevice = !knownDeviceBefore;
     if (rememberDevice) {
@@ -3301,7 +3696,10 @@ router.post("/verify-backup-code", async (req, res, next) => {
       throw new ApiError(400, "Two-factor authentication is not enabled");
     }
 
-    const consumedResult = await consumeBackupCode(code, user.twoFactorBackupHashes);
+    const consumedResult = await consumeBackupCode(
+      code,
+      user.twoFactorBackupHashes,
+    );
     if (!consumedResult.consumed) {
       throw new ApiError(401, "Invalid or already used backup code");
     }
@@ -3319,9 +3717,15 @@ router.post("/verify-backup-code", async (req, res, next) => {
 
     const requestUserAgent = getRequestUserAgent(req);
     const requestIpAddress = getRequestIpAddress(req);
-    const requestLocationLabel = resolveDeviceLocationLabel(req, clientLocationLabel);
+    const requestLocationLabel = resolveDeviceLocationLabel(
+      req,
+      clientLocationLabel,
+    );
     const deviceName = claimedDeviceName || buildDeviceName(requestUserAgent);
-    const knownDeviceBefore = await hasActiveTrustedDeviceByIdentifier(user.id, deviceIdentifier);
+    const knownDeviceBefore = await hasActiveTrustedDeviceByIdentifier(
+      user.id,
+      deviceIdentifier,
+    );
     let trustedDeviceToken = null;
     let isNewDevice = !knownDeviceBefore;
     if (rememberDevice) {
@@ -3372,49 +3776,53 @@ router.post("/verify-backup-code", async (req, res, next) => {
   }
 });
 
-router.post("/regenerate-backup-codes", authenticate, async (req, res, next) => {
-  try {
-    const code = String(req.body?.code || "").trim();
-    if (!/^\d{6}$/.test(code)) {
-      throw new ApiError(400, "A valid 6-digit code is required");
+router.post(
+  "/regenerate-backup-codes",
+  authenticate,
+  async (req, res, next) => {
+    try {
+      const code = String(req.body?.code || "").trim();
+      if (!/^\d{6}$/.test(code)) {
+        throw new ApiError(400, "A valid 6-digit code is required");
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: {
+          id: true,
+          twoFactorEnabled: true,
+          twoFactorSecret: true,
+        },
+      });
+
+      if (!user) {
+        throw new ApiError(404, "User not found");
+      }
+      if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+        throw new ApiError(400, "Two-factor authentication is not enabled");
+      }
+
+      const valid = verifyTotpToken(user.twoFactorSecret, code);
+      if (!valid) {
+        throw new ApiError(401, "Invalid authenticator code");
+      }
+
+      const { rawCodes, hashedCodes } = await generateBackupCodes();
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          twoFactorBackupHashes: hashedCodes,
+        },
+      });
+
+      return res.json({
+        message: "Backup codes regenerated",
+        backup_codes: rawCodes,
+      });
+    } catch (error) {
+      return next(error);
     }
-
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      select: {
-        id: true,
-        twoFactorEnabled: true,
-        twoFactorSecret: true,
-      },
-    });
-
-    if (!user) {
-      throw new ApiError(404, "User not found");
-    }
-    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
-      throw new ApiError(400, "Two-factor authentication is not enabled");
-    }
-
-    const valid = verifyTotpToken(user.twoFactorSecret, code);
-    if (!valid) {
-      throw new ApiError(401, "Invalid authenticator code");
-    }
-
-    const { rawCodes, hashedCodes } = await generateBackupCodes();
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        twoFactorBackupHashes: hashedCodes,
-      },
-    });
-
-    return res.json({
-      message: "Backup codes regenerated",
-      backup_codes: rawCodes,
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+  },
+);
 
 export default router;

@@ -223,12 +223,10 @@ export function cacheGetResponse(options = {}) {
     );
 
     try {
-      console.log("Try here");
       let cachedRaw = null;
       if (redis) {
         try {
           cachedRaw = await redis.get(key);
-          console.log("Try here", cachedRaw);
         } catch (error) {
           logCacheRedisError(`get(${key})`, error);
           cachedRaw = null;
