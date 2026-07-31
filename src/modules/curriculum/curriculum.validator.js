@@ -30,4 +30,18 @@ export const createLessonValidator = z.object({
   codingInstructions: z.string().optional(),
   codingStarterCode: z.any().optional(),
   quizQuestions: z.any().optional(),
+  unlockType: z
+    .enum(["IMMEDIATE", "DATE", "AFTER_PREVIOUS", "AFTER_CUSTOM"])
+    .optional(),
+  unlockAt: z
+    .union([z.string(), z.date()])
+    .optional()
+    .nullable(),
+  prerequisiteLessonId: z.string().optional().nullable(),
+});
+
+export const updateLessonUnlockRuleValidator = z.object({
+  unlockType: z.enum(["IMMEDIATE", "DATE", "AFTER_PREVIOUS", "AFTER_CUSTOM"]),
+  unlockAt: z.union([z.string(), z.date()]).optional().nullable(),
+  prerequisiteLessonId: z.string().optional().nullable(),
 });

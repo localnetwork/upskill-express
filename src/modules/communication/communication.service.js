@@ -704,3 +704,264 @@ export async function sendAnnouncement(educatorId, payload) {
     skippedCount: Math.max(enrollments.length - uniqueUserIds.length, 0),
   };
 }
+
+async function ensureEducatorCourse(educatorId, courseId) {
+  const normalizedCourseId = String(courseId || "").trim();
+  if (!normalizedCourseId) {
+    throw new ApiError(400, "Course id is required");
+  }
+
+  const course = await prisma.course.findFirst({
+    where: {
+      id: normalizedCourseId,
+      educatorId,
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      title: true,
+    },
+  });
+  if (!course) {
+    throw new ApiError(404, "Course not found for this instructor");
+  }
+  return course;
+}
+
+function toUtcDateAtStartOfDay(date) {
+  const next = new Date(date);
+  next.setUTCHours(0, 0, 0, 0);
+  return next;
+}
+
+function buildNudgeMessage({ learnerName, courseTitle, reason }) {
+  if (reason === "INACTIVITY") {
+    return `Hi ${learnerName}, we noticed you have been inactive in "${courseTitle}". Continue one lesson today to keep your momentum.`;
+  }
+  return `Hi ${learnerName}, your progress in "${courseTitle}" is still below the target. Try completing your next lesson today and reach out if you need help.`;
+}
+
+function calculateDaysSince(dateValue) {
+  const now = new Date();
+  const target = dateValue ? new Date(dateValue) : null;
+  if (!target || Number.isNaN(target.getTime())) return Number.POSITIVE_INFINITY;
+  return Math.floor((now.getTime() - target.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+function mapLearnerHealthItem(enrollment, thresholds) {
+  const progressPct = toSafeNumber(enrollment?.courseProgress?.progressPct, 0);
+  const lastActivityAt =
+    enrollment?.lessonProgress?.[0]?.updatedAt || enrollment?.enrolledAt || null;
+  const inactivityDays = calculateDaysSince(lastActivityAt);
+  const isLowProgress = progressPct < Number(thresholds.lowProgressThreshold || 50);
+  const isInactive = inactivityDays >= Number(thresholds.inactivityDaysThreshold || 7);
+  const reasons = [];
+  if (isInactive) reasons.push("INACTIVITY");
+  if (isLowProgress) reasons.push("LOW_PROGRESS");
+
+  return {
+    enrollmentId: enrollment.id,
+    learnerId: enrollment.userId,
+    learnerName:
+      `${enrollment.user?.firstName || ""} ${enrollment.user?.lastName || ""}`.trim() ||
+      enrollment.user?.username ||
+      "Learner",
+    learnerEmail: enrollment.user?.email || "",
+    enrolledAt: enrollment.enrolledAt,
+    lastActivityAt,
+    inactivityDays,
+    progressPct,
+    reasons,
+    isAtRisk: reasons.length > 0,
+  };
+}
+
+export async function getNudgeRule(educatorId, courseId) {
+  const course = await ensureEducatorCourse(educatorId, courseId);
+  const rule = await prisma.courseNudgeRule.findUnique({
+    where: { courseId: course.id },
+  });
+
+  return (
+    rule || {
+      courseId: course.id,
+      educatorId,
+      inactivityDaysThreshold: 7,
+      lowProgressThreshold: 50,
+      enabledInactivityNudge: true,
+      enabledLowProgressNudge: true,
+    }
+  );
+}
+
+export async function upsertNudgeRule(educatorId, courseId, payload = {}) {
+  const course = await ensureEducatorCourse(educatorId, courseId);
+  const existing = await prisma.courseNudgeRule.findUnique({
+    where: { courseId: course.id },
+  });
+
+  const inactivityDaysThreshold =
+    payload.inactivityDaysThreshold !== undefined
+      ? Number(payload.inactivityDaysThreshold)
+      : Number(existing?.inactivityDaysThreshold || 7);
+  const lowProgressThreshold =
+    payload.lowProgressThreshold !== undefined
+      ? Number(payload.lowProgressThreshold)
+      : Number(existing?.lowProgressThreshold || 50);
+
+  const rule = await prisma.courseNudgeRule.upsert({
+    where: { courseId: course.id },
+    create: {
+      courseId: course.id,
+      educatorId,
+      inactivityDaysThreshold,
+      lowProgressThreshold,
+      enabledInactivityNudge: toBoolean(payload.enabledInactivityNudge, true),
+      enabledLowProgressNudge: toBoolean(payload.enabledLowProgressNudge, true),
+    },
+    update: {
+      inactivityDaysThreshold,
+      lowProgressThreshold,
+      enabledInactivityNudge:
+        payload.enabledInactivityNudge === undefined
+          ? existing?.enabledInactivityNudge ?? true
+          : toBoolean(payload.enabledInactivityNudge, true),
+      enabledLowProgressNudge:
+        payload.enabledLowProgressNudge === undefined
+          ? existing?.enabledLowProgressNudge ?? true
+          : toBoolean(payload.enabledLowProgressNudge, true),
+    },
+  });
+
+  return rule;
+}
+
+export async function getLearnerHealth(educatorId, courseId) {
+  const course = await ensureEducatorCourse(educatorId, courseId);
+  const rule = await getNudgeRule(educatorId, course.id);
+
+  const enrollments = await prisma.enrollment.findMany({
+    where: {
+      courseId: course.id,
+      status: { in: ["ACTIVE", "COMPLETED"] },
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+        },
+      },
+      courseProgress: {
+        select: {
+          progressPct: true,
+        },
+      },
+      lessonProgress: {
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        select: {
+          updatedAt: true,
+        },
+      },
+    },
+    orderBy: { enrolledAt: "desc" },
+  });
+
+  const items = enrollments.map((row) => mapLearnerHealthItem(row, rule));
+  const atRisk = items.filter((row) => row.isAtRisk);
+
+  return {
+    course: {
+      id: course.id,
+      title: course.title,
+    },
+    rule,
+    totals: {
+      learners: items.length,
+      atRisk: atRisk.length,
+      inactive: atRisk.filter((item) => item.reasons.includes("INACTIVITY")).length,
+      lowProgress: atRisk.filter((item) => item.reasons.includes("LOW_PROGRESS"))
+        .length,
+    },
+    data: atRisk,
+  };
+}
+
+export async function runCourseNudges(educatorId, courseId) {
+  const health = await getLearnerHealth(educatorId, courseId);
+  const rule = health.rule;
+  const dayStart = toUtcDateAtStartOfDay(new Date());
+  const sentLogs = [];
+
+  for (const learner of health.data) {
+    const allowedReasons = learner.reasons.filter((reason) => {
+      if (reason === "INACTIVITY") return Boolean(rule.enabledInactivityNudge);
+      if (reason === "LOW_PROGRESS") return Boolean(rule.enabledLowProgressNudge);
+      return false;
+    });
+
+    if (!allowedReasons.length) continue;
+
+    for (const reason of allowedReasons) {
+      const sentToday = await prisma.courseNudgeLog.findFirst({
+        where: {
+          courseId,
+          learnerId: learner.learnerId,
+          triggerType: reason,
+          sentAt: { gte: dayStart },
+        },
+        select: { id: true },
+      });
+      if (sentToday) continue;
+
+      const message = buildNudgeMessage({
+        learnerName: learner.learnerName,
+        courseTitle: health.course.title,
+        reason,
+      });
+
+      const notification = await createNotification({
+        userId: learner.learnerId,
+        type: "SYSTEM",
+        title:
+          reason === "INACTIVITY"
+            ? "Keep going with your course"
+            : "Progress reminder",
+        message,
+        metadata: {
+          notificationKind: "LEARNER_NUDGE",
+          courseId,
+          triggerType: reason,
+        },
+      });
+
+      const log = await prisma.courseNudgeLog.create({
+        data: {
+          courseId,
+          enrollmentId: learner.enrollmentId,
+          learnerId: learner.learnerId,
+          sentById: educatorId,
+          triggerType: reason,
+          status: "SENT",
+          message,
+          metadata: {
+            progressPct: learner.progressPct,
+            inactivityDays: learner.inactivityDays,
+            notificationId: notification.id,
+          },
+        },
+      });
+
+      sentLogs.push(log);
+    }
+  }
+
+  return {
+    sentCount: sentLogs.length,
+    logs: sentLogs,
+  };
+}

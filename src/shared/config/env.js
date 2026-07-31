@@ -12,6 +12,9 @@ dotenv.config({ path: envFilePath });
 const resolvedAutoPayoutIntervalMs = Number(
   process.env.AUTO_PAYOUT_INTERVAL_MS,
 );
+const resolvedAutoNudgeIntervalMs = Number(
+  process.env.AUTO_NUDGE_INTERVAL_MS,
+);
 
 export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
@@ -59,4 +62,11 @@ export const env = {
     resolvedAutoPayoutIntervalMs > 0
       ? resolvedAutoPayoutIntervalMs
       : 60 * 60 * 1000,
+  autoNudgeEnabled:
+    String(process.env.AUTO_NUDGE_ENABLED || "false").toLowerCase() === "true",
+  autoNudgeIntervalMs:
+    Number.isFinite(resolvedAutoNudgeIntervalMs) &&
+    resolvedAutoNudgeIntervalMs > 0
+      ? resolvedAutoNudgeIntervalMs
+      : 6 * 60 * 60 * 1000,
 };

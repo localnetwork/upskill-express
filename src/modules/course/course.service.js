@@ -6,6 +6,7 @@ import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { slugify } from "../../shared/utils/slugify.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { env } from "../../shared/config/env.js";
+import { getLessonAccessMapForEnrollment } from "../progress/lesson-access.service.js";
 import {
   extractBunnyVideoIdFromPlaybackUrl,
 } from "../../shared/storage/bunny-stream.js";
@@ -3710,6 +3711,10 @@ export async function getCourseForLearner(userId, slug) {
   }
 
   const goals = await readCourseGoals(enrollment.course.id);
+  const lessonAccessMap = await getLessonAccessMapForEnrollment(
+    enrollment.id,
+    enrollment.course.id,
+  );
 
   return {
     course: {
@@ -3744,8 +3749,17 @@ export async function getCourseForLearner(userId, slug) {
         curriculums: section.lessons.map((lesson) => {
           const lessonProgress = lesson.progress?.[0] || null;
           const isTaken = Boolean(lessonProgress?.isCompleted);
+          const accessState = lessonAccessMap.get(lesson.id) || {
+            isLocked: false,
+            lockReason: null,
+            unlockType: "IMMEDIATE",
+            unlockAt: null,
+            prerequisiteLessonId: null,
+          };
           const parsedQuizQuestions = safeParseJson(lesson.quizQuestions);
           const parsedStarterCode = safeParseJson(lesson.codingStarterCode);
+          const isLocked = Boolean(accessState.isLocked);
+          const canAccessAsset = !isLocked;
 
           return {
             id: lesson.id,
@@ -3765,39 +3779,56 @@ export async function getCourseForLearner(userId, slug) {
             curriculum_description: lesson.description || "",
             estimated_duration: estimateLessonDurationSeconds(lesson),
             asset:
-              lesson.type === "QUIZ"
-                ? {
-                    questions: Array.isArray(parsedQuizQuestions)
-                      ? parsedQuizQuestions
-                      : parsedQuizQuestions?.questions || [],
-                  }
-                : lesson.type === "CODING_EXERCISE"
+              !canAccessAsset
+                ? null
+                : lesson.type === "QUIZ"
                   ? {
-                      instructions: lesson.codingInstructions || "",
-                      starter_code:
-                        parsedStarterCode?.starter_code || parsedStarterCode || {},
-                      expected_output: parsedStarterCode?.expected_output || {},
-                      languages: parsedStarterCode?.languages || [],
-                      test_cases_visible: normalizeVisibleCodingTests(parsedStarterCode),
-                      step_challenges:
-                        parsedStarterCode?.step_challenges &&
-                        typeof parsedStarterCode.step_challenges === "object"
-                          ? parsedStarterCode.step_challenges
-                          : {},
-                      checklist: normalizeStringArray(parsedStarterCode?.checklist),
-                      hints: normalizeStringArray(parsedStarterCode?.hints),
+                      questions: Array.isArray(parsedQuizQuestions)
+                        ? parsedQuizQuestions
+                        : parsedQuizQuestions?.questions || [],
                     }
-                : lesson.videoUrl
-                ? {
-                    id: lesson.id,
-                    path: mapVideoPlaybackToEmbedUrl(lesson.videoUrl),
-                  }
-                : lesson.assignmentText
-                  ? { id: lesson.id, content: lesson.assignmentText }
-                  : null,
+                  : lesson.type === "CODING_EXERCISE"
+                    ? {
+                        instructions: lesson.codingInstructions || "",
+                        starter_code:
+                          parsedStarterCode?.starter_code ||
+                          parsedStarterCode ||
+                          {},
+                        expected_output: parsedStarterCode?.expected_output || {},
+                        languages: parsedStarterCode?.languages || [],
+                        test_cases_visible:
+                          normalizeVisibleCodingTests(parsedStarterCode),
+                        step_challenges:
+                          parsedStarterCode?.step_challenges &&
+                          typeof parsedStarterCode.step_challenges === "object"
+                            ? parsedStarterCode.step_challenges
+                            : {},
+                        checklist: normalizeStringArray(
+                          parsedStarterCode?.checklist,
+                        ),
+                        hints: normalizeStringArray(parsedStarterCode?.hints),
+                      }
+                  : lesson.videoUrl
+                    ? {
+                        id: lesson.id,
+                        path: mapVideoPlaybackToEmbedUrl(lesson.videoUrl),
+                      }
+                    : lesson.assignmentText
+                      ? { id: lesson.id, content: lesson.assignmentText }
+                      : null,
             is_taken: isTaken,
             completed: isTaken,
             progress_pct: Number(lessonProgress?.progressPct || 0),
+            is_locked: isLocked,
+            lock_reason: accessState.lockReason || null,
+            unlock_type: String(accessState.unlockType || "IMMEDIATE")
+              .toLowerCase(),
+            unlock_at: accessState.unlockAt || null,
+            prerequisite_lesson_id: accessState.prerequisiteLessonId || null,
+            is_unlock_rule_configured: Boolean(
+              accessState.unlockType !== "AFTER_CUSTOM" ||
+                accessState.prerequisiteLessonId,
+            ),
           };
         }),
       })),

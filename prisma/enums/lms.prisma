@@ -20,6 +20,18 @@ enum LessonType {
   ASSIGNMENT
 }
 
+enum LessonUnlockType {
+  IMMEDIATE
+  DATE
+  AFTER_PREVIOUS
+  AFTER_CUSTOM
+}
+
+enum DiscussionCategory {
+  COURSE_CONTENT
+  SOMETHING_ELSE
+}
+
 enum EnrollmentStatus {
   ACTIVE
   COMPLETED

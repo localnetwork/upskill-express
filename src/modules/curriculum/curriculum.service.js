@@ -26,6 +26,27 @@ async function ensureEducatorCourse(userId, courseId) {
   if (!course) {
     throw new ApiError(404, "Course not found");
   }
+
+  function normalizeUnlockType(value) {
+    const normalized = String(value || "IMMEDIATE").trim().toUpperCase();
+    if (
+      normalized === "DATE" ||
+      normalized === "AFTER_PREVIOUS" ||
+      normalized === "AFTER_CUSTOM"
+    ) {
+      return normalized;
+    }
+    return "IMMEDIATE";
+  }
+
+  function parseUnlockAt(value) {
+    if (value === undefined || value === null || value === "") return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      throw new ApiError(400, "Invalid unlock date value");
+    }
+    return date;
+  }
   return course;
 }
 
@@ -136,6 +157,33 @@ export async function createLesson(userId, courseId, sectionId, payload) {
   }
   const topicIds = extractTopicIds(payload);
   const topics = await resolveCurriculumTopics(course, topicIds);
+  const unlockType = normalizeUnlockType(payload.unlockType);
+  const unlockAt = parseUnlockAt(payload.unlockAt);
+  const prerequisiteLessonId = String(payload.prerequisiteLessonId || "").trim() || null;
+  if (unlockType === "DATE" && !unlockAt) {
+    throw new ApiError(400, "unlockAt is required when unlockType is DATE");
+  }
+  if (unlockType === "AFTER_CUSTOM" && !prerequisiteLessonId) {
+    throw new ApiError(
+      400,
+      "prerequisiteLessonId is required when unlockType is AFTER_CUSTOM",
+    );
+  }
+  if (unlockType === "AFTER_CUSTOM" && prerequisiteLessonId) {
+    const prerequisite = await prisma.lesson.findFirst({
+      where: {
+        id: prerequisiteLessonId,
+        courseId,
+      },
+      select: { id: true },
+    });
+    if (!prerequisite) {
+      throw new ApiError(
+        400,
+        "Prerequisite lesson must belong to the same course",
+      );
+    }
+  }
 
   const lesson = await prisma.lesson.create({
     include: lessonIncludeForTopics(),
@@ -159,6 +207,10 @@ export async function createLesson(userId, courseId, sectionId, payload) {
       description: payload.description || payload.curriculum_description,
       position: payload.position ?? payload.sort_order ?? 0,
       durationInSeconds: payload.durationInSeconds ?? payload.estimated_duration ?? 0,
+      unlockType,
+      unlockAt: unlockType === "DATE" ? unlockAt : null,
+      prerequisiteLessonId:
+        unlockType === "AFTER_CUSTOM" ? prerequisiteLessonId : null,
       isPreview:
         payload.isPreview ??
         (payload.published === undefined ? false : !(payload.published === true || payload.published === "1")),
@@ -190,6 +242,89 @@ export async function createLesson(userId, courseId, sectionId, payload) {
   });
 
   return lesson;
+}
+
+export async function updateLessonUnlockRule(
+  userId,
+  courseId,
+  lessonId,
+  payload = {},
+) {
+  await ensureEducatorCourse(userId, courseId);
+
+  const lesson = await prisma.lesson.findFirst({
+    where: {
+      id: lessonId,
+      courseId,
+      course: {
+        educatorId: userId,
+        deletedAt: null,
+      },
+    },
+    select: {
+      id: true,
+      courseId: true,
+    },
+  });
+  if (!lesson) {
+    throw new ApiError(404, "Lesson not found");
+  }
+
+  const unlockType = normalizeUnlockType(payload.unlockType);
+  const unlockAt = parseUnlockAt(payload.unlockAt);
+  const prerequisiteLessonId = String(payload.prerequisiteLessonId || "").trim() || null;
+
+  if (unlockType === "DATE" && !unlockAt) {
+    throw new ApiError(400, "unlockAt is required when unlockType is DATE");
+  }
+  if (unlockType === "AFTER_CUSTOM" && !prerequisiteLessonId) {
+    throw new ApiError(
+      400,
+      "prerequisiteLessonId is required when unlockType is AFTER_CUSTOM",
+    );
+  }
+  if (unlockType === "AFTER_CUSTOM") {
+    if (prerequisiteLessonId === lesson.id) {
+      throw new ApiError(400, "A lesson cannot depend on itself");
+    }
+    const prerequisite = await prisma.lesson.findFirst({
+      where: { id: prerequisiteLessonId, courseId },
+      select: { id: true },
+    });
+    if (!prerequisite) {
+      throw new ApiError(
+        400,
+        "Prerequisite lesson must belong to the same course",
+      );
+    }
+  }
+
+  const updated = await prisma.lesson.update({
+    where: { id: lesson.id },
+    data: {
+      unlockType,
+      unlockAt: unlockType === "DATE" ? unlockAt : null,
+      prerequisiteLessonId:
+        unlockType === "AFTER_CUSTOM" ? prerequisiteLessonId : null,
+    },
+    include: lessonIncludeForTopics(),
+  });
+
+  await recordActivityEvent({
+    eventType: "INSTRUCTOR_CURRICULUM_UPDATED",
+    userId,
+    courseId,
+    pagePath: `/instructor/courses/${courseId}/curriculum`,
+    metadata: {
+      entityType: "LESSON_UNLOCK_RULE",
+      lessonId: updated.id,
+      unlockType: updated.unlockType,
+      unlockAt: updated.unlockAt,
+      prerequisiteLessonId: updated.prerequisiteLessonId || null,
+    },
+  });
+
+  return updated;
 }
 
 export async function uploadLessonMedia(userId, courseId, lessonId, file, mediaType) {

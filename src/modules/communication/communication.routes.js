@@ -6,20 +6,27 @@ import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
   getAnnouncementDraftController,
+  getLearnerHealthController,
+  getNudgeRuleController,
   getInstructorAiInsightsController,
   listAnnouncementsController,
   listInstructorAssignmentsController,
   listInstructorCommunicationCoursesController,
   listInstructorMessagesController,
   listInstructorQaController,
+  runCourseNudgesController,
   saveAnnouncementDraftController,
   sendAnnouncementController,
+  upsertNudgeRuleController,
 } from "./communication.controller.js";
 import {
   listInstructorMessagesValidator,
   listInstructorQaValidator,
+  learnerHealthValidator,
+  runNudgesValidator,
   saveAnnouncementDraftValidator,
   sendAnnouncementValidator,
+  upsertNudgeRuleValidator,
 } from "./communication.validator.js";
 
 const router = Router();
@@ -115,6 +122,29 @@ router.post(
   "/instructor/announcements/send",
   validate(sendAnnouncementValidator),
   asyncHandler(sendAnnouncementController),
+);
+
+router.get(
+  "/instructor/nudge-rules/:courseId",
+  asyncHandler(getNudgeRuleController),
+);
+
+router.put(
+  "/instructor/nudge-rules/:courseId",
+  validate(upsertNudgeRuleValidator),
+  asyncHandler(upsertNudgeRuleController),
+);
+
+router.get(
+  "/instructor/learner-health",
+  validate(learnerHealthValidator, "query"),
+  asyncHandler(getLearnerHealthController),
+);
+
+router.post(
+  "/instructor/nudges/run",
+  validate(runNudgesValidator),
+  asyncHandler(runCourseNudgesController),
 );
 
 export default router;

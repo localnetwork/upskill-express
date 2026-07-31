@@ -56,3 +56,18 @@ export const sendAnnouncementValidator = announcementBaseSchema.extend({
   subject: z.string().trim().min(1).max(180),
   body: z.string().trim().min(1).max(5000),
 });
+
+export const upsertNudgeRuleValidator = z.object({
+  inactivityDaysThreshold: z.coerce.number().int().min(1).max(180).optional(),
+  lowProgressThreshold: z.coerce.number().int().min(1).max(99).optional(),
+  enabledInactivityNudge: booleanish.optional(),
+  enabledLowProgressNudge: booleanish.optional(),
+});
+
+export const runNudgesValidator = z.object({
+  courseId: z.string().trim().min(1),
+});
+
+export const learnerHealthValidator = z.object({
+  courseId: z.string().trim().min(1),
+});

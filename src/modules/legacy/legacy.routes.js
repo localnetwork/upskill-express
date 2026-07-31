@@ -51,6 +51,10 @@ import {
   registerTrustedDevice,
   resolveDeviceLocationLabel,
 } from "../auth/trusted-device.service.js";
+import {
+  assertLessonUnlockedForEnrollment,
+  assertLessonUnlockedForUser,
+} from "../progress/lesson-access.service.js";
 
 const router = Router();
 const supportsLessonTopics = Boolean(prisma.lessonTopic);
@@ -286,6 +290,60 @@ function lessonIncludeForTopics() {
       };
 }
 
+function normalizeLessonUnlockType(value) {
+  const normalized = String(value || "IMMEDIATE").trim().toUpperCase();
+  if (
+    normalized === "DATE" ||
+    normalized === "AFTER_PREVIOUS" ||
+    normalized === "AFTER_CUSTOM"
+  ) {
+    return normalized;
+  }
+  return "IMMEDIATE";
+}
+
+function parseLessonUnlockAt(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ApiError(400, "Invalid unlock date value");
+  }
+  return parsed;
+}
+
+function extractLessonUnlockRuleFromBody(body = {}) {
+  const unlockTypeInput =
+    body.unlock_type !== undefined ? body.unlock_type : body.unlockType;
+  const unlockAtInput =
+    body.unlock_at !== undefined ? body.unlock_at : body.unlockAt;
+  const prerequisiteLessonIdInput =
+    body.prerequisite_lesson_id !== undefined
+      ? body.prerequisite_lesson_id
+      : body.prerequisiteLessonId;
+
+  const unlockType = normalizeLessonUnlockType(unlockTypeInput);
+  const unlockAt = parseLessonUnlockAt(unlockAtInput);
+  const prerequisiteLessonId =
+    String(prerequisiteLessonIdInput || "").trim() || null;
+
+  if (unlockType === "DATE" && !unlockAt) {
+    throw new ApiError(400, "unlock_at is required when unlock_type is DATE");
+  }
+  if (unlockType === "AFTER_CUSTOM" && !prerequisiteLessonId) {
+    throw new ApiError(
+      400,
+      "prerequisite_lesson_id is required when unlock_type is AFTER_CUSTOM",
+    );
+  }
+
+  return {
+    unlockType,
+    unlockAt: unlockType === "DATE" ? unlockAt : null,
+    prerequisiteLessonId:
+      unlockType === "AFTER_CUSTOM" ? prerequisiteLessonId : null,
+  };
+}
+
 function mapLessonToLegacyCurriculum(lesson) {
   const parsedCodingStarterCode = parseJsonOrNull(lesson.codingStarterCode);
   const parsedQuizQuestions = parseJsonOrNull(lesson.quizQuestions);
@@ -336,6 +394,9 @@ function mapLessonToLegacyCurriculum(lesson) {
     topics,
     is_public_preview: Boolean(lesson.isPreview),
     is_preview: Boolean(lesson.isPreview),
+    unlock_type: String(lesson.unlockType || "IMMEDIATE").toLowerCase(),
+    unlock_at: lesson.unlockAt || null,
+    prerequisite_lesson_id: lesson.prerequisiteLessonId || null,
     asset:
       lesson.type === "QUIZ"
         ? {
@@ -1236,6 +1297,7 @@ async function resolveLessonVideoById(id) {
 
   const storagePath = lesson.videoUrl || lesson.media?.[0]?.storagePath || null;
   return {
+    lessonId: lesson.id,
     courseId: lesson.courseId,
     storagePath,
   };
@@ -1246,7 +1308,7 @@ async function resolveMediaSourceByQueryId(id) {
     where: { id: String(id) },
     include: {
       lesson: {
-        select: { courseId: true },
+        select: { id: true, courseId: true },
       },
     },
   });
@@ -1254,6 +1316,7 @@ async function resolveMediaSourceByQueryId(id) {
   if (media) {
     return {
       userId: media.userId,
+      lessonId: media.lesson?.id || media.lessonId || null,
       courseId: media.lesson?.courseId || media.courseId || null,
       storagePath: media.storagePath,
     };
@@ -1263,6 +1326,7 @@ async function resolveMediaSourceByQueryId(id) {
   if (lessonVideo) {
     return {
       userId: null,
+      lessonId: lessonVideo.lessonId,
       courseId: lessonVideo.courseId,
       storagePath: lessonVideo.storagePath,
     };
@@ -1482,9 +1546,35 @@ function verifyStreamPlaybackToken(token) {
 
 async function assertUserCanAccessMedia(userId, mediaSource) {
   if (mediaSource.courseId) {
-    const allowed = await canAccessCourseMedia(userId, mediaSource.courseId);
-    if (!allowed) {
+    const [ownedCourse, enrollment] = await Promise.all([
+      prisma.course.findFirst({
+        where: {
+          id: mediaSource.courseId,
+          educatorId: userId,
+          deletedAt: null,
+        },
+        select: { id: true },
+      }),
+      prisma.enrollment.findFirst({
+        where: {
+          userId,
+          courseId: mediaSource.courseId,
+          status: "ACTIVE",
+        },
+        select: { id: true, courseId: true },
+      }),
+    ]);
+
+    if (!ownedCourse && !enrollment) {
       throw new ApiError(403, "Not allowed to access this media");
+    }
+
+    if (mediaSource.lessonId && enrollment) {
+      await assertLessonUnlockedForEnrollment(
+        enrollment.id,
+        enrollment.courseId,
+        mediaSource.lessonId,
+      );
     }
     return;
   }
@@ -2357,6 +2447,25 @@ router.post(
         section.course,
         topicIds,
       );
+      const unlockRule = extractLessonUnlockRuleFromBody(req.body);
+      if (
+        unlockRule.unlockType === "AFTER_CUSTOM" &&
+        unlockRule.prerequisiteLessonId
+      ) {
+        const prerequisite = await prisma.lesson.findFirst({
+          where: {
+            id: unlockRule.prerequisiteLessonId,
+            courseId: section.courseId,
+          },
+          select: { id: true },
+        });
+        if (!prerequisite) {
+          throw new ApiError(
+            400,
+            "Prerequisite lesson must belong to the same course",
+          );
+        }
+      }
       const lesson = await prisma.lesson.create({
         include: lessonIncludeForTopics(),
         data: {
@@ -2396,6 +2505,9 @@ router.post(
                 orderBy: { position: "desc" },
               })
             )?.position || 0) + 1,
+          unlockType: unlockRule.unlockType,
+          unlockAt: unlockRule.unlockAt,
+          prerequisiteLessonId: unlockRule.prerequisiteLessonId,
         },
       });
 
@@ -2436,6 +2548,40 @@ router.put(
         title: req.body.title,
         description: req.body.description || "",
       };
+      const hasUnlockRuleUpdate =
+        req.body.unlock_type !== undefined ||
+        req.body.unlockType !== undefined ||
+        req.body.unlock_at !== undefined ||
+        req.body.unlockAt !== undefined ||
+        req.body.prerequisite_lesson_id !== undefined ||
+        req.body.prerequisiteLessonId !== undefined;
+      if (hasUnlockRuleUpdate) {
+        const unlockRule = extractLessonUnlockRuleFromBody(req.body);
+        if (
+          unlockRule.unlockType === "AFTER_CUSTOM" &&
+          unlockRule.prerequisiteLessonId
+        ) {
+          if (unlockRule.prerequisiteLessonId === lesson.id) {
+            throw new ApiError(400, "A lesson cannot depend on itself");
+          }
+          const prerequisite = await prisma.lesson.findFirst({
+            where: {
+              id: unlockRule.prerequisiteLessonId,
+              courseId: lesson.courseId,
+            },
+            select: { id: true },
+          });
+          if (!prerequisite) {
+            throw new ApiError(
+              400,
+              "Prerequisite lesson must belong to the same course",
+            );
+          }
+        }
+        data.unlockType = unlockRule.unlockType;
+        data.unlockAt = unlockRule.unlockAt;
+        data.prerequisiteLessonId = unlockRule.prerequisiteLessonId;
+      }
 
       if (
         req.body.is_public_preview !== undefined ||
@@ -2547,6 +2693,7 @@ router.post(
   authenticate,
   async (req, res, next) => {
     try {
+      await assertLessonUnlockedForUser(req.user.id, req.body.curriculum_id);
       const data = await updateLessonProgress(req.user.id, {
         lessonId: req.body.curriculum_id,
         progressPct: 100,
@@ -2570,6 +2717,7 @@ router.post(
         req.user.id,
         req.params.lessonId,
       );
+      await assertLessonUnlockedForUser(req.user.id, lesson.id);
       const language = String(req.body.language || "")
         .trim()
         .toLowerCase();
@@ -2627,6 +2775,7 @@ router.post(
         req.user.id,
         req.params.lessonId,
       );
+      await assertLessonUnlockedForUser(req.user.id, lesson.id);
       const language = String(req.body.language || "")
         .trim()
         .toLowerCase();
@@ -2795,6 +2944,7 @@ router.post(
         req.user.id,
         req.params.lessonId,
       );
+      await assertLessonUnlockedForUser(req.user.id, lesson.id);
       const language = String(req.body.language || "")
         .trim()
         .toLowerCase();
@@ -2852,6 +3002,7 @@ router.get(
   async (req, res, next) => {
     try {
       await ensureLearnerOwnsCodingLesson(req.user.id, req.params.lessonId);
+      await assertLessonUnlockedForUser(req.user.id, req.params.lessonId);
       const submission = getCodingSubmissionStatus(req.params.submissionId);
       if (
         submission.userId !== req.user.id ||
@@ -2888,6 +3039,7 @@ router.get(
         req.user.id,
         req.params.lessonId,
       );
+      await assertLessonUnlockedForUser(req.user.id, lesson.id);
       const { key, quizPayload, state } = await loadQuizAttemptState(
         req.user.id,
         lesson,
@@ -2923,6 +3075,7 @@ router.post(
         req.user.id,
         req.params.lessonId,
       );
+      await assertLessonUnlockedForUser(req.user.id, lesson.id);
       const { key, quizPayload, state } = await loadQuizAttemptState(
         req.user.id,
         lesson,
@@ -2980,6 +3133,7 @@ router.post(
         req.user.id,
         req.params.lessonId,
       );
+      await assertLessonUnlockedForUser(req.user.id, lesson.id);
       const { key, quizPayload, state } = await loadQuizAttemptState(
         req.user.id,
         lesson,
@@ -3070,6 +3224,7 @@ router.post(
         req.user.id,
         req.params.lessonId,
       );
+      await assertLessonUnlockedForUser(req.user.id, lesson.id);
       const { key, quizPayload, state } = await loadQuizAttemptState(
         req.user.id,
         lesson,

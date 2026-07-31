@@ -7,10 +7,15 @@ import { upload } from "../../shared/middleware/upload.middleware.js";
 import {
   createLessonController,
   createSectionController,
+  updateLessonUnlockRuleController,
   uploadLessonResourceController,
   uploadLessonVideoController,
 } from "./curriculum.controller.js";
-import { createLessonValidator, createSectionValidator } from "./curriculum.validator.js";
+import {
+  createLessonValidator,
+  createSectionValidator,
+  updateLessonUnlockRuleValidator,
+} from "./curriculum.validator.js";
 
 const router = Router();
 
@@ -44,6 +49,14 @@ router.post(
   authorize("EDUCATOR"),
   upload.single("file"),
   asyncHandler(uploadLessonResourceController),
+);
+
+router.put(
+  "/courses/:courseId/lessons/:lessonId/unlock-rule",
+  authenticate,
+  authorize("EDUCATOR"),
+  validate(updateLessonUnlockRuleValidator),
+  asyncHandler(updateLessonUnlockRuleController),
 );
 
 export default router;

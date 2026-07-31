@@ -51,6 +51,17 @@ model User {
   activityEvents        ActivityEvent[]
   trustedDevices        TrustedDevice[]
   createdCoupons        Coupon[]          @relation("CouponCreator")
+  discussionThreads     DiscussionThread[] @relation("DiscussionAuthor")
+  discussionReplies     DiscussionReply[]  @relation("DiscussionReplyAuthor")
+  discussionThreadVotes DiscussionThreadVote[] @relation("DiscussionThreadVoter")
+  resolvedDiscussionThreads DiscussionThread[] @relation("DiscussionResolver")
+  chatConversationMemberships ChatConversationParticipant[]
+  createdChatConversations ChatConversation[] @relation("ChatConversationCreator")
+  sentChatMessages ChatMessage[] @relation("ChatMessageSender")
+  hiddenChatMessages ChatMessageHidden[]
+  nudgeRules            CourseNudgeRule[] @relation("CourseNudgeRuleOwner")
+  sentNudgeLogs         CourseNudgeLog[]  @relation("NudgeSentByEducator")
+  receivedNudgeLogs     CourseNudgeLog[]  @relation("NudgeRecipient")
 
   @@index([deletedAt])
   @@map("users")
@@ -235,6 +246,9 @@ model Course {
   submissions         CourseSubmission[]
   activityEvents      ActivityEvent[]
   coupons             Coupon[]
+  nudgeRule           CourseNudgeRule?
+  nudgeLogs           CourseNudgeLog[]
+  discussionThreads   DiscussionThread[]
 
   @@index([educatorId, workflowStatus])
   @@index([categoryId])
@@ -284,6 +298,9 @@ model Lesson {
   position           Int
   durationInSeconds  Int         @default(0)
   isPreview          Boolean     @default(false)
+  unlockType         LessonUnlockType @default(IMMEDIATE)
+  unlockAt           DateTime?
+  prerequisiteLessonId String?
   videoUrl           String?
   resourceUrl        String?
   assignmentText     String?
@@ -296,14 +313,195 @@ model Lesson {
   section            CourseSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
   course             Course        @relation(fields: [courseId], references: [id], onDelete: Cascade)
   topic              Topic?        @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  prerequisiteLesson Lesson?       @relation("LessonPrerequisite", fields: [prerequisiteLessonId], references: [id], onDelete: SetNull)
+  dependentLessons   Lesson[]      @relation("LessonPrerequisite")
   lessonTopics       LessonTopic[]
   progress           LessonProgress[]
   media              Media[]
+  discussionThreads  DiscussionThread[]
 
   @@unique([sectionId, position])
   @@index([courseId])
   @@index([topicId])
+  @@index([prerequisiteLessonId])
   @@map("lessons")
+}
+
+model CourseNudgeRule {
+  id                        String   @id @default(cuid())
+  courseId                  String   @unique
+  educatorId                String
+  inactivityDaysThreshold   Int      @default(7)
+  lowProgressThreshold      Int      @default(50)
+  enabledInactivityNudge    Boolean  @default(true)
+  enabledLowProgressNudge   Boolean  @default(true)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  course                    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  educator                  User     @relation("CourseNudgeRuleOwner", fields: [educatorId], references: [id], onDelete: Cascade)
+
+  @@index([educatorId])
+  @@map("course_nudge_rules")
+}
+
+model CourseNudgeLog {
+  id            String   @id @default(cuid())
+  courseId      String
+  enrollmentId  String?
+  learnerId     String
+  sentById      String?
+  triggerType   String
+  status        String   @default("SENT")
+  message       String
+  metadata      Json?
+  sentAt        DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  course        Course      @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  enrollment    Enrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  learner       User        @relation("NudgeRecipient", fields: [learnerId], references: [id], onDelete: Cascade)
+  sentBy        User?       @relation("NudgeSentByEducator", fields: [sentById], references: [id], onDelete: SetNull)
+
+  @@index([courseId, triggerType, sentAt])
+  @@index([learnerId, sentAt])
+  @@index([enrollmentId])
+  @@map("course_nudge_logs")
+}
+
+model DiscussionThread {
+  id            String   @id @default(cuid())
+  courseId      String
+  lessonId      String
+  authorId      String
+  category      DiscussionCategory @default(COURSE_CONTENT)
+  title         String
+  body          String
+  imagePath     String?
+  isResolved    Boolean  @default(false)
+  resolvedById  String?
+  resolvedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  course        Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lesson        Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  author        User     @relation("DiscussionAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  resolvedBy    User?    @relation("DiscussionResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  replies       DiscussionReply[]
+  votes         DiscussionThreadVote[]
+
+  @@index([courseId, lessonId, createdAt])
+  @@index([authorId, createdAt])
+  @@index([resolvedById])
+  @@map("discussion_threads")
+}
+
+model DiscussionThreadVote {
+  id        String   @id @default(cuid())
+  threadId  String
+  voterId   String
+  createdAt DateTime @default(now())
+
+  thread    DiscussionThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  voter     User             @relation("DiscussionThreadVoter", fields: [voterId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, voterId])
+  @@index([voterId, createdAt])
+  @@map("discussion_thread_votes")
+}
+
+model DiscussionReply {
+  id            String   @id @default(cuid())
+  threadId      String
+  authorId      String
+  body          String
+  parentReplyId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  thread        DiscussionThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  author        User             @relation("DiscussionReplyAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  parentReply   DiscussionReply? @relation("DiscussionReplyHierarchy", fields: [parentReplyId], references: [id], onDelete: SetNull)
+  replies       DiscussionReply[] @relation("DiscussionReplyHierarchy")
+
+  @@index([threadId, createdAt])
+  @@index([authorId, createdAt])
+  @@index([parentReplyId])
+  @@map("discussion_replies")
+}
+
+model ChatConversation {
+  id            String   @id @default(cuid())
+  createdById   String?
+  isGroup       Boolean  @default(false)
+  title         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastMessageAt DateTime @default(now())
+
+  createdBy     User?    @relation("ChatConversationCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  participants  ChatConversationParticipant[]
+  messages      ChatMessage[]
+
+  @@index([lastMessageAt])
+  @@map("chat_conversations")
+}
+
+model ChatConversationParticipant {
+  id             String   @id @default(cuid())
+  conversationId String
+  userId         String
+  joinedAt       DateTime @default(now())
+  lastReadAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  conversation   ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId, updatedAt])
+  @@index([conversationId, updatedAt])
+  @@map("chat_conversation_participants")
+}
+
+model ChatMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  senderId       String
+  body           String?
+  mediaPath      String?
+  mediaType      String?
+  deletedForEveryoneAt DateTime?
+  deletedForEveryoneById String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  conversation   ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User             @relation("ChatMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  hiddenFor      ChatMessageHidden[]
+
+  @@index([conversationId, createdAt])
+  @@index([senderId, createdAt])
+  @@index([deletedForEveryoneAt])
+  @@map("chat_messages")
+}
+
+model ChatMessageHidden {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  message   ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([userId, createdAt])
+  @@index([messageId])
+  @@map("chat_message_hidden")
 }
 
 model LessonTopic {
@@ -483,6 +681,7 @@ model Enrollment {
   review          Review?
   courseProgress  CourseProgress?
   lessonProgress  LessonProgress[]
+  nudgeLogs       CourseNudgeLog[]
 
   @@unique([userId, courseId])
   @@index([courseId])

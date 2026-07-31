@@ -2,6 +2,7 @@ import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { createNotification } from "../notification/notification.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import { assertLessonUnlockedForEnrollment } from "./lesson-access.service.js";
 
 async function getEnrollmentForLesson(userId, lessonId) {
   const lesson = await prisma.lesson.findUnique({
@@ -38,6 +39,11 @@ async function getEnrollmentForLesson(userId, lessonId) {
 
 export async function updateLessonProgress(userId, payload) {
   const enrollment = await getEnrollmentForLesson(userId, payload.lessonId);
+  await assertLessonUnlockedForEnrollment(
+    enrollment.id,
+    enrollment.courseId,
+    payload.lessonId,
+  );
   const existingLessonProgressCount = await prisma.lessonProgress.count({
     where: { enrollmentId: enrollment.id },
   });

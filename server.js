@@ -3,6 +3,10 @@ import { env } from "./src/shared/config/env.js";
 import { createServer } from "http";
 import { initSocket } from "./src/shared/realtime/socket.js";
 import { startAutoPayoutScheduler, stopAutoPayoutScheduler } from "./src/modules/payout/payout.scheduler.js";
+import {
+  startAutoNudgeScheduler,
+  stopAutoNudgeScheduler,
+} from "./src/modules/communication/communication.scheduler.js";
 import { prisma } from "./src/shared/database/prisma.js";
 
 const PORT = env.port;
@@ -21,6 +25,7 @@ async function shutdown(signal) {
 
   // Stop scheduled tasks
   stopAutoPayoutScheduler();
+  stopAutoNudgeScheduler();
 
   // Force exit after timeout if something hangs
   const forceExitTimer = setTimeout(() => {
@@ -72,4 +77,5 @@ process.on("SIGUSR2", () => shutdown("SIGUSR2"));
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   startAutoPayoutScheduler();
+  startAutoNudgeScheduler();
 });

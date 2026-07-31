@@ -1,4 +1,9 @@
-import { createLesson, createSection, uploadLessonMedia } from "./curriculum.service.js";
+import {
+  createLesson,
+  createSection,
+  updateLessonUnlockRule,
+  uploadLessonMedia,
+} from "./curriculum.service.js";
 
 export async function createSectionController(req, res) {
   const data = await createSection(req.user.id, req.params.courseId, req.body);
@@ -35,4 +40,14 @@ export async function uploadLessonResourceController(req, res) {
     "RESOURCE",
   );
   return res.status(201).json({ message: "Resource uploaded", data });
+}
+
+export async function updateLessonUnlockRuleController(req, res) {
+  const data = await updateLessonUnlockRule(
+    req.user.id,
+    req.params.courseId,
+    req.params.lessonId,
+    req.body,
+  );
+  return res.json({ message: "Lesson unlock rule updated", data });
 }

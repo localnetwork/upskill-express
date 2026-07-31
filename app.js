@@ -22,6 +22,8 @@ import analyticsRoutes from "./src/modules/analytics/analytics.routes.js";
 import communicationRoutes from "./src/modules/communication/communication.routes.js";
 import tagRoutes from "./src/modules/tag/tag.routes.js";
 import shareRoutes from "./src/modules/share/share.routes.js";
+import discussionRoutes from "./src/modules/discussion/discussion.routes.js";
+import chatRoutes from "./src/modules/chat/chat.routes.js";
 import legacyRoutes from "./src/modules/legacy/legacy.routes.js";
 import {
   cacheGetResponse,
@@ -81,6 +83,8 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/communication", communicationRoutes);
 app.use("/api/tags", tagRoutes);
 app.use("/api/share", shareRoutes);
+app.use("/api", discussionRoutes);
+app.use("/api/chat", chatRoutes);
 app.use("/api", legacyRoutes);
 app.get(
   "/api/languages",
