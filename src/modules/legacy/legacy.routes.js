@@ -1,5 +1,6 @@
 import path from "path";
 import { Readable } from "stream";
+import fs from "fs/promises";
 import jwt from "jsonwebtoken";
 import { randomUUID } from "crypto";
 import { Router } from "express";
@@ -13,7 +14,21 @@ import { ApiError } from "../../shared/utils/ApiError.js";
 import { signAccessToken, signRefreshToken, verifyPreAuthToken } from "../../shared/utils/jwt.js";
 import { hashToken } from "../../shared/utils/security.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
-import { getObjectFromR2, isR2Enabled, isR2StoragePath } from "../../shared/storage/r2.js";
+import {
+  deleteObjectFromR2,
+  getObjectFromR2,
+  isR2Enabled,
+  isR2StoragePath,
+} from "../../shared/storage/r2.js";
+import {
+  buildBunnyPlaybackUrl,
+  buildBunnySignedEmbedUrl,
+  createBunnyStreamVideo,
+  deleteBunnyStreamVideo,
+  extractBunnyVideoIdFromPlaybackUrl,
+  isBunnyStreamEnabled,
+  uploadVideoToBunnyStream,
+} from "../../shared/storage/bunny-stream.js";
 import { updateLessonProgress } from "../progress/progress.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { createNotification } from "../notification/notification.service.js";
@@ -47,6 +62,35 @@ const JUDGE0_LANGUAGE_IDS = {
   go: 60,
   csharp: 51,
 };
+
+function mapVideoPlaybackToEmbedUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalizedLibraryId = String(env.streamLibraryId || "").trim();
+  const buildUnsignedEmbedUrl = (libraryId, videoId) =>
+    `https://iframe.mediadelivery.net/embed/${encodeURIComponent(libraryId)}/${encodeURIComponent(videoId)}?autoplay=false&loop=false&muted=false&preload=true&responsive=true`;
+
+  if (/^https:\/\/iframe\.mediadelivery\.net\/embed\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      const libraryId = String(segments[1] || "").trim();
+      const videoId = String(segments[2] || "").trim();
+      if (segments[0] === "embed" && libraryId && videoId) {
+        return buildUnsignedEmbedUrl(libraryId, videoId);
+      }
+    } catch (_error) {
+      return raw;
+    }
+    return raw;
+  }
+
+  const videoId = extractBunnyVideoIdFromPlaybackUrl(raw);
+  if (videoId && normalizedLibraryId) {
+    return buildUnsignedEmbedUrl(normalizedLibraryId, videoId);
+  }
+  return raw;
+}
 const USER_PICTURE_KEY_PREFIX = "profile_picture::";
 
 function getUserPictureSettingKey(userId) {
@@ -134,6 +178,42 @@ function mediaPath(file) {
   if (!file) return null;
   if (file.path) return file.path;
   return file.filename ? `/uploads/${file.filename}` : null;
+}
+
+async function readUploadedFileBuffer(file) {
+  const storagePath = mediaPath(file);
+  if (!storagePath) {
+    throw new ApiError(400, "Uploaded file path is missing");
+  }
+
+  if (file?.buffer) {
+    return Buffer.from(file.buffer);
+  }
+
+  if (/^https?:\/\//i.test(storagePath)) {
+    const response = await fetch(storagePath);
+    if (!response.ok) {
+      throw new ApiError(502, "Failed to fetch uploaded file for processing");
+    }
+    const bytes = await response.arrayBuffer();
+    return Buffer.from(bytes);
+  }
+
+  return fs.readFile(storagePath);
+}
+
+async function cleanupTransientUploadedFile(file) {
+  const storagePath = mediaPath(file);
+  if (!storagePath) return;
+
+  if (file?.key) {
+    await deleteObjectFromR2(file.key).catch(() => {});
+    return;
+  }
+
+  if (!/^https?:\/\//i.test(storagePath)) {
+    await fs.unlink(storagePath).catch(() => {});
+  }
 }
 
 function normalizeExtendedProfile(payload = {}) {
@@ -275,7 +355,7 @@ function mapLessonToLegacyCurriculum(lesson) {
                 : [],
             }
           : lesson.videoUrl
-            ? { path: lesson.videoUrl }
+            ? { path: mapVideoPlaybackToEmbedUrl(lesson.videoUrl) }
             : lesson.assignmentText
               ? { content: lesson.assignmentText }
               : null,
@@ -2679,7 +2759,21 @@ router.post(
         throw new ApiError(400, "File is required");
       }
 
-      const videoPath = mediaPath(req.file);
+      let videoPath = mediaPath(req.file);
+      if (isBunnyStreamEnabled()) {
+        const fileBuffer = await readUploadedFileBuffer(req.file);
+        const bunnyVideoId = await createBunnyStreamVideo({
+          title: req.file.originalname || lesson.title || "Course video",
+        });
+        await uploadVideoToBunnyStream({
+          videoId: bunnyVideoId,
+          fileBuffer,
+          contentType: req.file.mimetype,
+        });
+        videoPath = buildBunnyPlaybackUrl(bunnyVideoId);
+        await cleanupTransientUploadedFile(req.file);
+      }
+
       const media = await prisma.media.create({
         data: {
           userId: req.user.id,
@@ -2714,7 +2808,7 @@ router.post(
   },
 );
 
-router.get("/stream-token.php", authenticate, async (req, res, next) => {
+async function streamTokenHandler(req, res, next) {
   try {
     assertPlaybackStreamRequest(req);
 
@@ -2734,19 +2828,28 @@ router.get("/stream-token.php", authenticate, async (req, res, next) => {
       userId: req.user.id,
       mediaId: queryId,
     });
+    const bunnyVideoId = extractBunnyVideoIdFromPlaybackUrl(mediaSource.storagePath);
+    const requestIpAddress = getRequestIpAddress(req);
+    const embedUrl = bunnyVideoId
+      ? buildBunnySignedEmbedUrl(bunnyVideoId, {
+          ttlSeconds: 60,
+          userIp: requestIpAddress,
+        })
+      : "";
 
     return res.json({
       data: {
         token,
         expiresInSeconds: 21600,
+        embed_url: embedUrl || null,
       },
     });
   } catch (error) {
     return next(error);
   }
-});
+}
 
-router.get("/stream.php", async (req, res, next) => {
+async function streamHandler(req, res, next) {
   try {
     const fetchDest = String(req.get("sec-fetch-dest") || "").toLowerCase();
     if (fetchDest === "document") {
@@ -2785,7 +2888,12 @@ router.get("/stream.php", async (req, res, next) => {
   } catch (error) {
     return next(error);
   }
-});
+}
+
+router.get("/stream-token", authenticate, streamTokenHandler);
+router.get("/stream-token.php", authenticate, streamTokenHandler);
+router.get("/stream", streamHandler);
+router.get("/stream.php", streamHandler);
 
 router.delete(
   "/course-resources/videos/:lessonId",
@@ -2794,10 +2902,16 @@ router.delete(
   async (req, res, next) => {
     try {
       const lesson = await ensureEducatorOwnsLesson(req.user.id, req.params.lessonId);
+      const existingBunnyVideoId = isBunnyStreamEnabled()
+        ? extractBunnyVideoIdFromPlaybackUrl(lesson.videoUrl)
+        : "";
       const updatedLesson = await prisma.lesson.update({
         where: { id: lesson.id },
         data: { videoUrl: null },
       });
+      if (existingBunnyVideoId) {
+        await deleteBunnyStreamVideo(existingBunnyVideoId).catch(() => {});
+      }
       return res.json({
         data: {
           curriculum: mapLessonToLegacyCurriculum(updatedLesson),

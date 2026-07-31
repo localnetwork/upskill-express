@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { withAccelerate } from "@prisma/extension-accelerate";
 
 /**
  * Validates database configuration and logs warnings for common issues
@@ -41,7 +42,7 @@ export const prisma =
   globalForPrisma.prisma ||
   new PrismaClient({
     log: ["error", "warn"],
-  });
+  }).$extends(withAccelerate());
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;

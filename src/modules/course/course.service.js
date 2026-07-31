@@ -6,10 +6,42 @@ import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { slugify } from "../../shared/utils/slugify.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { env } from "../../shared/config/env.js";
+import {
+  extractBunnyVideoIdFromPlaybackUrl,
+} from "../../shared/storage/bunny-stream.js";
 
 const COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
 const PROMO_MEDIA_TYPES = ["PROMO_VIDEO"];
 const COURSE_GOALS_KEY_PREFIX = "course_goals::";
+
+function mapVideoPlaybackToEmbedUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalizedLibraryId = String(env.streamLibraryId || "").trim();
+  const buildUnsignedEmbedUrl = (libraryId, videoId) =>
+    `https://iframe.mediadelivery.net/embed/${encodeURIComponent(libraryId)}/${encodeURIComponent(videoId)}?autoplay=false&loop=false&muted=false&preload=true&responsive=true`;
+
+  if (/^https:\/\/iframe\.mediadelivery\.net\/embed\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      const libraryId = String(segments[1] || "").trim();
+      const videoId = String(segments[2] || "").trim();
+      if (segments[0] === "embed" && libraryId && videoId) {
+        return buildUnsignedEmbedUrl(libraryId, videoId);
+      }
+    } catch (_error) {
+      return raw;
+    }
+    return raw;
+  }
+
+  const videoId = extractBunnyVideoIdFromPlaybackUrl(raw);
+  if (videoId && normalizedLibraryId) {
+    return buildUnsignedEmbedUrl(normalizedLibraryId, videoId);
+  }
+  return raw;
+}
 
 function pickLatestMediaByTypes(mediaList = [], types = []) {
   return mediaList.find((item) => types.includes(item.mediaType)) || null;
@@ -2675,7 +2707,7 @@ function mapCourseDetails(course, goals) {
                 : lesson.videoUrl
                   ? {
                       id: lesson.id,
-                      path: `/stream.php?id=${encodeURIComponent(lesson.id)}`,
+                      path: mapVideoPlaybackToEmbedUrl(lesson.videoUrl),
                     }
                   : lesson.assignmentText
                     ? { id: lesson.id, content: lesson.assignmentText }
@@ -3543,7 +3575,7 @@ export async function getCourseRoute(slug, actor = null) {
                 }
               : lesson.videoUrl
                 ? {
-                    path: `/stream.php?id=${encodeURIComponent(lesson.id)}`,
+                    path: mapVideoPlaybackToEmbedUrl(lesson.videoUrl),
                   }
                 : lesson.assignmentText || lesson.type === "RESOURCE"
                   ? {
@@ -3758,7 +3790,7 @@ export async function getCourseForLearner(userId, slug) {
                 : lesson.videoUrl
                 ? {
                     id: lesson.id,
-                    path: `/stream.php?id=${encodeURIComponent(lesson.id)}`,
+                    path: mapVideoPlaybackToEmbedUrl(lesson.videoUrl),
                   }
                 : lesson.assignmentText
                   ? { id: lesson.id, content: lesson.assignmentText }
@@ -4178,6 +4210,11 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
     .trim()
     .toLowerCase();
   const prompt = trimForDb(payload?.prompt, 4000);
+  const preferredLanguage = trimForDb(payload?.language, 100);
+  const preferredInstructionalLevel = trimForDb(
+    payload?.instructional_level,
+    120,
+  );
   const sectionId = String(payload?.section_id || "").trim();
   const curriculumId = String(payload?.curriculum_id || "").trim();
 
@@ -4510,6 +4547,19 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
     "Use delete_section, delete_curriculum, or delete_all_curriculums for delete/remove instructions. " +
     "Do not include fields outside the schema.";
 
+  const updateInstructionLines = [
+    `Update target: ${target}`,
+    `Instruction: ${prompt}`,
+  ];
+  if (preferredLanguage) {
+    updateInstructionLines.push(`Preferred language: ${preferredLanguage}`);
+  }
+  if (preferredInstructionalLevel) {
+    updateInstructionLines.push(
+      `Preferred level: ${preferredInstructionalLevel}`,
+    );
+  }
+
   let aiResponse;
   try {
     aiResponse = await axios.post(
@@ -4589,7 +4639,7 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
           },
           {
             role: "user",
-            content: `Update target: ${target}\nInstruction: ${prompt}`,
+            content: updateInstructionLines.join("\n"),
           },
         ],
       },

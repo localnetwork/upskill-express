@@ -76,6 +76,10 @@ The server uses `PORT` from `.env` (runtime fallback: `3000`).
 | `CF_ENDPOINT` | `""` |
 | `CF_BUCKET` | `""` |
 | `CF_PUBLIC_ACCESS_URL` | `""` |
+| `STREAM_API_KEY` | `""` (Bunny Stream API key) |
+| `STREAM_LIBRARY_ID` | `""` (Bunny Stream library ID) |
+| `STREAM_PULL_ZONE` | `""` (Bunny Stream pull zone hostname or zone name) |
+| `STREAM_TOKEN_KEY` | `""` (optional; reserved for tokenized playback) |
 
 ## Scripts
 

@@ -320,8 +320,27 @@ function resolveCheckoutState({ paymentStatus, orderStatus, paypalStatus }) {
 
 function canCancelCheckoutOrder({ paymentStatus, orderStatus, paypalStatus }) {
   if (paymentStatus === "CAPTURED" || orderStatus === "PAID") return false;
+  const normalizedPaymentStatus = String(paymentStatus || "").toUpperCase();
   const normalizedOrderStatus = String(orderStatus || "").toUpperCase();
-  return normalizedOrderStatus === "CREATED";
+  const normalizedPaypalStatus = String(paypalStatus || "").toUpperCase();
+  if (
+    normalizedOrderStatus !== "CREATED" ||
+    normalizedPaymentStatus !== "CREATED"
+  ) {
+    return false;
+  }
+  if (!normalizedPaypalStatus) return true;
+  if (normalizedPaypalStatus === "COMPLETED") return false;
+  if (normalizedPaypalStatus === "APPROVED") return false;
+  if (normalizedPaypalStatus === "PAYER_ACTION_REQUIRED") return false;
+  if (
+    ["VOIDED", "CANCELLED", "EXPIRED", "DECLINED"].includes(
+      normalizedPaypalStatus,
+    )
+  ) {
+    return false;
+  }
+  return ["CREATED", "SAVED"].includes(normalizedPaypalStatus);
 }
 
 async function getLatestCheckoutPayment(checkoutToken) {
@@ -532,7 +551,12 @@ async function markCheckoutAsCancelledByProviderOrderId(
 }
 
 export async function cancelCheckoutOrder(userId, providerOrderId) {
-  const payment = await getCheckoutPaymentByProviderOrderId(providerOrderId);
+  const requestedToken = String(providerOrderId || "").trim();
+  const directPayment = await getCheckoutPaymentByProviderOrderId(requestedToken);
+  const fallbackPayment = directPayment
+    ? null
+    : await getLatestCheckoutPayment(requestedToken);
+  const payment = directPayment || fallbackPayment;
 
   if (!payment) {
     throw new ApiError(404, "Payment not found");
@@ -546,6 +570,10 @@ export async function cancelCheckoutOrder(userId, providerOrderId) {
   if (payment.status === "CAPTURED" || payment.order.status === "PAID") {
     throw new ApiError(409, "Paid checkout cannot be cancelled");
   }
+  const resolvedProviderOrderId = String(payment.providerOrderId || "").trim();
+  if (!resolvedProviderOrderId) {
+    throw new ApiError(404, "Payment provider order not found");
+  }
 
   let paypalPayload =
     payment.rawResponse && typeof payment.rawResponse === "object"
@@ -554,15 +582,33 @@ export async function cancelCheckoutOrder(userId, providerOrderId) {
   let paypalStatus = String(paypalPayload?.status || "").toUpperCase();
 
   try {
-    const paypalOrder = await getPayPalOrder(providerOrderId);
+    const paypalOrder = await getPayPalOrder(resolvedProviderOrderId);
     paypalPayload = paypalOrder;
     paypalStatus = String(paypalOrder?.status || "").toUpperCase();
   } catch (error) {
+    const paypalErrorName = String(error?.response?.data?.name || "").toUpperCase();
+    const paypalStatusCode = Number(error?.response?.status || 0);
     const isInvalidProviderOrder =
-      error?.response?.data?.name === "INVALID_RESOURCE_ID";
+      paypalErrorName === "INVALID_RESOURCE_ID" ||
+      paypalErrorName === "UNPROCESSABLE_ENTITY" ||
+      paypalErrorName === "RESOURCE_NOT_FOUND" ||
+      paypalStatusCode === 404 ||
+      paypalStatusCode === 422;
     if (!isInvalidProviderOrder) {
       throw error;
     }
+  }
+
+  const canCancel = canCancelCheckoutOrder({
+    paymentStatus: payment.status,
+    orderStatus: payment.order.status,
+    paypalStatus: paypalStatus || payment.rawResponse?.status || null,
+  });
+  if (!canCancel) {
+    throw new ApiError(
+      409,
+      "Checkout can only be cancelled while order is created and payment is not processing",
+    );
   }
 
   const normalizedCancellationStatus = [
@@ -579,11 +625,13 @@ export async function cancelCheckoutOrder(userId, providerOrderId) {
       : { status: normalizedCancellationStatus };
 
   const cancellationResult = await markCheckoutAsCancelledByProviderOrderId(
-    providerOrderId,
+    resolvedProviderOrderId,
     cancellationPayload,
   );
 
-  const latestPayment = await getCheckoutPaymentByProviderOrderId(providerOrderId);
+  const latestPayment = await getCheckoutPaymentByProviderOrderId(
+    resolvedProviderOrderId,
+  );
   if (!latestPayment) {
     throw new ApiError(404, "Payment not found");
   }
@@ -1428,14 +1476,19 @@ export async function getCheckoutOrderStatus(userId, checkoutToken) {
         paypalStatus: payment.rawResponse?.status || null,
       });
       const fallbackApprovalUrl = extractPayPalApprovalUrl(payment.rawResponse);
+      const fallbackPaypalStatus = payment.rawResponse?.status || null;
       return {
         state: fallbackState,
         paymentStatus: payment.status,
         orderStatus: payment.order.status,
-        paypalStatus: payment.rawResponse?.status || "UNKNOWN",
+        paypalStatus: fallbackPaypalStatus || "UNKNOWN",
         approvalUrl: fallbackApprovalUrl,
         canCompletePayment: false,
-        canCancelCheckout: false,
+        canCancelCheckout: canCancelCheckoutOrder({
+          paymentStatus: payment.status,
+          orderStatus: payment.order.status,
+          paypalStatus: fallbackPaypalStatus,
+        }),
         order: payment.order,
         statusSource: "database-fallback",
       };

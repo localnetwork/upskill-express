@@ -40,6 +40,13 @@ export const env = {
   cfEndpoint: process.env.CF_ENDPOINT || "",
   cfBucket: process.env.CF_BUCKET || "",
   cfPublicAccessUrl: process.env.CF_PUBLIC_ACCESS_URL || "",
+  streamApiKey: process.env.STREAM_API_KEY || "",
+  streamLibraryId: process.env.STREAM_LIBRARY_ID || "",
+  streamPullZone: process.env.STREAM_PULL_ZONE || "",
+  streamTokenKey: process.env.STREAM_TOKEN_KEY || "",
+  streamTokenIpValidation:
+    String(process.env.STREAM_TOKEN_IP_VALIDATION || "true").toLowerCase() ===
+    "true",
   googleClientId: process.env.GOOGLE_CLIENT_ID || "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
   aiKey: process.env.AI_KEY || process.env.DEEPSEEK_API_KEY || "",
