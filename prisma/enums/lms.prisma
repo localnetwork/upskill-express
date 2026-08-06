@@ -104,3 +104,8 @@ enum ActivityEventType {
   COURSE_IMPRESSION
   COURSE_PAGE_VIEW
 }
+
+enum ChatMessageType {
+  USER
+  SYSTEM
+}

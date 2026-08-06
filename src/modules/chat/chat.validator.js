@@ -31,3 +31,11 @@ export const searchUsersValidator = z.object({
 export const deleteMessageValidator = z.object({
   mode: z.enum(["FOR_ME", "FOR_EVERYONE"]),
 });
+
+export const nicknameValidator = z.object({
+  nickname: z.string().trim().max(50).optional(),
+});
+
+export const backgroundValidator = z.object({
+  mediaId: z.string().trim().min(1),
+});

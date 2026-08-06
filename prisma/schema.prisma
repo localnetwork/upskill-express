@@ -114,6 +114,11 @@ enum ActivityEventType {
   COURSE_PAGE_VIEW
 }
 
+enum ChatMessageType {
+  USER
+  SYSTEM
+}
+
 model User {
   id                    String    @id @default(cuid())
   username              String    @unique
@@ -566,13 +571,16 @@ model ChatConversation {
 }
 
 model ChatConversationParticipant {
-  id             String   @id @default(cuid())
-  conversationId String
-  userId         String
-  joinedAt       DateTime @default(now())
-  lastReadAt     DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                String   @id @default(cuid())
+  conversationId    String
+  userId            String
+  joinedAt          DateTime @default(now())
+  lastReadAt        DateTime?
+  nickname          String?  // shared display nickname for this user in this conversation
+  photoMediaId      String?  // conversation-scoped avatar override for this user (media ID)
+  backgroundMediaId String?  // my chat background for this conversation (only the row owner reads it)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   conversation   ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -590,6 +598,8 @@ model ChatMessage {
   body           String?
   mediaPath      String?
   mediaType      String?
+  messageType    ChatMessageType @default(USER)
+  metadata       Json?          // structured payload for system messages
   deletedForEveryoneAt DateTime?
   deletedForEveryoneById String?
   createdAt      DateTime @default(now())

@@ -29,6 +29,83 @@ function mapUserLite(user) {
   };
 }
 
+const USER_PICTURE_KEY_PREFIX = "profile_picture::";
+
+function getUserPictureSettingKey(userId) {
+  return `${USER_PICTURE_KEY_PREFIX}${userId}`;
+}
+
+function safeParseJson(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function getRealName(user) {
+  if (!user) return "";
+  const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
+  return fullName || user.username || "";
+}
+
+// Resolve a batch of media IDs to their storage paths.
+async function resolveMediaPathsById(mediaIds = []) {
+  const uniqueIds = [...new Set(mediaIds.filter(Boolean))];
+  const result = {};
+  if (!uniqueIds.length) return result;
+
+  const mediaRows = await prisma.media.findMany({
+    where: { id: { in: uniqueIds } },
+    select: { id: true, storagePath: true },
+  });
+  for (const media of mediaRows) {
+    result[media.id] = media.storagePath;
+  }
+  return result;
+}
+
+// Resolve profile pictures (from PlatformSetting key `profile_picture::<userId>`)
+// for a batch of user IDs, mapping userId -> storagePath.
+async function resolveProfilePicturesByUserId(userIds = []) {
+  const uniqueIds = [...new Set(userIds.filter(Boolean))];
+  const result = {};
+  if (!uniqueIds.length) return result;
+
+  const settings = await prisma.platformSetting.findMany({
+    where: {
+      key: { in: uniqueIds.map(getUserPictureSettingKey) },
+    },
+    select: { key: true, value: true },
+  });
+
+  const keyToUserId = new Map(uniqueIds.map((id) => [getUserPictureSettingKey(id), id]));
+  const mediaIdByUserId = new Map();
+
+  for (const setting of settings) {
+    const userId = keyToUserId.get(setting.key);
+    if (!userId) continue;
+    const parsed = safeParseJson(setting.value);
+    const mediaId = String(parsed?.mediaId || parsed?.id || setting.value || "").trim();
+    if (!mediaId) continue;
+    mediaIdByUserId.set(userId, mediaId);
+  }
+
+  if (mediaIdByUserId.size) {
+    const mediaRows = await prisma.media.findMany({
+      where: { id: { in: [...mediaIdByUserId.values()] } },
+      select: { id: true, storagePath: true },
+    });
+    const mediaPathById = new Map(mediaRows.map((m) => [m.id, m.storagePath]));
+    for (const [userId, mediaId] of mediaIdByUserId) {
+      result[userId] = mediaPathById.get(mediaId) || null;
+    }
+  }
+
+  return result;
+}
+
 function mapMessage(message) {
   return {
     id: message.id,
@@ -37,6 +114,8 @@ function mapMessage(message) {
     body: message.body || "",
     mediaPath: message.mediaPath || null,
     mediaType: message.mediaType || null,
+    type: message.messageType || "USER",
+    metadata: message.metadata || null,
     deletedForEveryone: Boolean(message.deletedForEveryoneAt),
     deletedForEveryoneAt: message.deletedForEveryoneAt || null,
     deletedForEveryoneById: message.deletedForEveryoneById || null,
@@ -226,12 +305,32 @@ export async function listConversations(userId, query = {}) {
     prisma.chatConversation.count({ where }),
   ]);
 
+  // Batched lookups for participant chat photos, profile pictures, and backgrounds.
+  const participantRows = rows.flatMap((conversation) => conversation.participants);
+  const backgroundMediaIds = [
+    ...new Set(
+      participantRows.map((item) => item.backgroundMediaId).filter(Boolean),
+    ),
+  ];
+  const participantUserIds = [
+    ...new Set(participantRows.map((item) => item.userId)),
+  ];
+  const [profilePicturesByUserId, backgroundPathsById] =
+    await Promise.all([
+      resolveProfilePicturesByUserId(participantUserIds),
+      resolveMediaPathsById(backgroundMediaIds),
+    ]);
+
   const data = await Promise.all(
     rows.map(async (conversation) => {
       const me = conversation.participants.find((item) => item.userId === userId);
       const others = conversation.participants
         .filter((item) => item.userId !== userId)
-        .map((item) => mapUserLite(item.user));
+        .map((item) => ({
+          ...mapUserLite(item.user),
+          nickname: item.nickname || null,
+          photoPath: profilePicturesByUserId[item.userId] || null,
+        }));
       const onlineMap = getOnlineStatusForUsers(others.map((item) => item.id));
       const unreadCount = await computeUnreadForConversation(
         conversation.id,
@@ -244,6 +343,8 @@ export async function listConversations(userId, query = {}) {
         joinedAt: item.joinedAt,
         lastReadAt: item.lastReadAt,
         isOnline: Boolean(onlineMap[item.userId]),
+        nickname: item.nickname || null,
+        photoPath: profilePicturesByUserId[item.userId] || null,
         user: mapUserLite(item.user),
       }));
 
@@ -260,6 +361,7 @@ export async function listConversations(userId, query = {}) {
             ? "Group conversation"
             : others
                 .map((item) =>
+                  item.nickname ||
                   [item.firstName, item.lastName].filter(Boolean).join(" ").trim() ||
                   item.username,
                 )
@@ -271,6 +373,9 @@ export async function listConversations(userId, query = {}) {
           ...item,
           isOnline: Boolean(onlineMap[item.id]),
         })),
+        myBackgroundPath: me?.backgroundMediaId
+          ? backgroundPathsById[me.backgroundMediaId] || null
+          : null,
         lastMessageAt: conversation.lastMessageAt,
         lastMessage: lastMessage
           ? mapMessage({
@@ -494,6 +599,309 @@ export async function markConversationRead(userId, conversationId) {
   }
 
   return { success: true };
+}
+
+// Creates a SYSTEM message and broadcasts it via the `chat:new` event.
+// Uses the same transaction pattern as sendMessage (bumps lastMessageAt and
+// the actor's lastReadAt).
+export async function createSystemMessage(conversationId, actorId, body, metadata = null) {
+  assertChatPrismaClientReady();
+  const membership = await assertConversationMembership(actorId, conversationId);
+  const now = new Date();
+
+  const message = await prisma.chatMessage.create({
+    data: {
+      conversationId: membership.conversationId,
+      senderId: actorId,
+      body: String(body || "").trim() || null,
+      messageType: "SYSTEM",
+      metadata: metadata || null,
+    },
+    include: {
+      sender: {
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+        },
+      },
+    },
+  });
+
+  await prisma.$transaction([
+    prisma.chatConversation.update({
+      where: { id: membership.conversationId },
+      data: { lastMessageAt: now },
+    }),
+    prisma.chatConversationParticipant.updateMany({
+      where: { conversationId: membership.conversationId, userId: actorId },
+      data: { lastReadAt: now },
+    }),
+  ]);
+
+  const participants = await prisma.chatConversationParticipant.findMany({
+    where: { conversationId: membership.conversationId },
+    select: { userId: true },
+  });
+  const mapped = mapMessage(message);
+  for (const participant of participants) {
+    if (!participant?.userId) continue;
+    emitChatToUser(participant.userId, {
+      conversationId: membership.conversationId,
+      message: mapped,
+    });
+  }
+
+  return mapped;
+}
+
+export async function setParticipantNickname(
+  userId,
+  conversationId,
+  targetUserId,
+  nickname,
+) {
+  assertChatPrismaClientReady();
+  const membership = await assertConversationMembership(userId, conversationId);
+  const targetId = String(targetUserId || "").trim();
+  if (!targetId) throw new ApiError(400, "targetUserId is required");
+
+  const targetParticipant = await prisma.chatConversationParticipant.findFirst({
+    where: {
+      conversationId: membership.conversationId,
+      userId: targetId,
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+        },
+      },
+    },
+  });
+  if (!targetParticipant) {
+    throw new ApiError(404, "Target participant not found in this conversation");
+  }
+
+  const normalized = String(nickname || "").trim();
+  const nextNickname = normalized ? normalized : null;
+  const previousNickname = targetParticipant.nickname || null;
+
+  await prisma.chatConversationParticipant.update({
+    where: { id: targetParticipant.id },
+    data: { nickname: nextNickname },
+  });
+
+  const actor = await prisma.user.findFirst({
+    where: { id: userId },
+    select: {
+      id: true,
+      username: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+    },
+  });
+  const actorName = getRealName(actor);
+  const targetName = getRealName(targetParticipant.user);
+
+  let body;
+  if (targetId === userId) {
+    body = nextNickname
+      ? `${actorName} changed their own nickname to ${nextNickname}`
+      : `${actorName} removed their own nickname`;
+  } else {
+    body = nextNickname
+      ? `${actorName} has changed ${targetName}'s nickname to ${nextNickname}`
+      : `${actorName} removed ${targetName}'s nickname`;
+  }
+
+  const systemMessage = await createSystemMessage(
+    membership.conversationId,
+    userId,
+    body,
+    {
+      kind: "NICKNAME_CHANGED",
+      actorId: userId,
+      targetUserId: targetId,
+      previousNickname,
+      newNickname: nextNickname,
+    },
+  );
+
+  const participants = await prisma.chatConversationParticipant.findMany({
+    where: { conversationId: membership.conversationId },
+    select: { userId: true },
+  });
+  for (const participant of participants) {
+    if (!participant?.userId) continue;
+    emitChatToUser(participant.userId, {
+      conversationId: membership.conversationId,
+      settings: {
+        targetUserId: targetId,
+        nickname: nextNickname,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  return {
+    conversationId: membership.conversationId,
+    targetUserId: targetId,
+    nickname: nextNickname,
+    systemMessage,
+  };
+}
+
+export async function setConversationBackground(userId, conversationId, mediaId) {
+  assertChatPrismaClientReady();
+  const membership = await assertConversationMembership(userId, conversationId);
+  const mediaIdValue = String(mediaId || "").trim();
+  if (!mediaIdValue) throw new ApiError(400, "mediaId is required");
+
+  const media = await prisma.media.findFirst({
+    where: { id: mediaIdValue, userId },
+    select: { id: true, storagePath: true },
+  });
+  if (!media) {
+    throw new ApiError(404, "Media not found");
+  }
+
+  await prisma.chatConversationParticipant.update({
+    where: { id: membership.id },
+    data: { backgroundMediaId: media.id },
+  });
+
+  emitChatToUser(userId, {
+    conversationId: membership.conversationId,
+    background: {
+      userId,
+      backgroundPath: media.storagePath,
+    },
+  });
+
+  return {
+    conversationId: membership.conversationId,
+    backgroundPath: media.storagePath,
+  };
+}
+
+export async function clearConversationBackground(userId, conversationId) {
+  assertChatPrismaClientReady();
+  const membership = await assertConversationMembership(userId, conversationId);
+
+  await prisma.chatConversationParticipant.update({
+    where: { id: membership.id },
+    data: { backgroundMediaId: null },
+  });
+
+  emitChatToUser(userId, {
+    conversationId: membership.conversationId,
+    background: {
+      userId,
+      backgroundPath: null,
+    },
+  });
+
+  return {
+    conversationId: membership.conversationId,
+    backgroundPath: null,
+  };
+}
+
+export async function getConversationDetail(userId, conversationId) {
+  assertChatPrismaClientReady();
+  const membership = await assertConversationMembership(userId, conversationId);
+
+  const conversation = await prisma.chatConversation.findFirst({
+    where: { id: membership.conversationId },
+    include: {
+      participants: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!conversation) {
+    throw new ApiError(404, "Conversation not found");
+  }
+
+  const participantRows = conversation.participants;
+  const backgroundMediaIds = [
+    ...new Set(
+      participantRows.map((item) => item.backgroundMediaId).filter(Boolean),
+    ),
+  ];
+  const participantUserIds = participantRows.map((item) => item.userId);
+
+  const [profilePicturesByUserId, backgroundPathsById] =
+    await Promise.all([
+      resolveProfilePicturesByUserId(participantUserIds),
+      resolveMediaPathsById(backgroundMediaIds),
+    ]);
+
+  const me = participantRows.find((item) => item.userId === userId);
+  const others = participantRows.filter((item) => item.userId !== userId);
+  const onlineMap = getOnlineStatusForUsers(participantUserIds);
+
+  const participants = participantRows.map((item) => ({
+    userId: item.userId,
+    joinedAt: item.joinedAt,
+    lastReadAt: item.lastReadAt,
+    isOnline: Boolean(onlineMap[item.userId]),
+    nickname: item.nickname || null,
+    photoPath: profilePicturesByUserId[item.userId] || null,
+    user: mapUserLite(item.user),
+  }));
+
+  return {
+    id: conversation.id,
+    title:
+      conversation.title ||
+      (conversation.isGroup
+        ? "Group conversation"
+        : others
+            .map((item) =>
+              item.nickname ||
+              [item.user.firstName, item.user.lastName]
+                .filter(Boolean)
+                .join(" ")
+                .trim() ||
+              item.user.username,
+            )
+            .filter(Boolean)
+            .join(", ")),
+    isGroup: conversation.isGroup,
+    createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt,
+    lastMessageAt: conversation.lastMessageAt,
+    createdById: conversation.createdById,
+    participants,
+    otherParticipants: others.map((item) => ({
+      ...mapUserLite(item.user),
+      nickname: item.nickname || null,
+      photoPath: profilePicturesByUserId[item.userId] || null,
+      isOnline: Boolean(onlineMap[item.userId]),
+    })),
+    myBackgroundPath: me?.backgroundMediaId
+      ? backgroundPathsById[me.backgroundMediaId] || null
+      : null,
+  };
 }
 
 export async function searchChatUsers(userId, query = {}) {

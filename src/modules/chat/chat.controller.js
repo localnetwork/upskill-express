@@ -8,6 +8,10 @@ import {
   searchChatUsers,
   sendMessage,
   uploadChatAttachment,
+  setParticipantNickname,
+  setConversationBackground,
+  clearConversationBackground,
+  getConversationDetail,
 } from "./chat.service.js";
 
 export async function listConversationsController(req, res) {
@@ -61,4 +65,39 @@ export async function deleteMessageController(req, res) {
     req.body.mode,
   );
   return res.json({ message: "Message deleted", data });
+}
+
+export async function setNicknameController(req, res) {
+  const data = await setParticipantNickname(
+    req.user.id,
+    req.params.conversationId,
+    req.params.targetUserId,
+    req.body.nickname,
+  );
+  return res.json({ message: "Nickname updated", data });
+}
+
+export async function setBackgroundController(req, res) {
+  const data = await setConversationBackground(
+    req.user.id,
+    req.params.conversationId,
+    req.body.mediaId,
+  );
+  return res.json({ message: "Background updated", data });
+}
+
+export async function clearBackgroundController(req, res) {
+  const data = await clearConversationBackground(
+    req.user.id,
+    req.params.conversationId,
+  );
+  return res.json({ message: "Background removed", data });
+}
+
+export async function conversationDetailController(req, res) {
+  const data = await getConversationDetail(
+    req.user.id,
+    req.params.conversationId,
+  );
+  return res.json({ message: "Conversation fetched", data });
 }

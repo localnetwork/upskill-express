@@ -13,6 +13,10 @@ import {
   searchUsersController,
   sendMessageController,
   uploadAttachmentController,
+  setNicknameController,
+  setBackgroundController,
+  clearBackgroundController,
+  conversationDetailController,
 } from "./chat.controller.js";
 import {
   createConversationValidator,
@@ -21,6 +25,8 @@ import {
   searchUsersValidator,
   sendMessageValidator,
   deleteMessageValidator,
+  nicknameValidator,
+  backgroundValidator,
 } from "./chat.validator.js";
 
 const router = Router();
@@ -66,6 +72,28 @@ router.post(
   "/upload",
   upload.single("file"),
   asyncHandler(uploadAttachmentController),
+);
+
+// NOTE: `GET /conversations/:conversationId` is declared AFTER
+// `GET /conversations/:conversationId/messages` so the more specific
+// route is matched first and there is no shadowing.
+router.get(
+  "/conversations/:conversationId",
+  asyncHandler(conversationDetailController),
+);
+router.put(
+  "/conversations/:conversationId/nicknames/:targetUserId",
+  validate(nicknameValidator),
+  asyncHandler(setNicknameController),
+);
+router.put(
+  "/conversations/:conversationId/background",
+  validate(backgroundValidator),
+  asyncHandler(setBackgroundController),
+);
+router.delete(
+  "/conversations/:conversationId/background",
+  asyncHandler(clearBackgroundController),
 );
 
 export default router;
