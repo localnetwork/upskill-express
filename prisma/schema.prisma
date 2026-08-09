@@ -119,6 +119,13 @@ enum ChatMessageType {
   SYSTEM
 }
 
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELED
+}
+
 model User {
   id                    String    @id @default(cuid())
   username              String    @unique
@@ -183,9 +190,31 @@ model User {
   nudgeRules            CourseNudgeRule[] @relation("CourseNudgeRuleOwner")
   sentNudgeLogs         CourseNudgeLog[]  @relation("NudgeSentByEducator")
   receivedNudgeLogs     CourseNudgeLog[]  @relation("NudgeRecipient")
+  sentFriendRequests    FriendRequest[]   @relation("FriendRequestRequester")
+  receivedFriendRequests FriendRequest[]  @relation("FriendRequestAddressee")
 
   @@index([deletedAt])
   @@map("users")
+}
+
+model FriendRequest {
+  id          String              @id @default(cuid())
+  requesterId String
+  addresseeId String
+  userAId     String
+  userBId     String
+  status      FriendRequestStatus @default(PENDING)
+  respondedAt DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  requester   User                @relation("FriendRequestRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee   User                @relation("FriendRequestAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@index([requesterId, status, createdAt])
+  @@index([addresseeId, status, createdAt])
+  @@map("friend_requests")
 }
 
 model TrustedDevice {

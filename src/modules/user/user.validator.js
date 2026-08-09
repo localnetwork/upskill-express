@@ -43,3 +43,15 @@ export const updateUserValidator = z.object({
     .min(8, "Password must be at least 8 characters")
     .optional(),
 });
+
+export const friendRequestTargetParamValidator = z.object({
+  targetUserId: z.string().min(1, "Target user is required"),
+});
+
+export const friendRequestRespondParamValidator = z.object({
+  requestId: z.string().min(1, "Request id is required"),
+});
+
+export const friendRequestRespondBodyValidator = z.object({
+  action: z.enum(["ACCEPT", "DECLINE"]),
+});

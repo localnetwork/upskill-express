@@ -4,6 +4,10 @@ import {
   listCurrentUserDevices,
   listCurrentUserActivity,
   listUsers,
+  getFriendRequestStatus,
+  sendFriendRequest,
+  cancelFriendRequest,
+  respondToFriendRequest,
   removeCurrentUserDevice,
   softDeleteUser,
   updateCurrentUser,
@@ -47,4 +51,28 @@ export async function listUsersController(req, res) {
 export async function deleteUserController(req, res) {
   const data = await softDeleteUser(req.params.userId);
   return res.json({ message: "User deleted", data });
+}
+
+export async function getFriendRequestStatusController(req, res) {
+  const data = await getFriendRequestStatus(req.user.id, req.params.targetUserId);
+  return res.json({ message: "Friend request status fetched", data });
+}
+
+export async function sendFriendRequestController(req, res) {
+  const data = await sendFriendRequest(req.user.id, req.params.targetUserId);
+  return res.json({ message: "Friend request sent", data });
+}
+
+export async function cancelFriendRequestController(req, res) {
+  const data = await cancelFriendRequest(req.user.id, req.params.targetUserId);
+  return res.json({ message: "Friend request canceled", data });
+}
+
+export async function respondToFriendRequestController(req, res) {
+  const data = await respondToFriendRequest(
+    req.user.id,
+    req.params.requestId,
+    req.body.action,
+  );
+  return res.json({ message: "Friend request updated", data });
 }

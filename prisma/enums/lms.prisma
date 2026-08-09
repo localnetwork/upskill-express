@@ -109,3 +109,10 @@ enum ChatMessageType {
   USER
   SYSTEM
 }
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELED
+}

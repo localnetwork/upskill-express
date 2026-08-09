@@ -5,15 +5,24 @@ import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
-import { updateUserValidator } from "./user.validator.js";
 import {
+  friendRequestRespondBodyValidator,
+  friendRequestRespondParamValidator,
+  friendRequestTargetParamValidator,
+  updateUserValidator,
+} from "./user.validator.js";
+import {
+  cancelFriendRequestController,
   changePasswordController,
   deleteUserController,
+  getFriendRequestStatusController,
   listMyDevicesController,
   listUsersController,
   listMyActivityController,
   meController,
   removeMyDeviceController,
+  respondToFriendRequestController,
+  sendFriendRequestController,
   updateMeController,
 } from "./user.controller.js";
 
@@ -64,6 +73,31 @@ router.post(
     }),
   ),
   asyncHandler(changePasswordController),
+);
+router.get(
+  "/friend-requests/status/:targetUserId",
+  authenticate,
+  validate(friendRequestTargetParamValidator, "params"),
+  asyncHandler(getFriendRequestStatusController),
+);
+router.post(
+  "/friend-requests/send/:targetUserId",
+  authenticate,
+  validate(friendRequestTargetParamValidator, "params"),
+  asyncHandler(sendFriendRequestController),
+);
+router.post(
+  "/friend-requests/cancel/:targetUserId",
+  authenticate,
+  validate(friendRequestTargetParamValidator, "params"),
+  asyncHandler(cancelFriendRequestController),
+);
+router.post(
+  "/friend-requests/respond/:requestId",
+  authenticate,
+  validate(friendRequestRespondParamValidator, "params"),
+  validate(friendRequestRespondBodyValidator),
+  asyncHandler(respondToFriendRequestController),
 );
 
 router.get(

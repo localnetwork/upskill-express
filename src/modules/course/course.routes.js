@@ -9,6 +9,7 @@ import {
   createCourseAIDraftController,
   createCourseAIDraftJobController,
   getCourseAIDraftJobController,
+  getLatestActiveCourseAIDraftJobController,
   askCourseLearningAssistantController,
   updateCourseWithAIController,
   deleteDraftCourseController,
@@ -153,6 +154,12 @@ router.post(
   authorize("EDUCATOR"),
   validate(createCourseAIDraftValidator),
   asyncHandler(createCourseAIDraftJobController),
+);
+router.get(
+  "/ai-draft/jobs/latest",
+  authenticate,
+  authorize("EDUCATOR"),
+  asyncHandler(getLatestActiveCourseAIDraftJobController),
 );
 router.get(
   "/ai-draft/jobs/:jobId",

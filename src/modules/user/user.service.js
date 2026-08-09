@@ -6,6 +6,7 @@ import { prisma } from "../../shared/database/prisma.js";
 import { countMany, findById, findByUsername, findMany, updateById } from "./user.repository.js";
 import { listUserActivityEvents, recordActivityEvent } from "../analytics/analytics.service.js";
 import { listTrustedDevices, revokeTrustedDevice } from "../auth/trusted-device.service.js";
+import { createNotification } from "../notification/notification.service.js";
 
 const USER_PICTURE_KEY_PREFIX = "profile_picture::";
 
@@ -70,6 +71,79 @@ function mapUser(user) {
 
 function getUserPictureSettingKey(userId) {
   return `${USER_PICTURE_KEY_PREFIX}${userId}`;
+}
+
+function normalizeFriendPair(userIdA, userIdB) {
+  return [String(userIdA || ""), String(userIdB || "")].sort();
+}
+
+function mapFriendRequestState(request, currentUserId) {
+  if (!request) {
+    return {
+      relationship: "NONE",
+      requestId: null,
+      requestStatus: null,
+      direction: null,
+    };
+  }
+
+  async function updateFriendRequestNotificationStatus(friendRequestId, requestStatus) {
+    const rows = await prisma.notification.findMany({
+      where: {
+        metadata: {
+          path: ["friendRequestId"],
+          equals: friendRequestId,
+        },
+      },
+      select: {
+        id: true,
+        metadata: true,
+      },
+    });
+
+    if (!rows.length) return;
+
+    await Promise.all(
+      rows.map((row) =>
+        prisma.notification.update({
+          where: { id: row.id },
+          data: {
+            metadata: {
+              ...(row.metadata && typeof row.metadata === "object" ? row.metadata : {}),
+              requestStatus,
+            },
+          },
+        }),
+      ),
+    );
+  }
+
+  if (request.status === "ACCEPTED") {
+    return {
+      relationship: "FRIENDS",
+      requestId: request.id,
+      requestStatus: request.status,
+      direction: null,
+    };
+  }
+
+  if (request.status === "PENDING") {
+    const direction =
+      request.requesterId === currentUserId ? "OUTGOING" : "INCOMING";
+    return {
+      relationship: direction === "OUTGOING" ? "REQUEST_SENT" : "REQUEST_RECEIVED",
+      requestId: request.id,
+      requestStatus: request.status,
+      direction,
+    };
+  }
+
+  return {
+    relationship: "NONE",
+    requestId: request.id,
+    requestStatus: request.status,
+    direction: null,
+  };
 }
 
 function safeParseJson(value) {
@@ -237,4 +311,222 @@ export async function removeCurrentUserDevice(userId, deviceId) {
     throw new ApiError(404, "Device not found");
   }
   return { success: true };
+}
+
+export async function getFriendRequestStatus(currentUserId, targetUserId) {
+  if (currentUserId === targetUserId) {
+    return {
+      relationship: "SELF",
+      requestId: null,
+      requestStatus: null,
+      direction: null,
+    };
+  }
+
+  const targetUser = await findById(targetUserId);
+  if (!targetUser || targetUser.deletedAt) {
+    throw new ApiError(404, "Target user not found");
+  }
+
+  const [userAId, userBId] = normalizeFriendPair(currentUserId, targetUserId);
+  const request = await prisma.friendRequest.findUnique({
+    where: { userAId_userBId: { userAId, userBId } },
+    select: {
+      id: true,
+      status: true,
+      requesterId: true,
+    },
+  });
+
+  return mapFriendRequestState(request, currentUserId);
+}
+
+export async function sendFriendRequest(currentUserId, targetUserId) {
+  if (currentUserId === targetUserId) {
+    throw new ApiError(400, "You cannot send a friend request to yourself");
+  }
+
+  const [currentUser, targetUser] = await Promise.all([
+    findById(currentUserId),
+    findById(targetUserId),
+  ]);
+
+  if (!currentUser || currentUser.deletedAt) {
+    throw new ApiError(404, "User not found");
+  }
+  if (!targetUser || targetUser.deletedAt) {
+    throw new ApiError(404, "Target user not found");
+  }
+
+  const [userAId, userBId] = normalizeFriendPair(currentUserId, targetUserId);
+  const existing = await prisma.friendRequest.findUnique({
+    where: { userAId_userBId: { userAId, userBId } },
+  });
+
+  if (existing?.status === "ACCEPTED") {
+    throw new ApiError(409, "You are already friends");
+  }
+
+  if (existing?.status === "PENDING" && existing.requesterId === currentUserId) {
+    return mapFriendRequestState(existing, currentUserId);
+  }
+
+  if (existing?.status === "PENDING" && existing.requesterId === targetUserId) {
+    throw new ApiError(
+      409,
+      "This user already sent you a friend request. Confirm or decline it.",
+    );
+  }
+
+  const payload = {
+    requesterId: currentUserId,
+    addresseeId: targetUserId,
+    userAId,
+    userBId,
+    status: "PENDING",
+    respondedAt: null,
+  };
+
+  const request = existing
+    ? await prisma.friendRequest.update({
+        where: { id: existing.id },
+        data: payload,
+      })
+    : await prisma.friendRequest.create({
+        data: payload,
+      });
+
+  await createNotification({
+    userId: targetUserId,
+    type: "SYSTEM",
+    title: "New friend request",
+    message: `${currentUser.firstName || currentUser.username} sent you a friend request.`,
+    metadata: {
+      notificationKind: "FRIEND_REQUEST",
+      friendRequestId: request.id,
+      requestStatus: "PENDING",
+      requester: {
+        id: currentUser.id,
+        username: currentUser.username,
+        firstName: currentUser.firstName || "",
+        lastName: currentUser.lastName || "",
+      },
+    },
+  });
+
+  return mapFriendRequestState(request, currentUserId);
+}
+
+export async function cancelFriendRequest(currentUserId, targetUserId) {
+  if (currentUserId === targetUserId) {
+    throw new ApiError(400, "Invalid friend request target");
+  }
+
+  const [userAId, userBId] = normalizeFriendPair(currentUserId, targetUserId);
+  const request = await prisma.friendRequest.findUnique({
+    where: { userAId_userBId: { userAId, userBId } },
+    select: {
+      id: true,
+      requesterId: true,
+      addresseeId: true,
+      status: true,
+    },
+  });
+
+  if (!request || request.status !== "PENDING") {
+    throw new ApiError(404, "Pending friend request not found");
+  }
+
+  if (request.requesterId !== currentUserId) {
+    throw new ApiError(403, "You can only cancel your own friend request");
+  }
+
+  const updated = await prisma.friendRequest.update({
+    where: { id: request.id },
+    data: {
+      status: "CANCELED",
+      respondedAt: new Date(),
+    },
+  });
+
+  await updateFriendRequestNotificationStatus(updated.id, "CANCELED");
+
+  return mapFriendRequestState(updated, currentUserId);
+}
+
+export async function respondToFriendRequest(currentUserId, requestId, action) {
+  const normalizedAction = String(action || "").toUpperCase();
+  if (!["ACCEPT", "DECLINE"].includes(normalizedAction)) {
+    throw new ApiError(400, "Invalid friend request action");
+  }
+
+  const request = await prisma.friendRequest.findUnique({
+    where: { id: requestId },
+    include: {
+      requester: {
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
+      addressee: {
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
+    },
+  });
+
+  if (!request || request.status !== "PENDING") {
+    throw new ApiError(404, "Pending friend request not found");
+  }
+
+  if (request.addresseeId !== currentUserId) {
+    throw new ApiError(403, "You cannot respond to this friend request");
+  }
+
+  const nextStatus = normalizedAction === "ACCEPT" ? "ACCEPTED" : "DECLINED";
+  const updated = await prisma.friendRequest.update({
+    where: { id: requestId },
+    data: {
+      status: nextStatus,
+      respondedAt: new Date(),
+    },
+  });
+
+  await updateFriendRequestNotificationStatus(updated.id, nextStatus);
+
+  const responderName =
+    request.addressee.firstName?.trim() || request.addressee.username;
+
+  await createNotification({
+    userId: request.requesterId,
+    type: "SYSTEM",
+    title:
+      nextStatus === "ACCEPTED"
+        ? "Friend request accepted"
+        : "Friend request declined",
+    message:
+      nextStatus === "ACCEPTED"
+        ? `${responderName} accepted your friend request.`
+        : `${responderName} declined your friend request.`,
+    metadata: {
+      notificationKind: "FRIEND_REQUEST_RESPONSE",
+      friendRequestId: request.id,
+      requestStatus: nextStatus,
+      responder: {
+        id: request.addressee.id,
+        username: request.addressee.username,
+        firstName: request.addressee.firstName || "",
+        lastName: request.addressee.lastName || "",
+      },
+    },
+  });
+
+  return mapFriendRequestState(updated, currentUserId);
 }

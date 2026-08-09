@@ -124,3 +124,22 @@ export function getCourseAIDraftJob(userId, jobId) {
 
   return getPublicJob(job);
 }
+
+export function getLatestActiveCourseAIDraftJob(userId) {
+  pruneExpiredJobs();
+
+  const activeStatuses = new Set(["queued", "running"]);
+  const userJobs = Array.from(aiDraftJobs.values()).filter(
+    (job) => job.userId === userId && activeStatuses.has(job.status),
+  );
+
+  if (!userJobs.length) return null;
+
+  const latestJob = userJobs.sort((a, b) => {
+    const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime();
+    const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime();
+    return bTime - aTime;
+  })[0];
+
+  return getPublicJob(latestJob);
+}

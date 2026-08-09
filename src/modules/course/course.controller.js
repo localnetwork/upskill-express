@@ -28,6 +28,7 @@ import {
 import {
   createCourseAIDraftJob,
   getCourseAIDraftJob,
+  getLatestActiveCourseAIDraftJob,
 } from "./course-ai-draft-job.service.js";
 
 const submitSchema = z.object({
@@ -114,6 +115,11 @@ export async function createCourseAIDraftJobController(req, res) {
 export async function getCourseAIDraftJobController(req, res) {
   const data = getCourseAIDraftJob(req.user.id, req.params.jobId);
   return res.json({ message: "AI draft job fetched", data });
+}
+
+export async function getLatestActiveCourseAIDraftJobController(req, res) {
+  const data = getLatestActiveCourseAIDraftJob(req.user.id);
+  return res.json({ message: "Latest active AI draft job fetched", data });
 }
 
 export async function updateCourseWithAIController(req, res) {
