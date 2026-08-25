@@ -76,10 +76,12 @@ The server uses `PORT` from `.env` (runtime fallback: `3000`).
 | `CF_ENDPOINT` | `""` |
 | `CF_BUCKET` | `""` |
 | `CF_PUBLIC_ACCESS_URL` | `""` |
-| `STREAM_API_KEY` | `""` (Bunny Stream API key) |
-| `STREAM_LIBRARY_ID` | `""` (Bunny Stream library ID) |
-| `STREAM_PULL_ZONE` | `""` (Bunny Stream pull zone hostname or zone name) |
-| `STREAM_TOKEN_KEY` | `""` (optional; reserved for tokenized playback) |
+| `CF_STREAM_ACCOUNT_ID` | `""` (Cloudflare account ID) |
+| `CF_STREAM_API_TOKEN` | `""` (Cloudflare Stream API token) |
+| `CF_STREAM_CUSTOMER_CODE` | `""` (optional; enables `customer-<code>.cloudflarestream.com` signed iframe URLs) |
+| `CF_STREAM_SIGNING_KEY` | `""` (optional; signing secret for signed playback) |
+| `CF_STREAM_SIGNING_KEY_ID` | `""` (optional; key ID used as JWT `kid`) |
+| `CF_STREAM_AUTO_CAPTION_LANGUAGE` | `"en"` (optional; auto-generate AI caption language after upload) |
 
 ## Scripts
 

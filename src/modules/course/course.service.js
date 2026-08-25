@@ -8,8 +8,8 @@ import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { env } from "../../shared/config/env.js";
 import { getLessonAccessMapForEnrollment } from "../progress/lesson-access.service.js";
 import {
-  extractBunnyVideoIdFromPlaybackUrl,
-} from "../../shared/storage/bunny-stream.js";
+  buildCloudflareEmbedUrlFromPlaybackUrl,
+} from "../../shared/storage/cloudflare-stream.js";
 
 const COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
 const PROMO_MEDIA_TYPES = ["PROMO_VIDEO"];
@@ -18,30 +18,8 @@ const COURSE_GOALS_KEY_PREFIX = "course_goals::";
 function mapVideoPlaybackToEmbedUrl(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  const normalizedLibraryId = String(env.streamLibraryId || "").trim();
-  const buildUnsignedEmbedUrl = (libraryId, videoId) =>
-    `https://iframe.mediadelivery.net/embed/${encodeURIComponent(libraryId)}/${encodeURIComponent(videoId)}?autoplay=false&loop=false&muted=false&preload=true&responsive=true`;
-
-  if (/^https:\/\/iframe\.mediadelivery\.net\/embed\//i.test(raw)) {
-    try {
-      const parsed = new URL(raw);
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      const libraryId = String(segments[1] || "").trim();
-      const videoId = String(segments[2] || "").trim();
-      if (segments[0] === "embed" && libraryId && videoId) {
-        return buildUnsignedEmbedUrl(libraryId, videoId);
-      }
-    } catch (_error) {
-      return raw;
-    }
-    return raw;
-  }
-
-  const videoId = extractBunnyVideoIdFromPlaybackUrl(raw);
-  if (videoId && normalizedLibraryId) {
-    return buildUnsignedEmbedUrl(normalizedLibraryId, videoId);
-  }
-  return raw;
+  const embedUrl = buildCloudflareEmbedUrlFromPlaybackUrl(raw);
+  return embedUrl || raw;
 }
 
 function pickLatestMediaByTypes(mediaList = [], types = []) {

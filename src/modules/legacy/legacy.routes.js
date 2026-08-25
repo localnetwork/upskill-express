@@ -25,14 +25,16 @@ import {
   isR2StoragePath,
 } from "../../shared/storage/r2.js";
 import {
-  buildBunnyPlaybackUrl,
-  buildBunnySignedEmbedUrl,
-  createBunnyStreamVideo,
-  deleteBunnyStreamVideo,
-  extractBunnyVideoIdFromPlaybackUrl,
-  isBunnyStreamEnabled,
-  uploadVideoToBunnyStream,
-} from "../../shared/storage/bunny-stream.js";
+  buildCloudflareEmbedUrlFromPlaybackUrl,
+  buildCloudflarePlaybackUrl,
+  buildCloudflareSignedEmbedUrl,
+  createCloudflareDirectUpload,
+  deleteCloudflareStreamVideo,
+  extractCloudflareVideoIdFromPlaybackUrl,
+  isCloudflareStreamEnabled,
+  triggerCloudflareAutoCaption,
+  uploadVideoToCloudflareStream,
+} from "../../shared/storage/cloudflare-stream.js";
 import { updateLessonProgress } from "../progress/progress.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { createNotification } from "../notification/notification.service.js";
@@ -76,30 +78,8 @@ const JUDGE0_LANGUAGE_IDS = {
 function mapVideoPlaybackToEmbedUrl(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  const normalizedLibraryId = String(env.streamLibraryId || "").trim();
-  const buildUnsignedEmbedUrl = (libraryId, videoId) =>
-    `https://iframe.mediadelivery.net/embed/${encodeURIComponent(libraryId)}/${encodeURIComponent(videoId)}?autoplay=false&loop=false&muted=false&preload=true&responsive=true`;
-
-  if (/^https:\/\/iframe\.mediadelivery\.net\/embed\//i.test(raw)) {
-    try {
-      const parsed = new URL(raw);
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      const libraryId = String(segments[1] || "").trim();
-      const videoId = String(segments[2] || "").trim();
-      if (segments[0] === "embed" && libraryId && videoId) {
-        return buildUnsignedEmbedUrl(libraryId, videoId);
-      }
-    } catch (_error) {
-      return raw;
-    }
-    return raw;
-  }
-
-  const videoId = extractBunnyVideoIdFromPlaybackUrl(raw);
-  if (videoId && normalizedLibraryId) {
-    return buildUnsignedEmbedUrl(normalizedLibraryId, videoId);
-  }
-  return raw;
+  const embedUrl = buildCloudflareEmbedUrlFromPlaybackUrl(raw);
+  return embedUrl || raw;
 }
 const USER_PICTURE_KEY_PREFIX = "profile_picture::";
 
@@ -201,6 +181,52 @@ async function readUploadedFileBuffer(file) {
 
   if (file?.buffer) {
     return Buffer.from(file.buffer);
+  }
+
+  if (file?.key && isR2Enabled()) {
+    const object = await getObjectFromR2(file.key);
+    if (typeof object.body.transformToByteArray === "function") {
+      const bytes = await object.body.transformToByteArray();
+      return Buffer.from(bytes);
+    }
+    if (typeof object.body.transformToWebStream === "function") {
+      const chunks = [];
+      for await (const chunk of Readable.fromWeb(object.body.transformToWebStream())) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    }
+    if (typeof object.body.pipe === "function") {
+      const chunks = [];
+      for await (const chunk of object.body) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    }
+    throw new ApiError(500, "Unsupported uploaded file format from R2");
+  }
+
+  if (isR2Enabled() && isR2StoragePath(storagePath)) {
+    const object = await getObjectFromR2(storagePath);
+    if (typeof object.body.transformToByteArray === "function") {
+      const bytes = await object.body.transformToByteArray();
+      return Buffer.from(bytes);
+    }
+    if (typeof object.body.transformToWebStream === "function") {
+      const chunks = [];
+      for await (const chunk of Readable.fromWeb(object.body.transformToWebStream())) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    }
+    if (typeof object.body.pipe === "function") {
+      const chunks = [];
+      for await (const chunk of object.body) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    }
+    throw new ApiError(500, "Unsupported uploaded file format from R2");
   }
 
   if (/^https?:\/\//i.test(storagePath)) {
@@ -1495,6 +1521,41 @@ function extractOriginFromHeader(value) {
   }
 }
 
+function normalizeHostname(value) {
+  const raw = String(value || "").toLowerCase();
+  return raw.startsWith("www.") ? raw.slice(4) : raw;
+}
+
+function originsMatch(left, right) {
+  const l = extractOriginFromHeader(left);
+  const r = extractOriginFromHeader(right);
+  if (!l || !r) return false;
+  if (l === r) return true;
+
+  try {
+    const leftUrl = new URL(l);
+    const rightUrl = new URL(r);
+    return (
+      leftUrl.protocol === rightUrl.protocol &&
+      normalizeHostname(leftUrl.hostname) === normalizeHostname(rightUrl.hostname) &&
+      leftUrl.port === rightUrl.port
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
+function getAllowedPlaybackOrigins() {
+  const fromCors = String(env.corsOrigin || "")
+    .split(",")
+    .map((value) => extractOriginFromHeader(value.trim()))
+    .filter(Boolean);
+  const fromFrontend = extractOriginFromHeader(env.frontendUrl);
+  return Array.from(
+    new Set([fromFrontend, ...fromCors].filter(Boolean)),
+  );
+}
+
 function assertPlaybackStreamRequest(req) {
   const fetchDest = String(req.get("sec-fetch-dest") || "").toLowerCase();
   const streamIntent = String(
@@ -1506,16 +1567,31 @@ function assertPlaybackStreamRequest(req) {
     throw new ApiError(403, "Invalid stream context");
   }
 
-  const expectedOrigin = extractOriginFromHeader(env.frontendUrl);
-  if (!expectedOrigin) {
-    throw new ApiError(500, "Frontend origin is not configured");
+  const allowedOrigins = getAllowedPlaybackOrigins();
+  if (!allowedOrigins.length && String(env.corsOrigin || "").trim() !== "*") {
+    throw new ApiError(500, "Playback origins are not configured");
   }
 
   const requestOrigin = extractOriginFromHeader(req.get("origin"));
   const refererOrigin = extractOriginFromHeader(req.get("referer"));
   const effectiveOrigin = requestOrigin || refererOrigin;
 
-  if (!effectiveOrigin || effectiveOrigin !== expectedOrigin) {
+  if (!effectiveOrigin) {
+    const authHeader = String(req.get("authorization") || "");
+    if (/^bearer\s+\S+/i.test(authHeader)) {
+      return;
+    }
+    throw new ApiError(403, "Untrusted stream origin");
+  }
+
+  if (String(env.corsOrigin || "").trim() === "*") {
+    return;
+  }
+
+  const trusted = allowedOrigins.some((allowedOrigin) =>
+    originsMatch(effectiveOrigin, allowedOrigin),
+  );
+  if (!trusted) {
     throw new ApiError(403, "Untrusted stream origin");
   }
 }
@@ -3260,6 +3336,92 @@ router.post(
 );
 
 router.post(
+  "/course-resources/videos/direct-upload-url",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.body.curriculum_id,
+      );
+      if (!isCloudflareStreamEnabled()) {
+        throw new ApiError(400, "Cloudflare Stream is not configured");
+      }
+
+      const duration = Math.max(1, Math.floor(Number(req.body.duration || 0) || 3600));
+      const { uploadUrl, uid } = await createCloudflareDirectUpload({
+        maxDurationSeconds: duration,
+        requireSignedUrls: true,
+        title: req.body.file_name || lesson.title || "Course video",
+      });
+
+      return res.status(201).json({
+        data: {
+          upload_url: uploadUrl,
+          uid,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/course-resources/videos/complete",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.body.curriculum_id,
+      );
+
+      const uid = String(req.body.uid || "").trim();
+      if (!uid) {
+        throw new ApiError(400, "Cloudflare video uid is required");
+      }
+
+      const videoPath = buildCloudflarePlaybackUrl(uid);
+      triggerCloudflareAutoCaption(uid);
+      const sizeInBytes = Number(req.body.size_in_bytes || 0);
+      const media = await prisma.media.create({
+        data: {
+          userId: req.user.id,
+          courseId: lesson.courseId,
+          lessonId: lesson.id,
+          storagePath: videoPath,
+          originalName: String(req.body.original_name || "Course video").slice(0, 255),
+          mimeType: String(req.body.mime_type || "video/mp4").slice(0, 255),
+          mediaType: "VIDEO",
+          sizeInBytes: Number.isFinite(sizeInBytes) && sizeInBytes > 0 ? sizeInBytes : 0,
+        },
+      });
+
+      const updatedLesson = await prisma.lesson.update({
+        where: { id: lesson.id },
+        data: {
+          videoUrl: videoPath,
+          durationInSeconds: Number(req.body.duration || 0),
+        },
+      });
+
+      return res.status(201).json({
+        data: {
+          curriculum: mapLessonToLegacyCurriculum(updatedLesson),
+          asset: { id: media.id, path: videoPath },
+        },
+        path: videoPath,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
   "/course-resources/videos",
   authenticate,
   authorize("EDUCATOR"),
@@ -3275,17 +3437,16 @@ router.post(
       }
 
       let videoPath = mediaPath(req.file);
-      if (isBunnyStreamEnabled()) {
+      if (isCloudflareStreamEnabled()) {
         const fileBuffer = await readUploadedFileBuffer(req.file);
-        const bunnyVideoId = await createBunnyStreamVideo({
+        const cloudflareVideoId = await uploadVideoToCloudflareStream({
+          filename: req.file.originalname,
           title: req.file.originalname || lesson.title || "Course video",
-        });
-        await uploadVideoToBunnyStream({
-          videoId: bunnyVideoId,
           fileBuffer,
           contentType: req.file.mimetype,
         });
-        videoPath = buildBunnyPlaybackUrl(bunnyVideoId);
+        videoPath = buildCloudflarePlaybackUrl(cloudflareVideoId);
+        triggerCloudflareAutoCaption(cloudflareVideoId);
         await cleanupTransientUploadedFile(req.file);
       }
 
@@ -3343,14 +3504,12 @@ async function streamTokenHandler(req, res, next) {
       userId: req.user.id,
       mediaId: queryId,
     });
-    const bunnyVideoId = extractBunnyVideoIdFromPlaybackUrl(
+    const cloudflareVideoId = extractCloudflareVideoIdFromPlaybackUrl(
       mediaSource.storagePath,
     );
-    const requestIpAddress = getRequestIpAddress(req);
-    const embedUrl = bunnyVideoId
-      ? buildBunnySignedEmbedUrl(bunnyVideoId, {
+    const embedUrl = cloudflareVideoId
+      ? await buildCloudflareSignedEmbedUrl(cloudflareVideoId, {
           ttlSeconds: 60,
-          userIp: requestIpAddress,
         })
       : "";
 
@@ -3423,15 +3582,17 @@ router.delete(
         req.user.id,
         req.params.lessonId,
       );
-      const existingBunnyVideoId = isBunnyStreamEnabled()
-        ? extractBunnyVideoIdFromPlaybackUrl(lesson.videoUrl)
+      const existingCloudflareVideoId = isCloudflareStreamEnabled()
+        ? extractCloudflareVideoIdFromPlaybackUrl(lesson.videoUrl)
         : "";
       const updatedLesson = await prisma.lesson.update({
         where: { id: lesson.id },
         data: { videoUrl: null },
       });
-      if (existingBunnyVideoId) {
-        await deleteBunnyStreamVideo(existingBunnyVideoId).catch(() => {});
+      if (existingCloudflareVideoId) {
+        await deleteCloudflareStreamVideo(existingCloudflareVideoId).catch(
+          () => {},
+        );
       }
       return res.json({
         data: {

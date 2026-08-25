@@ -43,13 +43,13 @@ export const env = {
   cfEndpoint: process.env.CF_ENDPOINT || "",
   cfBucket: process.env.CF_BUCKET || "",
   cfPublicAccessUrl: process.env.CF_PUBLIC_ACCESS_URL || "",
-  streamApiKey: process.env.STREAM_API_KEY || "",
-  streamLibraryId: process.env.STREAM_LIBRARY_ID || "",
-  streamPullZone: process.env.STREAM_PULL_ZONE || "",
-  streamTokenKey: process.env.STREAM_TOKEN_KEY || "",
-  streamTokenIpValidation:
-    String(process.env.STREAM_TOKEN_IP_VALIDATION || "true").toLowerCase() ===
-    "true",
+  cfStreamAccountId: process.env.CF_STREAM_ACCOUNT_ID || "",
+  cfStreamApiToken: process.env.CF_STREAM_API_TOKEN || "",
+  cfStreamCustomerCode: process.env.CF_STREAM_CUSTOMER_CODE || "",
+  cfStreamSigningKey: process.env.CF_STREAM_SIGNING_KEY || "",
+  cfStreamSigningKeyId: process.env.CF_STREAM_SIGNING_KEY_ID || "",
+  cfStreamAutoCaptionLanguage:
+    process.env.CF_STREAM_AUTO_CAPTION_LANGUAGE || "en",
   googleClientId: process.env.GOOGLE_CLIENT_ID || "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
   aiKey: process.env.AI_KEY || process.env.DEEPSEEK_API_KEY || "",
