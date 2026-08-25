@@ -7,6 +7,7 @@ import {
   getFriendRequestStatus,
   sendFriendRequest,
   cancelFriendRequest,
+  unfriend,
   respondToFriendRequest,
   removeCurrentUserDevice,
   softDeleteUser,
@@ -66,6 +67,11 @@ export async function sendFriendRequestController(req, res) {
 export async function cancelFriendRequestController(req, res) {
   const data = await cancelFriendRequest(req.user.id, req.params.targetUserId);
   return res.json({ message: "Friend request canceled", data });
+}
+
+export async function unfriendController(req, res) {
+  const data = await unfriend(req.user.id, req.params.targetUserId);
+  return res.json({ message: "User unfriended", data });
 }
 
 export async function respondToFriendRequestController(req, res) {

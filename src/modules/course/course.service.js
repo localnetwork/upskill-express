@@ -5,6 +5,7 @@ import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { slugify } from "../../shared/utils/slugify.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import { addToCart, removeFromCart } from "../cart/cart.service.js";
 import { env } from "../../shared/config/env.js";
 import { getLessonAccessMapForEnrollment } from "../progress/lesson-access.service.js";
 import {
@@ -3950,6 +3951,394 @@ function tokenizeScopeText(value) {
     .split(/\s+/)
     .map((token) => token.trim())
     .filter((token) => token.length >= 3 && !stopWords.has(token));
+}
+
+function extractQuotedText(value) {
+  const raw = String(value || "");
+  const match = raw.match(/["“”']([^"“”']{2,140})["“”']/);
+  return String(match?.[1] || "").trim();
+}
+
+function detectLearnerAssistantIntent(message) {
+  const text = String(message || "").toLowerCase();
+  if (/(recommend|suggest|what should i learn|best course|for me)/i.test(text)) {
+    return "recommend";
+  }
+  if (/(remove|delete).*(cart)/i.test(text)) {
+    return "remove_cart";
+  }
+  if (/(add|put).*(cart)/i.test(text)) {
+    return "add_cart";
+  }
+  if (/(in cart|already in cart|enrolled|own this|status)/i.test(text)) {
+    return "status";
+  }
+  if (/(search|find|look for|show courses|courses about|course about)/i.test(text)) {
+    return "search";
+  }
+  return "chat";
+}
+
+function extractCourseSearchText(message) {
+  const quoted = extractQuotedText(message);
+  if (quoted) return quoted;
+
+  return String(message || "")
+    .replace(/\b(add|put|remove|delete|to|from|my|the|a|an)\b/gi, " ")
+    .replace(/\bcart\b/gi, " ")
+    .replace(/\bcourse(s)?\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function getLearnerCourseStateSets(userId) {
+  const [cart, enrollments] = await Promise.all([
+    prisma.cart.findUnique({
+      where: { userId },
+      select: { items: { select: { courseId: true } } },
+    }),
+    prisma.enrollment.findMany({
+      where: {
+        userId,
+        status: { in: ["ACTIVE", "COMPLETED"] },
+      },
+      select: { courseId: true },
+    }),
+  ]);
+
+  return {
+    inCartSet: new Set((cart?.items || []).map((item) => item.courseId)),
+    enrolledSet: new Set((enrollments || []).map((item) => item.courseId)),
+    cartCount: Number(cart?.items?.length || 0),
+  };
+}
+
+function toAssistantCourseCard(course, inCartSet = new Set(), enrolledSet = new Set()) {
+  const category = course?.category
+    ? {
+        id: course.category.id,
+        title: course.category.name || "",
+        slug: course.category.slug || "",
+      }
+    : null;
+
+  const level = course?.level
+    ? {
+        id: course.level.id,
+        title: course.level.title || "",
+      }
+    : null;
+
+  return {
+    id: course.id,
+    slug: course.slug,
+    title: course.title,
+    subtitle: course.subtitle || "",
+    price: Number(course?.priceTier?.price || 0),
+    price_tier: course?.priceTier
+      ? {
+          id: course.priceTier.id,
+          title: course.priceTier.title,
+          price: String(course.priceTier.price),
+        }
+      : null,
+    category,
+    level,
+    is_in_cart: inCartSet.has(course.id),
+    is_enrolled: enrolledSet.has(course.id),
+  };
+}
+
+async function searchPublishedCoursesForLearner(userId, search, limit = 6) {
+  const query = String(search || "").trim();
+  if (!query) return [];
+
+  const [{ inCartSet, enrolledSet }, rows] = await Promise.all([
+    getLearnerCourseStateSets(userId),
+    prisma.course.findMany({
+      where: {
+        deletedAt: null,
+        workflowStatus: "PUBLISHED",
+        OR: [
+          { title: { contains: query, mode: "insensitive" } },
+          { subtitle: { contains: query, mode: "insensitive" } },
+          { description: { contains: query, mode: "insensitive" } },
+        ],
+      },
+      include: {
+        priceTier: true,
+        category: true,
+        level: true,
+      },
+      orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
+      take: Math.min(Math.max(Number(limit) || 6, 1), 12),
+    }),
+  ]);
+
+  return rows.map((row) => toAssistantCourseCard(row, inCartSet, enrolledSet));
+}
+
+async function resolveCourseForLearnerAssistant(userId, payload = {}, message = "") {
+  const directId = String(payload?.course_id || "").trim();
+  const directSlug = String(payload?.course_slug || "").trim();
+
+  let course = null;
+  if (directId || directSlug) {
+    const directConditions = [];
+    if (directId) directConditions.push({ id: directId });
+    if (directSlug) directConditions.push({ slug: directSlug });
+
+    course = await prisma.course.findFirst({
+      where: {
+        deletedAt: null,
+        workflowStatus: "PUBLISHED",
+        OR: directConditions,
+      },
+      include: { priceTier: true, category: true, level: true },
+    });
+  }
+
+  if (course) return course;
+
+  const queryText = extractCourseSearchText(message);
+  if (!queryText) return null;
+
+  return prisma.course.findFirst({
+    where: {
+      deletedAt: null,
+      workflowStatus: "PUBLISHED",
+      OR: [
+        { title: { equals: queryText, mode: "insensitive" } },
+        { slug: { equals: slugify(queryText), mode: "insensitive" } },
+        { title: { contains: queryText, mode: "insensitive" } },
+      ],
+    },
+    include: { priceTier: true, category: true, level: true },
+    orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
+  });
+}
+
+async function buildLearnerRecommendations(userId, limit = 6) {
+  const cappedLimit = Math.min(Math.max(Number(limit) || 6, 1), 12);
+  const { inCartSet, enrolledSet } = await getLearnerCourseStateSets(userId);
+
+  const engagedCourseIds = [];
+  if (prisma.activityEvent) {
+    try {
+      const rows = await prisma.activityEvent.findMany({
+        where: {
+          userId,
+          courseId: { not: null },
+          eventType: {
+            in: [
+              "COURSE_PAGE_VIEW",
+              "COURSE_IMPRESSION",
+              "COMMERCE_CART_ADD",
+              "COMMERCE_WISHLIST_ADD",
+              "LEARNING_LESSON_PROGRESS",
+            ],
+          },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { courseId: true },
+        take: 30,
+      });
+      for (const row of rows) {
+        if (row?.courseId) engagedCourseIds.push(row.courseId);
+      }
+    } catch (_error) {}
+  }
+
+  const engagedCourses = engagedCourseIds.length
+    ? await prisma.course.findMany({
+        where: { id: { in: engagedCourseIds }, deletedAt: null },
+        select: { id: true, categoryId: true, levelId: true },
+      })
+    : [];
+
+  const preferredCategoryIds = Array.from(
+    new Set(engagedCourses.map((course) => course.categoryId).filter(Boolean)),
+  );
+  const preferredLevelIds = Array.from(
+    new Set(engagedCourses.map((course) => course.levelId).filter(Boolean)),
+  );
+
+  const recommended = await prisma.course.findMany({
+    where: {
+      deletedAt: null,
+      workflowStatus: "PUBLISHED",
+      id: { notIn: Array.from(enrolledSet) },
+      OR: [
+        preferredCategoryIds.length
+          ? { categoryId: { in: preferredCategoryIds } }
+          : undefined,
+        preferredLevelIds.length ? { levelId: { in: preferredLevelIds } } : undefined,
+      ].filter(Boolean),
+    },
+    include: {
+      priceTier: true,
+      category: true,
+      level: true,
+    },
+    orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
+    take: cappedLimit * 2,
+  });
+
+  let candidates = recommended;
+  if (candidates.length < cappedLimit) {
+    const fallback = await prisma.course.findMany({
+      where: {
+        deletedAt: null,
+        workflowStatus: "PUBLISHED",
+        id: {
+          notIn: [
+            ...Array.from(enrolledSet),
+            ...candidates.map((course) => course.id),
+          ],
+        },
+      },
+      include: {
+        priceTier: true,
+        category: true,
+        level: true,
+      },
+      orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
+      take: cappedLimit,
+    });
+    candidates = [...candidates, ...fallback];
+  }
+
+  return candidates
+    .slice(0, cappedLimit)
+    .map((course) => toAssistantCourseCard(course, inCartSet, enrolledSet));
+}
+
+export async function askLearnerAssistant(userId, payload = {}) {
+  const message = clipText(payload?.message, 3000);
+  if (message.length < 2) {
+    throw new ApiError(400, "Message is required");
+  }
+
+  const intent = detectLearnerAssistantIntent(message);
+
+  if (intent === "search") {
+    const queryText = extractCourseSearchText(message);
+    const courses = await searchPublishedCoursesForLearner(userId, queryText, 8);
+    if (!courses.length) {
+      return {
+        intent,
+        reply: `I couldn't find published courses matching "${queryText || "your query"}". Try a different keyword.`,
+        courses: [],
+      };
+    }
+
+    return {
+      intent,
+      reply: `I found ${courses.length} published course${courses.length > 1 ? "s" : ""} for "${queryText}".`,
+      courses,
+    };
+  }
+
+  if (intent === "recommend") {
+    const courses = await buildLearnerRecommendations(userId, 6);
+    if (!courses.length) {
+      return {
+        intent,
+        reply:
+          "I couldn't build recommendations yet. Try searching for a topic you want to learn.",
+        courses: [],
+      };
+    }
+
+    return {
+      intent,
+      reply:
+        "Here are personalized recommendations based on your recent learning and browsing activity.",
+      courses,
+    };
+  }
+
+  if (intent === "add_cart" || intent === "remove_cart" || intent === "status") {
+    const course = await resolveCourseForLearnerAssistant(userId, payload, message);
+    if (!course) {
+      return {
+        intent,
+        reply:
+          "Please mention a course title (or click a course action button) so I can check or update your cart.",
+        courses: [],
+      };
+    }
+
+    const { inCartSet, enrolledSet } = await getLearnerCourseStateSets(userId);
+    const inCart = inCartSet.has(course.id);
+    const enrolled = enrolledSet.has(course.id);
+
+    if (intent === "status") {
+      return {
+        intent,
+        reply: enrolled
+          ? `You're already enrolled in "${course.title}".`
+          : inCart
+            ? `"${course.title}" is already in your cart.`
+            : `"${course.title}" is not enrolled and not in your cart yet.`,
+        courses: [toAssistantCourseCard(course, inCartSet, enrolledSet)],
+      };
+    }
+
+    if (intent === "add_cart") {
+      if (enrolled) {
+        return {
+          intent,
+          reply: `You already own "${course.title}", so I can't add it to cart.`,
+          courses: [toAssistantCourseCard(course, inCartSet, enrolledSet)],
+        };
+      }
+      if (inCart) {
+        return {
+          intent,
+          reply: `"${course.title}" is already in your cart.`,
+          courses: [toAssistantCourseCard(course, inCartSet, enrolledSet)],
+        };
+      }
+
+      await addToCart(userId, course.id);
+      const latestState = await getLearnerCourseStateSets(userId);
+      return {
+        intent,
+        reply: `Added "${course.title}" to your cart.`,
+        courses: [
+          toAssistantCourseCard(course, latestState.inCartSet, latestState.enrolledSet),
+        ],
+        cart_count: latestState.cartCount,
+      };
+    }
+
+    if (!inCart) {
+      return {
+        intent,
+        reply: `"${course.title}" is not in your cart.`,
+        courses: [toAssistantCourseCard(course, inCartSet, enrolledSet)],
+      };
+    }
+
+    await removeFromCart(userId, course.id);
+    const latestState = await getLearnerCourseStateSets(userId);
+    return {
+      intent,
+      reply: `Removed "${course.title}" from your cart.`,
+      courses: [
+        toAssistantCourseCard(course, latestState.inCartSet, latestState.enrolledSet),
+      ],
+      cart_count: latestState.cartCount,
+    };
+  }
+
+  return {
+    intent: "chat",
+    reply:
+      "I can help you search published courses, add/remove courses from cart, check enrollment/cart status, and give recommendations based on your activity. Try: 'recommend courses', 'search React courses', or 'add Data Science to cart'.",
+    courses: [],
+  };
 }
 
 function buildCourseScopeTokenSet(course) {

@@ -13,6 +13,7 @@ import {
   getCourseBySlug,
   checkCourseSlugAvailability,
   askCourseLearningAssistant,
+  askLearnerAssistant,
   getCourseStudentsForManagement,
   listAuthoredCourses,
   listCourseCouponsForManagement,
@@ -253,6 +254,11 @@ export async function askCourseLearningAssistantController(req, res) {
     req.body,
   );
   return res.json({ message: "Assistant reply generated", data });
+}
+
+export async function askLearnerAssistantController(req, res) {
+  const data = await askLearnerAssistant(req.user.id, req.body);
+  return res.json({ message: "Learner assistant reply generated", data });
 }
 
 export async function updateCoursePricingController(req, res) {

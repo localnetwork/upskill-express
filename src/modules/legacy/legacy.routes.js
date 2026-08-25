@@ -1062,11 +1062,93 @@ function normalizeQuizPayload(quizQuestions) {
       type: question?.type || "multiple_choice",
       prompt: question?.prompt || "",
       explanation: question?.explanation || "",
-      hint: question?.hint || "",
+      hint:
+        question?.hint ||
+        question?.clue ||
+        question?.tip ||
+        question?.helperText ||
+        "",
       points: Number(question?.points || 10),
     })),
     settings,
   };
+}
+
+function resolveQuizHintText(question) {
+  const explicitHint = String(
+    question?.hint ||
+      question?.clue ||
+      question?.tip ||
+      question?.helperText ||
+      "",
+  ).trim();
+  if (explicitHint) return explicitHint;
+
+  const explanation = String(question?.explanation || "").trim();
+  if (explanation) {
+    return explanation.length > 220
+      ? `${explanation.slice(0, 220).trim()}...`
+      : explanation;
+  }
+
+  if (question?.type === "multiple_choice") {
+    const optionLabels = (Array.isArray(question?.options) ? question.options : [])
+      .map((option) => String(option?.label || option?.text || "").trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    if (optionLabels.length) {
+      return `Review these options carefully: ${optionLabels.join(", ")}. Eliminate unlikely answers first.`;
+    }
+  }
+
+  if (
+    question?.type === "fill_in_the_blanks" ||
+    question?.type === "short_answer"
+  ) {
+    return "Use the core concept from the lesson and focus on precise keywords.";
+  }
+
+  if (question?.type === "true_false") {
+    return "Look for absolute terms and edge cases before deciding true or false.";
+  }
+
+  return "Focus on key concepts in the question prompt and eliminate unlikely options.";
+}
+
+function buildQuizAnswerRevealHint(question) {
+  const correctAnswer = getCorrectAnswerPayload(question);
+
+  if (question?.type === "multiple_choice") {
+    const options = Array.isArray(question?.options) ? question.options : [];
+    const indices = Array.isArray(correctAnswer) ? correctAnswer : [];
+    const labels = indices
+      .map((index) => {
+        const option = options[index];
+        if (!option) return "";
+        return String(option?.label || option?.text || "").trim();
+      })
+      .filter(Boolean);
+
+    if (labels.length) {
+      return `Answer reveal: ${labels.join(", ")}`;
+    }
+  }
+
+  if (question?.type === "true_false") {
+    return `Answer reveal: ${Boolean(correctAnswer) ? "True" : "False"}`;
+  }
+
+  if (
+    question?.type === "fill_in_the_blanks" ||
+    question?.type === "short_answer"
+  ) {
+    const acceptedAnswers = Array.isArray(correctAnswer) ? correctAnswer : [];
+    if (acceptedAnswers.length) {
+      return `Answer reveal: ${acceptedAnswers.slice(0, 2).join(" / ")}`;
+    }
+  }
+
+  return "";
 }
 
 function getCorrectAnswerPayload(question) {
@@ -1596,11 +1678,12 @@ function assertPlaybackStreamRequest(req) {
   }
 }
 
-function signStreamPlaybackToken({ userId, mediaId }) {
+function signStreamPlaybackToken({ userId, mediaId, roles = [] }) {
   return jwt.sign(
     {
       sub: String(userId),
       mediaId: String(mediaId),
+      roles: Array.isArray(roles) ? roles : [],
       type: "stream-playback",
     },
     env.jwtAccessSecret,
@@ -1620,7 +1703,19 @@ function verifyStreamPlaybackToken(token) {
   }
 }
 
-async function assertUserCanAccessMedia(userId, mediaSource) {
+async function assertUserCanAccessMedia(user, mediaSource) {
+  const userId =
+    user && typeof user === "object" ? String(user.id || "") : String(user || "");
+  const roleListRaw =
+    user && typeof user === "object" ? user.roles : [];
+  const roleList = Array.isArray(roleListRaw)
+    ? roleListRaw.map((role) => String(role || "").toUpperCase())
+    : [];
+
+  if (roleList.includes("ADMIN")) {
+    return;
+  }
+
   if (mediaSource.courseId) {
     const [ownedCourse, enrollment] = await Promise.all([
       prisma.course.findFirst({
@@ -3181,9 +3276,7 @@ router.post(
       return res.json({
         data: {
           questionIndex,
-          hint:
-            question.hint ||
-            "Focus on key concepts in the question prompt and eliminate unlikely options.",
+          hint: buildQuizAnswerRevealHint(question) || resolveQuizHintText(question),
           alreadyUsed,
           hintUsed: true,
         },
@@ -3486,8 +3579,6 @@ router.post(
 
 async function streamTokenHandler(req, res, next) {
   try {
-    assertPlaybackStreamRequest(req);
-
     const queryId = req.query.id;
     if (!queryId) {
       throw new ApiError(400, "Missing media id");
@@ -3498,11 +3589,12 @@ async function streamTokenHandler(req, res, next) {
       throw new ApiError(404, "Media not found");
     }
 
-    await assertUserCanAccessMedia(req.user.id, mediaSource);
+    await assertUserCanAccessMedia(req.user, mediaSource);
 
     const token = signStreamPlaybackToken({
       userId: req.user.id,
       mediaId: queryId,
+      roles: req.user.roles,
     });
     const cloudflareVideoId = extractCloudflareVideoIdFromPlaybackUrl(
       mediaSource.storagePath,
@@ -3558,7 +3650,10 @@ async function streamHandler(req, res, next) {
     if (!mediaSource) {
       throw new ApiError(404, "Media not found");
     }
-    await assertUserCanAccessMedia(String(streamPayload.sub), mediaSource);
+    await assertUserCanAccessMedia(
+      { id: String(streamPayload.sub), roles: streamPayload.roles || [] },
+      mediaSource,
+    );
 
     await sendMediaStoragePath(mediaSource.storagePath, req, res);
     return;

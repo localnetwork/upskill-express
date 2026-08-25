@@ -76,6 +76,21 @@ export const learnAssistantValidator = z.object({
     .optional(),
 });
 
+export const learnerAssistantValidator = z.object({
+  message: z.string().min(2).max(3000),
+  course_id: z.string().optional().nullable(),
+  course_slug: z.string().optional().nullable(),
+  messages: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().min(1).max(2000),
+      }),
+    )
+    .max(20)
+    .optional(),
+});
+
 export const updateCourseWithAIValidator = z.object({
   target: z
     .enum(["auto", "course_basics", "section", "curriculum", "new_section"])

@@ -9,8 +9,16 @@ const categoryModel = Prisma?.dmmf?.datamodel?.models?.find(
 const categorySupportsImageField = Boolean(
   categoryModel?.fields?.some((field) => field.name === "image"),
 );
+const categorySupportsIconField = Boolean(
+  categoryModel?.fields?.some((field) => field.name === "icon"),
+);
+const categorySupportsColorField = Boolean(
+  categoryModel?.fields?.some((field) => field.name === "color"),
+);
 
 let categoryImageColumnExistsCache = null;
+let categoryIconColumnExistsCache = null;
+let categoryColorColumnExistsCache = null;
 
 function normalizeCategoryData(payload) {
   return {
@@ -26,12 +34,30 @@ function normalizeCategoryImage(payload) {
   return String(payload.image || "").trim() || null;
 }
 
+function normalizeCategoryIcon(payload) {
+  if (payload.icon === undefined) return undefined;
+  return String(payload.icon || "").trim() || null;
+}
+
+function normalizeCategoryColor(payload) {
+  if (payload.color === undefined) return undefined;
+  return String(payload.color || "").trim() || null;
+}
+
 function normalizeCategoryPayload(payload) {
   const data = normalizeCategoryData(payload);
   const normalizedImage = normalizeCategoryImage(payload);
+  const normalizedIcon = normalizeCategoryIcon(payload);
+  const normalizedColor = normalizeCategoryColor(payload);
 
   if (categorySupportsImageField && normalizedImage !== undefined) {
     data.image = normalizedImage;
+  }
+  if (categorySupportsIconField && normalizedIcon !== undefined) {
+    data.icon = normalizedIcon;
+  }
+  if (categorySupportsColorField && normalizedColor !== undefined) {
+    data.color = normalizedColor;
   }
 
   return data;
@@ -85,6 +111,42 @@ async function categoryImageColumnExists() {
   return categoryImageColumnExistsCache;
 }
 
+async function categoryIconColumnExists() {
+  if (categorySupportsIconField) return true;
+  if (categoryIconColumnExistsCache !== null) return categoryIconColumnExistsCache;
+
+  const result = await prisma.$queryRaw`
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'categories'
+        AND column_name = 'icon'
+    ) AS "exists"
+  `;
+
+  categoryIconColumnExistsCache = Boolean(result?.[0]?.exists);
+  return categoryIconColumnExistsCache;
+}
+
+async function categoryColorColumnExists() {
+  if (categorySupportsColorField) return true;
+  if (categoryColorColumnExistsCache !== null) return categoryColorColumnExistsCache;
+
+  const result = await prisma.$queryRaw`
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'categories'
+        AND column_name = 'color'
+    ) AS "exists"
+  `;
+
+  categoryColorColumnExistsCache = Boolean(result?.[0]?.exists);
+  return categoryColorColumnExistsCache;
+}
+
 async function updateCategoryImageById(categoryId, image) {
   const hasImageColumn = await categoryImageColumnExists();
   if (!hasImageColumn) return;
@@ -92,6 +154,28 @@ async function updateCategoryImageById(categoryId, image) {
   await prisma.$executeRaw`
     UPDATE "categories"
     SET "image" = ${image}, "updatedAt" = NOW()
+    WHERE "id" = ${categoryId}
+  `;
+}
+
+async function updateCategoryIconById(categoryId, icon) {
+  const hasIconColumn = await categoryIconColumnExists();
+  if (!hasIconColumn) return;
+
+  await prisma.$executeRaw`
+    UPDATE "categories"
+    SET "icon" = ${icon}, "updatedAt" = NOW()
+    WHERE "id" = ${categoryId}
+  `;
+}
+
+async function updateCategoryColorById(categoryId, color) {
+  const hasColorColumn = await categoryColorColumnExists();
+  if (!hasColorColumn) return;
+
+  await prisma.$executeRaw`
+    UPDATE "categories"
+    SET "color" = ${color}, "updatedAt" = NOW()
     WHERE "id" = ${categoryId}
   `;
 }
@@ -112,21 +196,112 @@ async function getCategoryImagesMap(categoryIds = []) {
   return new Map(rows.map((row) => [row.id, row.image || null]));
 }
 
-function attachImagesToTree(nodes = [], imageMap = new Map()) {
+function attachCategoryMetaToTree(
+  nodes = [],
+  imageMap = new Map(),
+  iconMap = new Map(),
+  colorMap = new Map(),
+) {
   return (nodes || []).map((node) => ({
-    ...node,
-    image: imageMap.has(node.id) ? imageMap.get(node.id) : (node.image || null),
-    children: attachImagesToTree(node.children || [], imageMap),
+    ...withCategoryMeta(node, imageMap, iconMap, colorMap),
+    children: attachCategoryMetaToTree(
+      node.children || [],
+      imageMap,
+      iconMap,
+      colorMap,
+    ),
   }));
+}
+
+async function getCategoryMetaMaps(categoryIds = []) {
+  const uniqueIds = Array.from(new Set((categoryIds || []).filter(Boolean)));
+  if (!uniqueIds.length) {
+    return {
+      imageMap: new Map(),
+      iconMap: new Map(),
+      colorMap: new Map(),
+    };
+  }
+
+  const [hasImageColumn, hasIconColumn, hasColorColumn] = await Promise.all([
+    categoryImageColumnExists(),
+    categoryIconColumnExists(),
+    categoryColorColumnExists(),
+  ]);
+
+  if (!hasImageColumn && !hasIconColumn && !hasColorColumn) {
+    return {
+      imageMap: new Map(),
+      iconMap: new Map(),
+      colorMap: new Map(),
+    };
+  }
+
+  const imageMap = new Map();
+  const iconMap = new Map();
+  const colorMap = new Map();
+
+  if (hasImageColumn) {
+    const imageRows = await prisma.$queryRaw`
+      SELECT "id", "image"
+      FROM "categories"
+      WHERE "id" IN (${Prisma.join(uniqueIds)})
+    `;
+    for (const row of imageRows) imageMap.set(row.id, row.image || null);
+  }
+
+  if (hasIconColumn) {
+    const iconRows = await prisma.$queryRaw`
+      SELECT "id", "icon"
+      FROM "categories"
+      WHERE "id" IN (${Prisma.join(uniqueIds)})
+    `;
+    for (const row of iconRows) iconMap.set(row.id, row.icon || null);
+  }
+
+  if (hasColorColumn) {
+    const colorRows = await prisma.$queryRaw`
+      SELECT "id", "color"
+      FROM "categories"
+      WHERE "id" IN (${Prisma.join(uniqueIds)})
+    `;
+    for (const row of colorRows) colorMap.set(row.id, row.color || null);
+  }
+
+  return { imageMap, iconMap, colorMap };
+}
+
+function withCategoryMeta(row, imageMap, iconMap, colorMap) {
+  return {
+    ...row,
+    image: imageMap.has(row.id) ? imageMap.get(row.id) : row.image || null,
+    icon: iconMap.has(row.id) ? iconMap.get(row.id) : row.icon || null,
+    color: colorMap.has(row.id) ? colorMap.get(row.id) : row.color || null,
+  };
 }
 
 export async function createCategory(payload) {
   const image = normalizeCategoryImage(payload);
+  const icon = normalizeCategoryIcon(payload);
+  const color = normalizeCategoryColor(payload);
   const created = await prisma.category.create({ data: normalizeCategoryPayload(payload) });
 
   if (!categorySupportsImageField && image !== undefined) {
     await updateCategoryImageById(created.id, image);
-    return { ...created, image };
+  }
+  if (!categorySupportsIconField && icon !== undefined) {
+    await updateCategoryIconById(created.id, icon);
+  }
+  if (!categorySupportsColorField && color !== undefined) {
+    await updateCategoryColorById(created.id, color);
+  }
+
+  if (
+    (!categorySupportsImageField && image !== undefined) ||
+    (!categorySupportsIconField && icon !== undefined) ||
+    (!categorySupportsColorField && color !== undefined)
+  ) {
+    return { ...created, image: image ?? null, icon: icon ?? null, color: color ?? null };
   }
 
   return created;
@@ -140,6 +315,8 @@ export async function updateCategory(categoryId, payload) {
     throw new ApiError(404, "Category not found");
   }
   const image = normalizeCategoryImage(payload);
+  const icon = normalizeCategoryIcon(payload);
+  const color = normalizeCategoryColor(payload);
 
   const updated = await prisma.category.update({
     where: { id: categoryId },
@@ -148,7 +325,20 @@ export async function updateCategory(categoryId, payload) {
 
   if (!categorySupportsImageField && image !== undefined) {
     await updateCategoryImageById(updated.id, image);
-    return { ...updated, image };
+  }
+  if (!categorySupportsIconField && icon !== undefined) {
+    await updateCategoryIconById(updated.id, icon);
+  }
+  if (!categorySupportsColorField && color !== undefined) {
+    await updateCategoryColorById(updated.id, color);
+  }
+
+  if (
+    (!categorySupportsImageField && image !== undefined) ||
+    (!categorySupportsIconField && icon !== undefined) ||
+    (!categorySupportsColorField && color !== undefined)
+  ) {
+    return { ...updated, image: image ?? null, icon: icon ?? null, color: color ?? null };
   }
 
   return updated;
@@ -187,12 +377,9 @@ export async function listCategories(query) {
       orderBy: [{ name: "asc" }, { createdAt: "asc" }],
     });
 
-    if (!categorySupportsImageField && rows.length) {
-      const imageMap = await getCategoryImagesMap(rows.map((row) => row.id));
-      rows = rows.map((row) => ({
-        ...row,
-        image: imageMap.has(row.id) ? imageMap.get(row.id) : null,
-      }));
+    if ((!categorySupportsImageField || !categorySupportsIconField || !categorySupportsColorField) && rows.length) {
+      const { imageMap, iconMap, colorMap } = await getCategoryMetaMaps(rows.map((row) => row.id));
+      rows = rows.map((row) => withCategoryMeta(row, imageMap, iconMap, colorMap));
     }
 
     const tree = buildCategoryTree(rows);
@@ -226,18 +413,16 @@ export async function listCategories(query) {
     prisma.category.count({ where }),
   ]);
 
-  if (!categorySupportsImageField && rows.length) {
+  if ((!categorySupportsImageField || !categorySupportsIconField || !categorySupportsColorField) && rows.length) {
     const rowIds = rows.map((row) => row.id);
     const parentIds = rows.map((row) => row.parent?.id).filter(Boolean);
-    const imageMap = await getCategoryImagesMap([...rowIds, ...parentIds]);
+    const { imageMap, iconMap, colorMap } = await getCategoryMetaMaps([...rowIds, ...parentIds]);
 
     rows = rows.map((row) => ({
-      ...row,
-      image: imageMap.has(row.id) ? imageMap.get(row.id) : null,
+      ...withCategoryMeta(row, imageMap, iconMap, colorMap),
       parent: row.parent
         ? {
-            ...row.parent,
-            image: imageMap.has(row.parent.id) ? imageMap.get(row.parent.id) : null,
+            ...withCategoryMeta(row.parent, imageMap, iconMap, colorMap),
           }
         : null,
     }));
@@ -265,26 +450,27 @@ export async function getCategoryBySlugOrId(slugOrId) {
     throw new ApiError(404, "Category not found");
   }
 
-  if (!categorySupportsImageField) {
+  if (!categorySupportsImageField || !categorySupportsIconField || !categorySupportsColorField) {
     const childIds = (category.children || []).map((item) => item.id);
-    const imageMap = await getCategoryImagesMap([
+    const { imageMap, iconMap, colorMap } = await getCategoryMetaMaps([
       category.id,
       category.parent?.id,
       ...childIds,
     ]);
 
     category = {
-      ...category,
-      image: imageMap.has(category.id) ? imageMap.get(category.id) : null,
+      ...withCategoryMeta(category, imageMap, iconMap, colorMap),
       parent: category.parent
         ? {
-            ...category.parent,
-            image: imageMap.has(category.parent.id)
-              ? imageMap.get(category.parent.id)
-              : null,
+            ...withCategoryMeta(category.parent, imageMap, iconMap, colorMap),
           }
         : null,
-      children: attachImagesToTree(category.children || [], imageMap),
+      children: attachCategoryMetaToTree(
+        category.children || [],
+        imageMap,
+        iconMap,
+        colorMap,
+      ),
     };
   }
 

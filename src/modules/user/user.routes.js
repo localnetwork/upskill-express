@@ -23,6 +23,7 @@ import {
   removeMyDeviceController,
   respondToFriendRequestController,
   sendFriendRequestController,
+  unfriendController,
   updateMeController,
 } from "./user.controller.js";
 
@@ -91,6 +92,12 @@ router.post(
   authenticate,
   validate(friendRequestTargetParamValidator, "params"),
   asyncHandler(cancelFriendRequestController),
+);
+router.post(
+  "/friend-requests/unfriend/:targetUserId",
+  authenticate,
+  validate(friendRequestTargetParamValidator, "params"),
+  asyncHandler(unfriendController),
 );
 router.post(
   "/friend-requests/respond/:requestId",

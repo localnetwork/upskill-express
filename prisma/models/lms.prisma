@@ -168,6 +168,8 @@ model Category {
   name        String
   slug        String     @unique
   image       String?
+  icon        String?
+  color       String?
   description String?
   parentId    String?
   deletedAt   DateTime?

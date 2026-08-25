@@ -11,6 +11,7 @@ import {
   getCourseAIDraftJobController,
   getLatestActiveCourseAIDraftJobController,
   askCourseLearningAssistantController,
+  askLearnerAssistantController,
   updateCourseWithAIController,
   deleteDraftCourseController,
   getCourseDiscoveryController,
@@ -38,6 +39,7 @@ import {
   createCourseCouponValidator,
   createCourseValidator,
   learnAssistantValidator,
+  learnerAssistantValidator,
   updateCourseWithAIValidator,
   updateCourseValidator,
 } from "./course.validator.js";
@@ -89,6 +91,13 @@ router.get(
     tags: ["courses", "progress", "enrollments"],
   }),
   asyncHandler(getCourseForLearnerController),
+);
+router.post(
+  "/learner-assistant",
+  authenticate,
+  authorize("LEARNER"),
+  validate(learnerAssistantValidator),
+  asyncHandler(askLearnerAssistantController),
 );
 router.post(
   "/:slug/learn-assistant",
