@@ -1,12 +1,14 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { Prisma } from "@prisma/client";
 import axios from "axios";
+import { randomUUID } from "crypto";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { slugify } from "../../shared/utils/slugify.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { addToCart, removeFromCart } from "../cart/cart.service.js";
 import { env } from "../../shared/config/env.js";
+import { attachAICoverImage } from "./course-cover-image.service.js";
 import { getLessonAccessMapForEnrollment } from "../progress/lesson-access.service.js";
 import {
   buildCloudflareEmbedUrlFromPlaybackUrl,
@@ -15,6 +17,7 @@ import {
 const COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
 const PROMO_MEDIA_TYPES = ["PROMO_VIDEO"];
 const COURSE_GOALS_KEY_PREFIX = "course_goals::";
+let learnerAssistantTableReady = false;
 
 function mapVideoPlaybackToEmbedUrl(value) {
   const raw = String(value || "").trim();
@@ -377,6 +380,7 @@ function mapDiscoveryCourseItem(course) {
   return {
     id: course.id,
     slug: course.slug,
+    instructor_id: course.educatorId || null,
     title: course.title,
     subtitle: course.subtitle || "",
     trend_score: course.trendScore || 0,
@@ -1327,6 +1331,9 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
     language,
     instructionalLevel,
     categoryHint,
+    imageQuery: String(source.cover_image_query || source.image_query || "")
+      .trim()
+      .slice(0, 120),
     whatYouWillLearn,
     requirements,
     whoShouldAttend,
@@ -1379,7 +1386,8 @@ async function generateCourseDraftViaAI(prompt, options = {}) {
 
   const systemPrompt =
     "You are an expert instructional designer. Return only valid JSON with no markdown fences. " +
-    "Schema: { title, subtitle, description, welcome_message, congratulations_message, language, instructional_level, category, what_you_will_learn[], requirements[], who_should_attend[], sections:[{ title, description, lessons:[{ title, description, type, estimated_minutes }] }] }. " +
+    "Schema: { title, subtitle, description, welcome_message, congratulations_message, language, instructional_level, category, cover_image_query, what_you_will_learn[], requirements[], who_should_attend[], sections:[{ title, description, lessons:[{ title, description, type, estimated_minutes }] }] }. " +
+    "cover_image_query is 2-4 concrete English keywords describing a photo that visually fits the course topic (e.g. 'python programming laptop'). " +
     "Constraints: title <= 60 chars, subtitle <= 180 chars, 4-8 sections, 3-8 lessons each section, lesson type one of VIDEO|RESOURCE|ASSIGNMENT|QUIZ|CODING_EXERCISE, estimated_minutes is number. " +
     "Section and lesson titles must be descriptive and specific; never use generic placeholders like 'Section 1' or 'Lesson 1'.";
 
@@ -1651,6 +1659,22 @@ export async function createCourseAIDraft(userId, payload, options = {}) {
       },
     });
   }
+
+  emitProgress({
+    step: "attaching_cover_image",
+    message: "Finding a matching cover image from free open-license sources",
+    progressPercent: 97,
+  });
+  await attachAICoverImage({
+    userId,
+    courseId: course.id,
+    queries: [
+      aiDraft.imageQuery,
+      `${aiDraft.categoryHint} ${aiDraft.title}`,
+      aiDraft.title,
+      aiDraft.categoryHint,
+    ],
+  }).catch(() => null);
 
   emitProgress({
     step: "completed",
@@ -3953,6 +3977,210 @@ function tokenizeScopeText(value) {
     .filter((token) => token.length >= 3 && !stopWords.has(token));
 }
 
+async function ensureLearnerAssistantTable() {
+  if (learnerAssistantTableReady) return;
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "learner_assistant_conversations" (
+      "id" TEXT PRIMARY KEY,
+      "user_id" TEXT NOT NULL,
+      "title" TEXT,
+      "state" JSONB,
+      "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      "updated_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "learner_assistant_messages" (
+      "id" BIGSERIAL PRIMARY KEY,
+      "conversation_id" TEXT NOT NULL,
+      "user_id" TEXT NOT NULL,
+      "role" TEXT NOT NULL,
+      "content" TEXT NOT NULL,
+      "payload" JSONB,
+      "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS "learner_assistant_conversations_user_updated_idx"
+    ON "learner_assistant_conversations" ("user_id", "updated_at" DESC);
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS "learner_assistant_messages_conversation_created_idx"
+    ON "learner_assistant_messages" ("conversation_id", "created_at" DESC);
+  `);
+
+  learnerAssistantTableReady = true;
+}
+
+async function getOrCreateLearnerAssistantConversation(userId, conversationId = "") {
+  const normalizedUserId = String(userId || "").trim();
+  const normalizedConversationId = String(conversationId || "").trim();
+  if (!normalizedUserId) {
+    throw new ApiError(401, "Unauthorized");
+  }
+
+  await ensureLearnerAssistantTable();
+
+  if (normalizedConversationId) {
+    const existing = await prisma.$queryRaw`
+      SELECT "id", "user_id" AS "userId", "title", "state", "created_at" AS "createdAt", "updated_at" AS "updatedAt"
+      FROM "learner_assistant_conversations"
+      WHERE "id" = ${normalizedConversationId}
+      LIMIT 1
+    `;
+    const row = existing?.[0] || null;
+    if (!row || String(row.userId) !== normalizedUserId) {
+      throw new ApiError(404, "Conversation not found");
+    }
+    return row;
+  }
+
+  const latestRows = await prisma.$queryRaw`
+    SELECT "id", "user_id" AS "userId", "title", "state", "created_at" AS "createdAt", "updated_at" AS "updatedAt"
+    FROM "learner_assistant_conversations"
+    WHERE "user_id" = ${normalizedUserId}
+    ORDER BY "updated_at" DESC
+    LIMIT 1
+  `;
+  const latest = latestRows?.[0] || null;
+  if (latest) return latest;
+
+  const newConversationId = randomUUID();
+  await prisma.$executeRaw`
+    INSERT INTO "learner_assistant_conversations" ("id", "user_id", "title", "state")
+    VALUES (${newConversationId}, ${normalizedUserId}, ${"Learner Assistant"}, ${JSON.stringify({})}::jsonb)
+  `;
+  return {
+    id: newConversationId,
+    userId: normalizedUserId,
+    title: "Learner Assistant",
+    state: {},
+  };
+}
+
+async function updateLearnerAssistantConversationState(conversationId, state = {}) {
+  const normalizedConversationId = String(conversationId || "").trim();
+  if (!normalizedConversationId) return;
+
+  await ensureLearnerAssistantTable();
+  await prisma.$executeRaw`
+    UPDATE "learner_assistant_conversations"
+    SET "state" = ${JSON.stringify(state || {})}::jsonb, "updated_at" = NOW()
+    WHERE "id" = ${normalizedConversationId}
+  `;
+}
+
+async function saveLearnerAssistantMessage(
+  conversationId,
+  userId,
+  role,
+  content,
+  payload = null,
+) {
+  const normalizedConversationId = String(conversationId || "").trim();
+  const normalizedUserId = String(userId || "").trim();
+  const normalizedRole = String(role || "").trim().toLowerCase();
+  const normalizedContent = String(content || "").trim();
+  if (!normalizedConversationId || !normalizedUserId || !normalizedRole || !normalizedContent)
+    return;
+
+  await ensureLearnerAssistantTable();
+  await prisma.$executeRaw`
+    INSERT INTO "learner_assistant_messages" ("conversation_id", "user_id", "role", "content", "payload")
+    VALUES (
+      ${normalizedConversationId},
+      ${normalizedUserId},
+      ${normalizedRole},
+      ${normalizedContent},
+      ${payload ? JSON.stringify(payload) : null}::jsonb
+    )
+  `;
+  await prisma.$executeRaw`
+    UPDATE "learner_assistant_conversations"
+    SET "updated_at" = NOW()
+    WHERE "id" = ${normalizedConversationId}
+  `;
+}
+
+async function getRecentLearnerAssistantMessages(conversationId, userId, limit = 12) {
+  const normalizedConversationId = String(conversationId || "").trim();
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedConversationId || !normalizedUserId) return [];
+
+  await ensureLearnerAssistantTable();
+  const rows = await prisma.$queryRaw`
+    SELECT "role", "content", "payload", "created_at" AS "createdAt"
+    FROM "learner_assistant_messages"
+    WHERE "conversation_id" = ${normalizedConversationId}
+      AND "user_id" = ${normalizedUserId}
+    ORDER BY "created_at" DESC
+    LIMIT ${Math.min(Math.max(Number(limit) || 12, 1), 30)}
+  `;
+
+  return rows.reverse();
+}
+
+export async function getLearnerAssistantConversationHistory(
+  userId,
+  conversationId = "",
+) {
+  const conversation = await getOrCreateLearnerAssistantConversation(
+    userId,
+    conversationId,
+  );
+  const messages = await getRecentLearnerAssistantMessages(conversation.id, userId, 24);
+  return {
+    conversation_id: conversation.id,
+    state: conversation?.state || {},
+    messages,
+  };
+}
+
+export async function clearLearnerAssistantConversation(userId, conversationId = "") {
+  const conversation = await getOrCreateLearnerAssistantConversation(
+    userId,
+    conversationId,
+  );
+
+  await ensureLearnerAssistantTable();
+  await prisma.$executeRaw`
+    DELETE FROM "learner_assistant_messages"
+    WHERE "conversation_id" = ${conversation.id}
+      AND "user_id" = ${String(userId)}
+  `;
+  await updateLearnerAssistantConversationState(conversation.id, {
+    current_course_id: null,
+    current_category_id: null,
+    current_instructor_id: null,
+    recent_course_results: [],
+    last_intent: null,
+  });
+
+  return {
+    conversation_id: conversation.id,
+    cleared: true,
+  };
+}
+
+function getLatestCourseFromAssistantHistory(messages = []) {
+  const rows = Array.isArray(messages) ? messages : [];
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (String(row?.role || "").toLowerCase() !== "assistant") continue;
+    const courses = Array.isArray(row?.payload?.courses) ? row.payload.courses : [];
+    if (courses.length > 0) return courses[0];
+  }
+  return null;
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function extractQuotedText(value) {
   const raw = String(value || "");
   const match = raw.match(/["“”']([^"“”']{2,140})["“”']/);
@@ -3961,8 +4189,39 @@ function extractQuotedText(value) {
 
 function detectLearnerAssistantIntent(message) {
   const text = String(message || "").toLowerCase();
+  if (/^\s*(hi|hello|hey|yo|good (morning|afternoon|evening))\b/i.test(text)) {
+    return "greeting";
+  }
+  if (/(remove|delete).*(enrolled|enrollment|owned course|owned courses)/i.test(text)) {
+    return "enrollment_removal";
+  }
+  if (/(compare|vs\.?|versus|difference between)/i.test(text)) {
+    return "compare";
+  }
+  if (/(similar|like this|more like|related course)/i.test(text)) {
+    return "similar";
+  }
+  if (/(learning path|study plan|roadmap|path to become)/i.test(text)) {
+    return "learning_path";
+  }
+  if (/(continue my course|continue learning|resume|where (did )?i left off)/i.test(text)) {
+    return "continue_course";
+  }
+  if (
+    /(my courses|my enrollments|enrolled courses|my progress|in progress|show.*(enrolled|progress))/i.test(
+      text,
+    )
+  ) {
+    return "my_courses";
+  }
   if (/(recommend|suggest|what should i learn|best course|for me)/i.test(text)) {
     return "recommend";
+  }
+  if (
+    /\b(instructor|educator|author|teacher)\b/i.test(text) ||
+    /(who is)\s+([a-z0-9].+)/i.test(text)
+  ) {
+    return "instructor_lookup";
   }
   if (/(remove|delete).*(cart)/i.test(text)) {
     return "remove_cart";
@@ -3973,7 +4232,19 @@ function detectLearnerAssistantIntent(message) {
   if (/(in cart|already in cart|enrolled|own this|status)/i.test(text)) {
     return "status";
   }
-  if (/(search|find|look for|show courses|courses about|course about)/i.test(text)) {
+  if (
+    /(tell me about|what is|what are|details? (of|on|about)|info (of|on|about)|more about|curriculum|requirements?|price of|how much is)\s+([a-z0-9].+)/i.test(
+      text,
+    ) ||
+    /\b(this|that)\s+course\b|course details|more details|tell me more/i.test(text)
+  ) {
+    return "course_info";
+  }
+  if (
+    /(search|find|look for|show me|show courses|courses about|course about|i want|looking for|need.*course|want.*course|by author|by instructor|courses by|free courses|cheap courses|\b(under|cheap|free)\b)/i.test(
+      text,
+    )
+  ) {
     return "search";
   }
   return "chat";
@@ -3983,12 +4254,265 @@ function extractCourseSearchText(message) {
   const quoted = extractQuotedText(message);
   if (quoted) return quoted;
 
+  const raw = String(message || "").trim();
+  const afterCartMatch = raw.match(/\bcart\b[^\w]*([\s\S]+)/i);
+  if (afterCartMatch?.[1]) {
+    const afterCart = String(afterCartMatch[1] || "")
+      .replace(/^[\s:;,.!?-]+/, "")
+      .trim();
+    if (afterCart.length >= 3) return afterCart;
+  }
+
+  const questionParts = raw.split("?");
+  if (questionParts.length > 1) {
+    const tail = String(questionParts[questionParts.length - 1] || "")
+      .replace(/^[\s:;,.!?-]+/, "")
+      .trim();
+    if (tail.length >= 3) return tail;
+  }
+
   return String(message || "")
-    .replace(/\b(add|put|remove|delete|to|from|my|the|a|an)\b/gi, " ")
+    .replace(
+      /\b(can|you|please|could|would|add|put|remove|delete|to|from|my|the|a|an|this|that|it|one|first|second|third|fourth|show|me|list|give|get|find|look|looking|for|under|below|less|than|free|cheap|top|best|popular|all|some|any|similar|related|beginner|intermediate|advanced|tell|about|prices?|levels?)\b/gi,
+      " ",
+    )
     .replace(/\bcart\b/gi, " ")
     .replace(/\bcourse(s)?\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function extractAuthorSearchText(message) {
+  const raw = String(message || "");
+  const patterns = [
+    /\bby\s+(author|instructor|educator)\s+([a-z0-9][a-z0-9 ._-]{1,80})/i,
+    /\b(author|instructor|educator)\s*:\s*([a-z0-9][a-z0-9 ._-]{1,80})/i,
+    /\bby\s+([a-z0-9][a-z0-9 ._-]{1,80})/i,
+  ];
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    const value = String(match?.[2] || "").trim();
+    if (value) return value.replace(/[?.!,;:]+$/g, "").trim();
+  }
+  return "";
+}
+
+function extractInstructorLookupText(message) {
+  const raw = String(message || "").trim();
+  if (!raw) return "";
+
+  const patterns = [
+    /\bwho is\s+([a-z0-9][a-z0-9 ._-]{1,80})/i,
+    /\btell me about\s+([a-z0-9][a-z0-9 ._-]{1,80})/i,
+    /\babout\s+(?:instructor|educator|author)\s+([a-z0-9][a-z0-9 ._-]{1,80})/i,
+    /\bcourses by\s+([a-z0-9][a-z0-9 ._-]{1,80})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    const value = String(match?.[1] || "").trim();
+    if (value) {
+      return value
+        .replace(/^(instructor|educator|author)\s+/i, "")
+        .replace(/\b(and|&)\b[\s\S]*$/i, "")
+        .replace(/\b(what|who|where|when|why|how)\b[\s\S]*$/i, "")
+        .replace(/\b(email|mail|phone|contact|address)\b[\s\S]*$/i, "")
+        .replace(/[?.!,;:]+$/g, "")
+        .trim();
+    }
+  }
+
+  return extractAuthorSearchText(raw)
+    .replace(/^(instructor|educator|author)\s+/i, "")
+    .replace(/\b(and|&)\b[\s\S]*$/i, "")
+    .replace(/\b(what|who|where|when|why|how)\b[\s\S]*$/i, "")
+    .replace(/\b(email|mail|phone|contact|address)\b[\s\S]*$/i, "")
+    .trim();
+}
+
+function isSensitiveInstructorInfoRequest(message) {
+  const text = String(message || "").toLowerCase();
+  return /(email|e-mail|mail address|phone|contact number|mobile|address|home address|personal contact)/i.test(
+    text,
+  );
+}
+
+function extractOrdinalCourseIndex(message) {
+  const text = String(message || "").toLowerCase();
+  if (/\bfirst\b|\b1st\b|\bone\b/.test(text)) return 0;
+  if (/\bsecond\b|\b2nd\b|\btwo\b/.test(text)) return 1;
+  if (/\bthird\b|\b3rd\b|\bthree\b/.test(text)) return 2;
+  if (/\bfourth\b|\b4th\b|\bfour\b/.test(text)) return 3;
+  return -1;
+}
+
+function extractCourseInfoText(message) {
+  return String(message || "")
+    .replace(
+      /^(?:please\s+)?(?:tell me about|tell me more about|what is|what are|what's|whats|details? (?:of|on|about)|info(?:rmation)? (?:of|on|about)|more about|curriculum (?:of|for)|requirements? (?:of|for)|price of|how much is|show me the details of)\s+/i,
+      "",
+    )
+    .replace(/^(?:the|a|an)\s+/i, "")
+    .trim();
+}
+
+function parseLearnerSearchFilters(message) {
+  const text = String(message || "");
+  const filters = {
+    freeOnly: /\bfree\b/i.test(text),
+    maxPrice: null,
+    levelTitle: null,
+  };
+
+  const priceMatches = [
+    text.match(
+      /(?:under|below|less than|at most|up to|max(?:imum)?)\s*(?:₱|\$|php|usd)?\s*(\d[\d,]*)/i,
+    ),
+    text.match(/(\d[\d,]*)\s*(?:₱|\$|php|usd)/i),
+  ].filter(Boolean);
+  if (priceMatches.length) {
+    const values = priceMatches.map((match) =>
+      Number(String(match?.[1] || "0").replace(/,/g, "")),
+    );
+    filters.maxPrice = Math.min(...values);
+  }
+
+  if (/\bbeginner\b/i.test(text)) filters.levelTitle = "Beginner";
+  else if (/\bintermediate\b/i.test(text)) filters.levelTitle = "Intermediate";
+  else if (/\badvanced\b/i.test(text)) filters.levelTitle = "Advanced";
+
+  return filters;
+}
+
+function buildLearnerSearchText(message) {
+  const raw = String(message || "").trim();
+  if (!raw) return "";
+  const cleaned = raw
+    .replace(
+      /\b(?:under|below|less than|at most|up to)\s*(?:₱|\$|php|usd)?\s*\d[\d,.]*/gi,
+      " ",
+    )
+    .replace(/\b(?:₱|\$|php|usd)\s*\d[\d,.]*/gi, " ")
+    .replace(/\b(?:free|beginner|intermediate|advanced)\b/gi, " ")
+    .replace(/\bby\s+(?:author|instructor|educator)\b/gi, " ");
+  return extractCourseSearchText(cleaned);
+}
+
+function formatLearnerAssistantPrice(priceValue) {
+  const price = Number(priceValue || 0);
+  if (price <= 0) return "Free";
+  return `₱${price.toFixed(2)}`;
+}
+
+async function fetchCourseRatingStats(courseId) {
+  try {
+    const aggregate = await prisma.review.aggregate({
+      where: { courseId: String(courseId || "") },
+      _avg: { rating: true },
+      _count: true,
+    });
+    return {
+      average: Number(aggregate?._avg?.rating || 0),
+      count: Number(aggregate?._count || 0),
+    };
+  } catch (_error) {
+    return { average: 0, count: 0 };
+  }
+}
+
+const LEARNER_ASSISTANT_COURSE_INCLUDE = {
+  priceTier: true,
+  category: true,
+  level: true,
+  educator: {
+    select: {
+      username: true,
+      firstName: true,
+      lastName: true,
+    },
+  },
+};
+
+async function getPublishedCourseById(courseId) {
+  const id = String(courseId || "").trim();
+  if (!id) return null;
+  return prisma.course.findFirst({
+    where: {
+      id,
+      deletedAt: null,
+      OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
+    },
+    include: LEARNER_ASSISTANT_COURSE_INCLUDE,
+  });
+}
+
+async function resolveAssistantEnrollmentsWithProgress(userId, limit = 10) {
+  return prisma.enrollment.findMany({
+    where: {
+      userId,
+      status: { in: ["ACTIVE", "COMPLETED"] },
+    },
+    include: {
+      course: {
+        include: LEARNER_ASSISTANT_COURSE_INCLUDE,
+      },
+      courseProgress: true,
+    },
+    orderBy: { enrolledAt: "desc" },
+    take: Math.min(Math.max(Number(limit) || 10, 1), 20),
+  });
+}
+
+function toAssistantEnrollmentCard(enrollment, inCartSet, enrolledSet) {
+  const card = toAssistantCourseCard(enrollment.course, inCartSet, enrolledSet);
+  const progress = enrollment.courseProgress || null;
+  return {
+    ...card,
+    progress_pct: Number(progress?.progressPct || 0),
+    completed_lessons: Number(progress?.completedLessons || 0),
+    total_lessons: Number(progress?.totalLessons || 0),
+    progress_completed: Boolean(progress?.completedAt),
+  };
+}
+
+async function resolveCourseForTitleText(userId, titleText) {
+  const text = String(titleText || "").trim();
+  if (!text) return null;
+  const byId = await getPublishedCourseById(text);
+  if (byId) return byId;
+  return resolveCourseForLearnerAssistant(userId, {}, text, {}, []);
+}
+
+function splitComparisonTitles(message) {
+  const raw = String(message || "").trim();
+  const withoutLead = raw.replace(/^(?:please\s+)?compare\s+/i, "").trim();
+  const vsMatch = withoutLead.match(/^(.+?)\s+(?:vs\.?|versus)\s+(.+)$/i);
+  if (vsMatch) return [vsMatch[1].trim(), vsMatch[2].trim()];
+  const andMatch = withoutLead.match(/^(.+?)\s+and\s+(.+)$/i);
+  if (andMatch) return [andMatch[1].trim(), andMatch[2].trim()];
+  return [withoutLead.replace(/[?.!,;:]+$/g, "").trim()];
+}
+
+function isBareComparisonReference(message) {
+  const text = String(message || "").toLowerCase();
+  const withoutLead = text.replace(/^(?:please\s+)?compare\s+/i, "").trim();
+  return /^(?:them|these|those|this|that|it)\s*[?.!]*$/.test(withoutLead);
+}
+
+function buildNextLearnerConversationState(currentState = {}, patch = {}) {
+  return {
+    current_course_id: patch.current_course_id ?? currentState.current_course_id ?? null,
+    current_category_id:
+      patch.current_category_id ?? currentState.current_category_id ?? null,
+    current_instructor_id:
+      patch.current_instructor_id ?? currentState.current_instructor_id ?? null,
+    recent_course_results: Array.isArray(patch.recent_course_results)
+      ? patch.recent_course_results.slice(0, 8)
+      : Array.isArray(currentState.recent_course_results)
+        ? currentState.recent_course_results.slice(0, 8)
+        : [],
+    last_intent: patch.last_intent || currentState.last_intent || null,
+  };
 }
 
 async function getLearnerCourseStateSets(userId) {
@@ -4028,6 +4552,10 @@ function toAssistantCourseCard(course, inCartSet = new Set(), enrolledSet = new 
         title: course.level.title || "",
       }
     : null;
+  const educatorName = [course?.educator?.firstName, course?.educator?.lastName]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
 
   return {
     id: course.id,
@@ -4044,31 +4572,94 @@ function toAssistantCourseCard(course, inCartSet = new Set(), enrolledSet = new 
       : null,
     category,
     level,
+    educator: course?.educator
+      ? {
+          username: course.educator.username || "",
+          display_name: educatorName || course.educator.username || "",
+        }
+      : null,
+    educator_id: course?.educatorId || null,
     is_in_cart: inCartSet.has(course.id),
     is_enrolled: enrolledSet.has(course.id),
   };
 }
 
-async function searchPublishedCoursesForLearner(userId, search, limit = 6) {
+async function searchPublishedCoursesForLearner(
+  userId,
+  search,
+  limit = 6,
+  filters = {},
+  authorOverride = "",
+) {
   const query = String(search || "").trim();
-  if (!query) return [];
+  const authorQuery = String(authorOverride || extractAuthorSearchText(query)).trim();
+  let textQuery = query.replace(/\bby\s+(author|instructor|educator)\b/gi, "").trim();
+  if (authorQuery) {
+    textQuery = String(authorOverride ? query : textQuery)
+      .replace(new RegExp(`by\\s+${escapeRegExp(authorQuery)}\\s*$`, "i"), " ")
+      .trim();
+  }
+
+  const hasFilters = Boolean(
+    filters?.freeOnly || filters?.levelTitle || filters?.maxPrice != null,
+  );
+  if (!textQuery && !authorQuery && !hasFilters) return [];
+
+  const where = {
+    deletedAt: null,
+    OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
+    AND: [
+      textQuery
+        ? {
+            OR: [
+              { title: { contains: textQuery, mode: "insensitive" } },
+              { subtitle: { contains: textQuery, mode: "insensitive" } },
+              { description: { contains: textQuery, mode: "insensitive" } },
+              {
+                category: {
+                  name: { contains: textQuery, mode: "insensitive" },
+                },
+              },
+            ],
+          }
+        : undefined,
+      authorQuery
+        ? {
+            educator: {
+              OR: [
+                { username: { contains: authorQuery, mode: "insensitive" } },
+                { firstName: { contains: authorQuery, mode: "insensitive" } },
+                { lastName: { contains: authorQuery, mode: "insensitive" } },
+              ],
+            },
+          }
+        : undefined,
+      filters?.freeOnly || filters?.maxPrice === 0
+        ? { priceTier: { price: { equals: 0 } } }
+        : filters?.maxPrice != null
+          ? { priceTier: { price: { lte: filters.maxPrice } } }
+          : undefined,
+      filters?.levelTitle
+        ? { level: { title: { contains: filters.levelTitle, mode: "insensitive" } } }
+        : undefined,
+    ].filter(Boolean),
+  };
 
   const [{ inCartSet, enrolledSet }, rows] = await Promise.all([
     getLearnerCourseStateSets(userId),
     prisma.course.findMany({
-      where: {
-        deletedAt: null,
-        workflowStatus: "PUBLISHED",
-        OR: [
-          { title: { contains: query, mode: "insensitive" } },
-          { subtitle: { contains: query, mode: "insensitive" } },
-          { description: { contains: query, mode: "insensitive" } },
-        ],
-      },
+      where,
       include: {
         priceTier: true,
         category: true,
         level: true,
+        educator: {
+          select: {
+            username: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
       },
       orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
       take: Math.min(Math.max(Number(limit) || 6, 1), 12),
@@ -4078,7 +4669,98 @@ async function searchPublishedCoursesForLearner(userId, search, limit = 6) {
   return rows.map((row) => toAssistantCourseCard(row, inCartSet, enrolledSet));
 }
 
-async function resolveCourseForLearnerAssistant(userId, payload = {}, message = "") {
+async function searchInstructorsForLearner(search, limit = 5) {
+  const query = String(search || "").trim();
+  if (!query) return [];
+  const tokens = tokenizeScopeText(query).slice(0, 4);
+  const tokenOr = tokens.flatMap((token) => [
+    { username: { contains: token, mode: "insensitive" } },
+    { firstName: { contains: token, mode: "insensitive" } },
+    { lastName: { contains: token, mode: "insensitive" } },
+  ]);
+
+  const rows = await prisma.user.findMany({
+    where: {
+      deletedAt: null,
+      isActive: true,
+      roles: {
+        some: {
+          role: {
+            name: "EDUCATOR",
+          },
+        },
+      },
+      OR: [
+        { username: { contains: query, mode: "insensitive" } },
+        { firstName: { contains: query, mode: "insensitive" } },
+        { lastName: { contains: query, mode: "insensitive" } },
+        ...tokenOr,
+      ],
+    },
+    select: {
+      id: true,
+      username: true,
+      firstName: true,
+      lastName: true,
+      headline: true,
+      biography: true,
+      courses: {
+        where: {
+          deletedAt: null,
+          OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
+        },
+        orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
+        take: 3,
+        select: {
+          id: true,
+          slug: true,
+          title: true,
+          subtitle: true,
+        },
+      },
+      _count: {
+        select: {
+          courses: true,
+        },
+      },
+    },
+    take: 20,
+  });
+
+  const filtered = rows.filter((row) => {
+    if (!tokens.length) return true;
+    const haystack = `${row.username || ""} ${row.firstName || ""} ${row.lastName || ""}`.toLowerCase();
+    return tokens.every((token) => haystack.includes(token));
+  });
+
+  return filtered.slice(0, Math.min(Math.max(Number(limit) || 5, 1), 12)).map((row) => {
+    const displayName = `${row.firstName || ""} ${row.lastName || ""}`.trim() || row.username || "Educator";
+    return {
+      id: row.id,
+      username: row.username || "",
+      display_name: displayName,
+      headline: row.headline || "",
+      biography: clipText(row.biography, 500),
+      published_courses_count: Number(
+        Array.isArray(row.courses) ? row.courses.length : row?._count?.courses || 0,
+      ),
+      top_courses: (row.courses || []).map((course) => ({
+        id: course.id,
+        slug: course.slug,
+        title: course.title,
+        subtitle: course.subtitle || "",
+      })),
+    };
+  });
+}
+
+async function resolveCourseForLearnerAssistant(
+  userId,
+  payload = {},
+  message = "",
+  conversationState = {},
+  historyRows = [],
+) {
   const directId = String(payload?.course_id || "").trim();
   const directSlug = String(payload?.course_slug || "").trim();
 
@@ -4091,36 +4773,179 @@ async function resolveCourseForLearnerAssistant(userId, payload = {}, message = 
     course = await prisma.course.findFirst({
       where: {
         deletedAt: null,
-        workflowStatus: "PUBLISHED",
-        OR: directConditions,
+        AND: [
+          { OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }] },
+          { OR: directConditions },
+        ],
       },
-      include: { priceTier: true, category: true, level: true },
+      include: {
+        priceTier: true,
+        category: true,
+        level: true,
+        educator: {
+          select: {
+            username: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
     });
   }
 
   if (course) return course;
 
+  const normalizedMessage = String(message || "").toLowerCase();
+  const ordinalIndex = extractOrdinalCourseIndex(normalizedMessage);
+  if (ordinalIndex >= 0) {
+    const recentRows = Array.isArray(conversationState?.recent_course_results)
+      ? conversationState.recent_course_results
+      : [];
+    const ordinalCourse = recentRows[ordinalIndex];
+    if (ordinalCourse?.id) {
+      const resolvedOrdinal = await prisma.course.findFirst({
+        where: {
+          id: String(ordinalCourse.id),
+          deletedAt: null,
+          OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
+        },
+        include: {
+          priceTier: true,
+          category: true,
+          level: true,
+          educator: {
+            select: {
+              username: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      });
+      if (resolvedOrdinal) return resolvedOrdinal;
+    }
+  }
+
+  if (conversationState?.current_course_id) {
+    const resolvedCurrent = await prisma.course.findFirst({
+      where: {
+        id: String(conversationState.current_course_id),
+        deletedAt: null,
+        OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
+      },
+      include: {
+        priceTier: true,
+        category: true,
+        level: true,
+        educator: {
+          select: {
+            username: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
+    });
+    if (
+      resolvedCurrent &&
+      /\b(this|that|it)\b/.test(normalizedMessage) &&
+      /\bcourse\b/.test(normalizedMessage)
+    ) {
+      return resolvedCurrent;
+    }
+  }
+
+  if (/\b(this|that)\s+course\b/.test(normalizedMessage)) {
+    const latestCourse = getLatestCourseFromAssistantHistory(historyRows);
+    if (latestCourse?.id) {
+      const resolvedFromHistory = await prisma.course.findFirst({
+        where: {
+          id: String(latestCourse.id),
+          deletedAt: null,
+          OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
+        },
+        include: {
+          priceTier: true,
+          category: true,
+          level: true,
+          educator: {
+            select: {
+              username: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      });
+      if (resolvedFromHistory) return resolvedFromHistory;
+    }
+  }
+
   const queryText = extractCourseSearchText(message);
   if (!queryText) return null;
+
+  const exactOrContains = await prisma.course.findFirst({
+    where: {
+      deletedAt: null,
+      AND: [
+        { OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }] },
+        {
+          OR: [
+            { title: { equals: queryText, mode: "insensitive" } },
+            { slug: { equals: slugify(queryText), mode: "insensitive" } },
+            { title: { contains: queryText, mode: "insensitive" } },
+          ],
+        },
+      ],
+    },
+    include: {
+      priceTier: true,
+      category: true,
+      level: true,
+      educator: {
+        select: {
+          username: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
+    },
+    orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
+  });
+  if (exactOrContains) return exactOrContains;
+
+  const titleTokens = tokenizeScopeText(queryText).slice(0, 5);
+  if (!titleTokens.length) return null;
 
   return prisma.course.findFirst({
     where: {
       deletedAt: null,
-      workflowStatus: "PUBLISHED",
-      OR: [
-        { title: { equals: queryText, mode: "insensitive" } },
-        { slug: { equals: slugify(queryText), mode: "insensitive" } },
-        { title: { contains: queryText, mode: "insensitive" } },
+      AND: [
+        { OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }] },
+        ...titleTokens.map((token) => ({
+          title: { contains: token, mode: "insensitive" },
+        })),
       ],
     },
-    include: { priceTier: true, category: true, level: true },
+    include: {
+      priceTier: true,
+      category: true,
+      level: true,
+      educator: {
+        select: {
+          username: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
+    },
     orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
   });
 }
 
 async function buildLearnerRecommendations(userId, limit = 6) {
   const cappedLimit = Math.min(Math.max(Number(limit) || 6, 1), 12);
-  const { inCartSet, enrolledSet } = await getLearnerCourseStateSets(userId);
+  const { inCartSet, enrolledSet, cartCount } = await getLearnerCourseStateSets(userId);
 
   const engagedCourseIds = [];
   if (prisma.activityEvent) {
@@ -4163,22 +4988,31 @@ async function buildLearnerRecommendations(userId, limit = 6) {
     new Set(engagedCourses.map((course) => course.levelId).filter(Boolean)),
   );
 
+  const preferenceOr = [
+    preferredCategoryIds.length ? { categoryId: { in: preferredCategoryIds } } : null,
+    preferredLevelIds.length ? { levelId: { in: preferredLevelIds } } : null,
+  ].filter(Boolean);
+
   const recommended = await prisma.course.findMany({
     where: {
       deletedAt: null,
-      workflowStatus: "PUBLISHED",
       id: { notIn: Array.from(enrolledSet) },
-      OR: [
-        preferredCategoryIds.length
-          ? { categoryId: { in: preferredCategoryIds } }
-          : undefined,
-        preferredLevelIds.length ? { levelId: { in: preferredLevelIds } } : undefined,
-      ].filter(Boolean),
+      AND: [
+        { OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }] },
+        ...(preferenceOr.length ? [{ OR: preferenceOr }] : []),
+      ],
     },
     include: {
       priceTier: true,
       category: true,
       level: true,
+      educator: {
+        select: {
+          username: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
     },
     orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
     take: cappedLimit * 2,
@@ -4189,18 +5023,25 @@ async function buildLearnerRecommendations(userId, limit = 6) {
     const fallback = await prisma.course.findMany({
       where: {
         deletedAt: null,
-        workflowStatus: "PUBLISHED",
         id: {
           notIn: [
             ...Array.from(enrolledSet),
             ...candidates.map((course) => course.id),
           ],
         },
+        AND: [{ OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }] }],
       },
       include: {
         priceTier: true,
         category: true,
         level: true,
+        educator: {
+          select: {
+            username: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
       },
       orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
       take: cappedLimit,
@@ -4219,54 +5060,275 @@ export async function askLearnerAssistant(userId, payload = {}) {
     throw new ApiError(400, "Message is required");
   }
 
+  const conversation = await getOrCreateLearnerAssistantConversation(
+    userId,
+    payload?.conversation_id,
+  );
+  const conversationState = conversation?.state || {};
+  const historyRows = await getRecentLearnerAssistantMessages(
+    conversation.id,
+    userId,
+    24,
+  );
+  await saveLearnerAssistantMessage(conversation.id, userId, "user", message, {
+    source: "widget",
+  });
+
+  const finalizeReply = async (response, statePatch = {}) => {
+    const nextState = buildNextLearnerConversationState(conversationState, {
+      ...statePatch,
+      last_intent: response.intent,
+    });
+    await updateLearnerAssistantConversationState(conversation.id, nextState);
+    await saveLearnerAssistantMessage(
+      conversation.id,
+      userId,
+      "assistant",
+      response.reply,
+      {
+        intent: response.intent,
+        courses: response.courses || [],
+        instructors: response.instructors || [],
+        state: nextState,
+      },
+    );
+    return {
+      ...response,
+      conversation_id: conversation.id,
+      state: nextState,
+    };
+  };
+
   const intent = detectLearnerAssistantIntent(message);
+
+  if (intent === "greeting") {
+    return finalizeReply({
+      intent,
+      reply:
+        "Hey! Tell me what you want to learn and I’ll find published courses (including by instructor), then I can add/remove from cart and track what course you mean next.",
+      courses: [],
+    });
+  }
+
+  if (intent === "enrollment_removal") {
+    return finalizeReply({
+      intent,
+      reply:
+        "I can’t remove enrolled courses from your account directly, but I can still add enrolled courses to cart if you want to re-check pricing/promos, or manage your current cart.",
+      courses: [],
+    });
+  }
+
+  if (intent === "instructor_lookup") {
+    const person = extractInstructorLookupText(message);
+    const instructors = await searchInstructorsForLearner(person, 5);
+    const asksSensitiveInfo = isSensitiveInstructorInfoRequest(message);
+
+    if (asksSensitiveInfo && instructors.length > 0) {
+      const first = instructors[0];
+      const topCourseCards = await searchPublishedCoursesForLearner(
+        userId,
+        `courses by instructor ${first.display_name}`,
+        3,
+      );
+      return finalizeReply(
+        {
+          intent,
+          reply: `I can’t share personal contact information like email or phone. I can share public profile details for ${first.display_name} and their published courses.`,
+          courses: topCourseCards,
+          instructors,
+        },
+        {
+          current_instructor_id: first.id,
+          current_course_id: topCourseCards[0]?.id || null,
+        },
+      );
+    }
+
+    if (!instructors.length) {
+      const fallbackCourses = person
+        ? await searchPublishedCoursesForLearner(
+            userId,
+            `courses by instructor ${person}`,
+            6,
+          )
+        : [];
+      if (fallbackCourses.length) {
+        return finalizeReply(
+          {
+            intent,
+            reply: `I couldn't find a full instructor profile for "${person}", but I found ${fallbackCourses.length} published course${fallbackCourses.length > 1 ? "s" : ""} that match.`,
+            courses: fallbackCourses,
+            instructors: [],
+          },
+          {
+            current_course_id: fallbackCourses[0]?.id || null,
+            current_category_id: fallbackCourses[0]?.category?.id || null,
+            current_instructor_id: fallbackCourses[0]?.instructor_id || null,
+            recent_course_results: fallbackCourses.map((course) => ({
+              id: course.id,
+              category_id: course?.category?.id || null,
+              instructor_id: course?.instructor_id || null,
+            })),
+          },
+        );
+      }
+      return finalizeReply({
+        intent,
+        reply: person
+          ? `I couldn’t find an instructor matching "${person}". Try their username or full name, or ask for courses by topic.`
+          : "Tell me the instructor name and I’ll fetch their profile and published courses.",
+        courses: [],
+        instructors: [],
+      });
+    }
+
+    const first = instructors[0];
+    const topCourseCards = await searchPublishedCoursesForLearner(
+      userId,
+      `courses by instructor ${first.display_name}`,
+      3,
+    );
+    return finalizeReply(
+      {
+        intent,
+        reply: `I found ${instructors.length} instructor${instructors.length > 1 ? "s" : ""}. ${first.display_name}${first.headline ? ` — ${first.headline}` : ""}`,
+        courses: topCourseCards,
+        instructors,
+      },
+      {
+        current_instructor_id: first.id,
+        current_course_id: topCourseCards[0]?.id || null,
+      },
+    );
+  }
 
   if (intent === "search") {
     const queryText = extractCourseSearchText(message);
     const courses = await searchPublishedCoursesForLearner(userId, queryText, 8);
     if (!courses.length) {
-      return {
+      const instructors = await searchInstructorsForLearner(queryText, 3);
+      return finalizeReply({
         intent,
-        reply: `I couldn't find published courses matching "${queryText || "your query"}". Try a different keyword.`,
+        reply: `I couldn’t find published courses matching "${queryText || "your query"}". Try a topic (e.g. "web development") or author query like "courses by instructor john".`,
         courses: [],
-      };
+        instructors,
+      });
     }
 
-    return {
+    const authorQuery = extractAuthorSearchText(message);
+    return finalizeReply(
+      {
       intent,
-      reply: `I found ${courses.length} published course${courses.length > 1 ? "s" : ""} for "${queryText}".`,
+      reply: authorQuery
+        ? `I found ${courses.length} published course${courses.length > 1 ? "s" : ""} by/related to "${authorQuery}".`
+        : `I found ${courses.length} published course${courses.length > 1 ? "s" : ""} for "${queryText}".`,
       courses,
-    };
+      instructors: [],
+      },
+      {
+        current_course_id: courses[0]?.id || null,
+        current_category_id: courses[0]?.category?.id || null,
+        current_instructor_id: courses[0]?.instructor_id || null,
+        recent_course_results: courses.map((course) => ({
+          id: course.id,
+          category_id: course?.category?.id || null,
+          instructor_id: course?.instructor_id || null,
+        })),
+      },
+    );
   }
 
   if (intent === "recommend") {
     const courses = await buildLearnerRecommendations(userId, 6);
     if (!courses.length) {
-      return {
+      const popular = await searchPublishedCoursesForLearner(userId, "development", 6);
+      return finalizeReply(
+        {
         intent,
-        reply:
-          "I couldn't build recommendations yet. Try searching for a topic you want to learn.",
-        courses: [],
-      };
+        reply: popular.length
+          ? "I couldn’t personalize strongly yet, so here are popular published courses to start with."
+          : "I couldn’t build recommendations yet. Tell me a topic (e.g. web development, design, marketing) and I’ll search for you.",
+        courses: popular,
+        },
+        {
+          current_course_id: popular[0]?.id || null,
+          current_category_id: popular[0]?.category?.id || null,
+          current_instructor_id: popular[0]?.instructor_id || null,
+          recent_course_results: popular.map((course) => ({
+            id: course.id,
+            category_id: course?.category?.id || null,
+            instructor_id: course?.instructor_id || null,
+          })),
+        },
+      );
     }
 
-    return {
+    return finalizeReply(
+      {
       intent,
       reply:
-        "Here are personalized recommendations based on your recent learning and browsing activity.",
+        "Here are personalized recommendations based on your learning progress, browsing activity, and cart behavior.",
       courses,
-    };
+      },
+      {
+        current_course_id: courses[0]?.id || null,
+        current_category_id: courses[0]?.category?.id || null,
+        current_instructor_id: courses[0]?.instructor_id || null,
+        recent_course_results: courses.map((course) => ({
+          id: course.id,
+          category_id: course?.category?.id || null,
+          instructor_id: course?.instructor_id || null,
+        })),
+      },
+    );
   }
 
   if (intent === "add_cart" || intent === "remove_cart" || intent === "status") {
-    const course = await resolveCourseForLearnerAssistant(userId, payload, message);
+    const course = await resolveCourseForLearnerAssistant(
+      userId,
+      payload,
+      message,
+      conversationState,
+      historyRows,
+    );
+    if (!course && intent === "status") {
+      const cart = await prisma.cart.findUnique({
+        where: { userId },
+        select: {
+          items: {
+            take: 3,
+            include: {
+              course: {
+                include: { priceTier: true, category: true, level: true },
+              },
+            },
+          },
+        },
+      });
+      const enrollCount = await prisma.enrollment.count({
+        where: { userId, status: { in: ["ACTIVE", "COMPLETED"] } },
+      });
+      const { inCartSet, enrolledSet } = await getLearnerCourseStateSets(userId);
+      const cartCourses = (cart?.items || [])
+        .map((item) => item.course)
+        .filter(Boolean)
+        .map((item) => toAssistantCourseCard(item, inCartSet, enrolledSet));
+
+      return finalizeReply({
+        intent,
+        reply: `You have ${Number(cart?.items?.length || 0)} course(s) in cart and ${enrollCount} active/completed enrollment(s).`,
+        courses: cartCourses,
+      });
+    }
+
     if (!course) {
-      return {
+      return finalizeReply({
         intent,
         reply:
-          "Please mention a course title (or click a course action button) so I can check or update your cart.",
+          "I couldn’t resolve which course you meant. Say a title, or refer to the last results with phrases like 'add the first one' or 'add this course'.",
         courses: [],
-      };
+      });
     }
 
     const { inCartSet, enrolledSet } = await getLearnerCourseStateSets(userId);
@@ -4274,7 +5336,8 @@ export async function askLearnerAssistant(userId, payload = {}) {
     const enrolled = enrolledSet.has(course.id);
 
     if (intent === "status") {
-      return {
+      return finalizeReply(
+        {
         intent,
         reply: enrolled
           ? `You're already enrolled in "${course.title}".`
@@ -4282,63 +5345,95 @@ export async function askLearnerAssistant(userId, payload = {}) {
             ? `"${course.title}" is already in your cart.`
             : `"${course.title}" is not enrolled and not in your cart yet.`,
         courses: [toAssistantCourseCard(course, inCartSet, enrolledSet)],
-      };
+        cart_count: cartCount,
+        },
+        {
+          current_course_id: course.id,
+          current_category_id: course?.categoryId || null,
+          current_instructor_id: course?.educatorId || null,
+        },
+      );
     }
 
     if (intent === "add_cart") {
-      if (enrolled) {
-        return {
-          intent,
-          reply: `You already own "${course.title}", so I can't add it to cart.`,
-          courses: [toAssistantCourseCard(course, inCartSet, enrolledSet)],
-        };
-      }
       if (inCart) {
-        return {
+        return finalizeReply(
+          {
           intent,
           reply: `"${course.title}" is already in your cart.`,
           courses: [toAssistantCourseCard(course, inCartSet, enrolledSet)],
-        };
+          cart_count: cartCount,
+          },
+          {
+            current_course_id: course.id,
+            current_category_id: course?.categoryId || null,
+            current_instructor_id: course?.educatorId || null,
+          },
+        );
       }
 
-      await addToCart(userId, course.id);
+      await addToCart(userId, course.id, { allowEnrolled: true });
       const latestState = await getLearnerCourseStateSets(userId);
-      return {
+      return finalizeReply(
+        {
         intent,
-        reply: `Added "${course.title}" to your cart.`,
+        reply: enrolled
+          ? `Added "${course.title}" to your cart. Note: you're already enrolled.`
+          : `Added "${course.title}" to your cart.`,
         courses: [
           toAssistantCourseCard(course, latestState.inCartSet, latestState.enrolledSet),
         ],
         cart_count: latestState.cartCount,
-      };
+        },
+        {
+          current_course_id: course.id,
+          current_category_id: course?.categoryId || null,
+          current_instructor_id: course?.educatorId || null,
+        },
+      );
     }
 
     if (!inCart) {
-      return {
+      return finalizeReply(
+        {
         intent,
         reply: `"${course.title}" is not in your cart.`,
         courses: [toAssistantCourseCard(course, inCartSet, enrolledSet)],
-      };
+        cart_count: cartCount,
+        },
+        {
+          current_course_id: course.id,
+          current_category_id: course?.categoryId || null,
+          current_instructor_id: course?.educatorId || null,
+        },
+      );
     }
 
     await removeFromCart(userId, course.id);
     const latestState = await getLearnerCourseStateSets(userId);
-    return {
+    return finalizeReply(
+      {
       intent,
       reply: `Removed "${course.title}" from your cart.`,
       courses: [
         toAssistantCourseCard(course, latestState.inCartSet, latestState.enrolledSet),
       ],
       cart_count: latestState.cartCount,
-    };
+      },
+      {
+        current_course_id: course.id,
+        current_category_id: course?.categoryId || null,
+        current_instructor_id: course?.educatorId || null,
+      },
+    );
   }
 
-  return {
+  return finalizeReply({
     intent: "chat",
-    reply:
-      "I can help you search published courses, add/remove courses from cart, check enrollment/cart status, and give recommendations based on your activity. Try: 'recommend courses', 'search React courses', or 'add Data Science to cart'.",
+    reply: "Got it. I can search courses by topic/price/level/instructor, manage your cart, check enrollment, and recommend your next course. Tell me what you need in plain English.",
     courses: [],
-  };
+    instructors: [],
+  });
 }
 
 function buildCourseScopeTokenSet(course) {

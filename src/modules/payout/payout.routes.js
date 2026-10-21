@@ -14,6 +14,8 @@ import {
   payoutWebhookController,
   rejectPayoutController,
   requestPayoutController,
+  retryMyPayoutController,
+  returnMyPayoutController,
   runAutoPayoutController,
 } from "./payout.controller.js";
 import {
@@ -39,6 +41,18 @@ router.post(
   authorize("EDUCATOR"),
   validate(requestPayoutValidator),
   asyncHandler(requestPayoutController),
+);
+router.post(
+  "/my/:payoutId/retry",
+  authenticate,
+  authorize("EDUCATOR"),
+  asyncHandler(retryMyPayoutController),
+);
+router.post(
+  "/my/:payoutId/return",
+  authenticate,
+  authorize("EDUCATOR"),
+  asyncHandler(returnMyPayoutController),
 );
 router.get(
   "/summary",

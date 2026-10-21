@@ -90,7 +90,8 @@ export async function getCart(userId) {
   });
 }
 
-export async function addToCart(userId, courseId) {
+export async function addToCart(userId, courseId, options = {}) {
+  const allowEnrolled = Boolean(options?.allowEnrolled);
   const [cart, course, existingEnrollment] = await Promise.all([
     getOrCreateCart(userId),
     prisma.course.findFirst({
@@ -108,7 +109,7 @@ export async function addToCart(userId, courseId) {
   if (!course) {
     throw new ApiError(404, "Course not found");
   }
-  if (existingEnrollment) {
+  if (existingEnrollment && !allowEnrolled) {
     throw new ApiError(400, "You already own this course");
   }
 
@@ -200,4 +201,3 @@ export async function validateCartCoupon(userId, couponCode) {
     currency: "PHP",
   };
 }
-

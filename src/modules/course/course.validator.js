@@ -78,6 +78,7 @@ export const learnAssistantValidator = z.object({
 
 export const learnerAssistantValidator = z.object({
   message: z.string().min(2).max(3000),
+  conversation_id: z.string().optional().nullable(),
   course_id: z.string().optional().nullable(),
   course_slug: z.string().optional().nullable(),
   messages: z
@@ -89,6 +90,14 @@ export const learnerAssistantValidator = z.object({
     )
     .max(20)
     .optional(),
+});
+
+export const learnerAssistantHistoryQueryValidator = z.object({
+  conversation_id: z.string().optional().nullable(),
+});
+
+export const learnerAssistantClearValidator = z.object({
+  conversation_id: z.string().optional().nullable(),
 });
 
 export const updateCourseWithAIValidator = z.object({

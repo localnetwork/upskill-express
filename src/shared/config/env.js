@@ -32,10 +32,23 @@ export const env = {
     process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com",
   paypalClientId: process.env.PAYPAL_CLIENT_ID || "",
   paypalClientSecret: process.env.PAYPAL_CLIENT_SECRET || "",
+  paypalPayoutCurrency: (process.env.PAYPAL_PAYOUT_CURRENCY || "PHP")
+    .trim()
+    .toUpperCase(),
   paypalWebhookId:
     process.env.PAYPAL_WEBHOOK_ID ||
     process.env.PAYPAL_PAYOUTS_WEBHOOK_ID ||
     "",
+  xenditBaseUrl: process.env.XENDIT_BASE_URL || "https://api.xendit.co",
+  xenditSecretKey: process.env.XENDIT_SECRET_KEY || "",
+  xenditCallbackToken: process.env.XENDIT_CALLBACK_TOKEN || "",
+  xenditInvoiceDurationSeconds:
+    Number(process.env.XENDIT_INVOICE_DURATION_SECONDS) || 3600,
+  xenditReturnBaseUrl: (
+    process.env.XENDIT_RETURN_BASE_URL ||
+    process.env.FRONTEND_URL ||
+    "http://localhost:3000"
+  ).replace(/\/$/, ""),
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   uploadDir: process.env.UPLOAD_DIR || "uploads",
   cfAccessKeyId: process.env.CF_ACCESS_KEY_ID || "",

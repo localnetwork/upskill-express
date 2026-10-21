@@ -107,11 +107,33 @@ function mapOrderItemCourse(item) {
   };
 }
 
+const PAYMENT_METHOD_LABELS = {
+  GCASH: "GCash",
+  PAYMAYA: "Maya",
+  PAYPAL: "PayPal",
+};
+
+function resolvePaymentMethodLabel(payment) {
+  if (!payment) return null;
+  if (payment.provider !== "XENDIT") return PAYMENT_METHOD_LABELS.PAYPAL;
+  const raw = payment.rawResponse && typeof payment.rawResponse === "object"
+    ? payment.rawResponse
+    : {};
+  const channel = String(
+    raw.payment_channel ||
+      raw.ewallet_type ||
+      raw.available_ewallets?.[0]?.ewallet_type ||
+      "",
+  ).toUpperCase();
+  return PAYMENT_METHOD_LABELS[channel] || channel || "Xendit";
+}
+
 function mapOrderWithCourseImages(order) {
   const items = Array.isArray(order?.items) ? order.items.map(mapOrderItemCourse) : [];
   return {
     ...order,
     items,
+    paymentMethod: resolvePaymentMethodLabel(order?.payment),
   };
 }
 

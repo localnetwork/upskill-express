@@ -4,6 +4,7 @@ import {
   createCheckoutOrder,
   getCheckoutOrderStatus,
   handlePayPalWebhook,
+  handleXenditWebhook,
 } from "./checkout.service.js";
 
 export async function createCheckoutController(req, res) {
@@ -56,4 +57,12 @@ export async function webhookController(req, res) {
   });
   const data = await handlePayPalWebhook(req.body);
   return res.status(202).json({ message: "Webhook accepted", data });
+}
+
+export async function xenditWebhookController(req, res) {
+  const data = await handleXenditWebhook(
+    req.body,
+    req.headers?.["x-callback-token"],
+  );
+  return res.status(200).json({ message: "Webhook accepted", data });
 }

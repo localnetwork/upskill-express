@@ -12,6 +12,8 @@ import {
   getLatestActiveCourseAIDraftJobController,
   askCourseLearningAssistantController,
   askLearnerAssistantController,
+  clearLearnerAssistantHistoryController,
+  getLearnerAssistantHistoryController,
   updateCourseWithAIController,
   deleteDraftCourseController,
   getCourseDiscoveryController,
@@ -40,6 +42,8 @@ import {
   createCourseValidator,
   learnAssistantValidator,
   learnerAssistantValidator,
+  learnerAssistantHistoryQueryValidator,
+  learnerAssistantClearValidator,
   updateCourseWithAIValidator,
   updateCourseValidator,
 } from "./course.validator.js";
@@ -98,6 +102,20 @@ router.post(
   authorize("LEARNER"),
   validate(learnerAssistantValidator),
   asyncHandler(askLearnerAssistantController),
+);
+router.get(
+  "/learner-assistant/history",
+  authenticate,
+  authorize("LEARNER"),
+  validate(learnerAssistantHistoryQueryValidator, "query"),
+  asyncHandler(getLearnerAssistantHistoryController),
+);
+router.post(
+  "/learner-assistant/clear",
+  authenticate,
+  authorize("LEARNER"),
+  validate(learnerAssistantClearValidator),
+  asyncHandler(clearLearnerAssistantHistoryController),
 );
 router.post(
   "/:slug/learn-assistant",

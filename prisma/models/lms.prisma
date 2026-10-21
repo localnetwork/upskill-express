@@ -342,6 +342,7 @@ model Lesson {
   lessonTopics       LessonTopic[]
   progress           LessonProgress[]
   media              Media[]
+  videoUpload        LessonVideoUpload?
   discussionThreads  DiscussionThread[]
 
   @@unique([sectionId, position])
@@ -349,6 +350,24 @@ model Lesson {
   @@index([topicId])
   @@index([prerequisiteLessonId])
   @@map("lessons")
+}
+
+model LessonVideoUpload {
+  id                String   @id @default(cuid())
+  lessonId          String   @unique
+  userId            String
+  providerVideoId   String
+  uploadUrl         String
+  fileName          String
+  mimeType          String   @default("video/mp4")
+  sizeInBytes       BigInt
+  durationInSeconds Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  lesson            Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@map("lesson_video_uploads")
 }
 
 model CourseNudgeRule {

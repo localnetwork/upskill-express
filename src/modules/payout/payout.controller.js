@@ -8,6 +8,8 @@ import {
   listMyPayouts,
   rejectPayout,
   requestPayout,
+  retryMyFailedPayout,
+  returnMyFailedPayout,
 } from "./payout.service.js";
 import { runAutoPayoutNow } from "./payout.scheduler.js";
 
@@ -19,6 +21,16 @@ export async function connectPayoutAccountController(req, res) {
 export async function requestPayoutController(req, res) {
   const data = await requestPayout(req.user.id, req.body);
   return res.status(201).json({ message: "Payout auto-approved and submitted", data });
+}
+
+export async function retryMyPayoutController(req, res) {
+  const data = await retryMyFailedPayout(req.user.id, req.params.payoutId);
+  return res.json({ message: "Payout retried", data });
+}
+
+export async function returnMyPayoutController(req, res) {
+  const data = await returnMyFailedPayout(req.user.id, req.params.payoutId);
+  return res.json({ message: "Payout amount returned to balance", data });
 }
 
 export async function myPayoutSummaryController(req, res) {

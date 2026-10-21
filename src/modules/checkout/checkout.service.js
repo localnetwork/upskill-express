@@ -6,8 +6,16 @@ import { calculateTax } from "./tax.service.js";
 import {
   capturePayPalOrder,
   createPayPalOrder,
-  getPayPalOrder,
+  getPayPalOrder as fetchPayPalOrder,
 } from "./paypal.service.js";
+import {
+  createXenditInvoice,
+  expireXenditInvoice,
+  getXenditInvoice,
+  resolveXenditPaymentMethod,
+  verifyXenditCallbackToken,
+} from "./xendit.service.js";
+import { randomUUID } from "node:crypto";
 import { createNotification } from "../notification/notification.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import {
@@ -76,6 +84,32 @@ function extractPayPalApprovalUrl(paypalPayload) {
 
 function isUnpaidPayPalOrderStatus(paypalStatus) {
   return String(paypalStatus || "").toUpperCase() === "CREATED";
+}
+
+// Fetches the provider order (PayPal order or normalized Xendit invoice) that
+// owns the given providerOrderId. Xendit payloads are normalized to PayPal-like
+// statuses (CREATED/COMPLETED/EXPIRED/DECLINED) so downstream logic is shared.
+async function getPayPalOrder(providerOrderId) {
+  const payment = await prisma.payment.findUnique({
+    where: { providerOrderId: String(providerOrderId || "").trim() },
+    select: { provider: true },
+  });
+  if (payment?.provider === "XENDIT") {
+    return getXenditInvoice(providerOrderId);
+  }
+  return fetchPayPalOrder(providerOrderId);
+}
+
+async function captureProviderOrder(providerOrderId, provider) {
+  if (provider !== "XENDIT") {
+    return capturePayPalOrder(providerOrderId);
+  }
+  // Xendit has no capture step; the invoice must already be paid.
+  const invoice = await getXenditInvoice(providerOrderId);
+  if (invoice.status !== "COMPLETED") {
+    throw new ApiError(409, "Payment has not been completed yet");
+  }
+  return invoice;
 }
 
 async function createEnrollmentWithWelcomeNotification(db, payload) {
@@ -623,6 +657,17 @@ export async function cancelCheckoutOrder(userId, providerOrderId) {
     paypalPayload && typeof paypalPayload === "object"
       ? { ...paypalPayload, status: normalizedCancellationStatus }
       : { status: normalizedCancellationStatus };
+
+  if (payment.provider === "XENDIT" && normalizedCancellationStatus !== "EXPIRED") {
+    try {
+      await expireXenditInvoice(resolvedProviderOrderId);
+    } catch (error) {
+      console.error("[Xendit] Failed to expire invoice", {
+        invoiceId: resolvedProviderOrderId,
+        message: error?.response?.data?.message || error?.message,
+      });
+    }
+  }
 
   const cancellationResult = await markCheckoutAsCancelledByProviderOrderId(
     resolvedProviderOrderId,
@@ -1210,13 +1255,36 @@ export async function createCheckoutOrder(userId, payload) {
     };
   }
 
-  const providerOrder = await createPayPalOrder({
-    amount: totalAmount,
-    currency: DEFAULT_CURRENCY,
-    referenceId: checkoutContext.referenceId,
-    returnUrl: `${appBaseUrl}/checkout/payments`,
-    cancelUrl: `${appBaseUrl}/checkout/payments`,
-  });
+  const xenditMethod = resolveXenditPaymentMethod(payload.payment_method);
+  const provider = xenditMethod ? "XENDIT" : "PAYPAL";
+  const orderId = randomUUID();
+
+  let providerOrder;
+  if (provider === "XENDIT") {
+    const payer = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    const statusUrl = `${env.xenditReturnBaseUrl}/checkout/payments?token=${orderId}`;
+    providerOrder = await createXenditInvoice({
+      amount: totalAmount,
+      currency: DEFAULT_CURRENCY,
+      externalId: orderId,
+      paymentMethod: xenditMethod,
+      payerEmail: payer?.email,
+      description: `Upskill order ${orderId}`,
+      successRedirectUrl: statusUrl,
+      failureRedirectUrl: statusUrl,
+    });
+  } else {
+    providerOrder = await createPayPalOrder({
+      amount: totalAmount,
+      currency: DEFAULT_CURRENCY,
+      referenceId: checkoutContext.referenceId,
+      returnUrl: `${appBaseUrl}/checkout/payments`,
+      cancelUrl: `${appBaseUrl}/checkout/payments`,
+    });
+  }
 
   const platformFeePercent = await getPlatformFeePercent();
 
@@ -1224,6 +1292,7 @@ export async function createCheckoutOrder(userId, payload) {
     .$transaction(async (tx) => {
       const order = await tx.order.create({
         data: {
+          id: orderId,
           userId,
           couponId: coupons.length === 1 ? coupons[0].id : null,
           status: "CREATED",
@@ -1278,7 +1347,7 @@ export async function createCheckoutOrder(userId, payload) {
       await tx.payment.create({
         data: {
           orderId: order.id,
-          provider: "PAYPAL",
+          provider,
           providerOrderId: providerOrder.id,
           status: "CREATED",
           rawResponse: providerOrder,
@@ -1314,6 +1383,7 @@ export async function createCheckoutOrder(userId, payload) {
       return {
         orderId: order.id,
         providerOrderId: providerOrder.id,
+        provider,
         paypal: providerOrder,
         totals: {
           subtotal,
@@ -1363,7 +1433,10 @@ export async function captureCheckoutOrder(userId, providerOrderId) {
   }
 
   try {
-    const captureResponse = await capturePayPalOrder(providerOrderId);
+    const captureResponse = await captureProviderOrder(
+      providerOrderId,
+      payment.provider,
+    );
     const result = await finalizeCapturedPaymentByProviderOrderId(
       providerOrderId,
       captureResponse,
@@ -1396,6 +1469,12 @@ export async function captureCheckoutOrder(userId, providerOrderId) {
 }
 
 export async function getCheckoutOrderStatus(userId, checkoutToken) {
+  const data = await getCheckoutOrderStatusInternal(userId, checkoutToken);
+  const payment = await getLatestCheckoutPayment(checkoutToken);
+  return { ...data, provider: payment?.provider || "PAYPAL" };
+}
+
+async function getCheckoutOrderStatusInternal(userId, checkoutToken) {
   const payment = await getLatestCheckoutPayment(checkoutToken);
 
   if (!payment) {
@@ -1963,4 +2042,54 @@ export async function handlePayPalWebhook(event) {
   }
 
   return { accepted: true, ignored: true, eventType: normalizedEventType };
+}
+
+export async function handleXenditWebhook(event, callbackToken) {
+  if (!verifyXenditCallbackToken(callbackToken)) {
+    throw new ApiError(401, "Invalid Xendit callback token");
+  }
+
+  const invoiceId = String(event?.id || "").trim();
+  if (!invoiceId) {
+    return { accepted: true, ignored: true };
+  }
+
+  const payment = await getCheckoutPaymentByProviderOrderId(invoiceId, {
+    orderSelect: { id: true, userId: true, status: true },
+  });
+  if (!payment || payment.provider !== "XENDIT") {
+    return { accepted: true, ignored: true };
+  }
+
+  // Never trust the callback body for payment state; confirm with Xendit.
+  const invoice = await getXenditInvoice(invoiceId);
+
+  if (invoice.status === "COMPLETED") {
+    try {
+      const result = await finalizeCapturedPaymentByProviderOrderId(
+        invoiceId,
+        invoice,
+      );
+      if (!result.wasAlreadyCaptured) {
+        await recordActivityEvent({
+          eventType: "COMMERCE_PURCHASE_COMPLETED",
+          userId: payment.order?.userId,
+          metadata: { orderId: result?.order?.id, providerOrderId: invoiceId },
+          dedupeWindowSeconds: 10,
+        });
+      }
+    } catch (error) {
+      if (error?.code !== "P2028") throw error;
+      await reconcileCheckoutCaptureState(invoiceId, invoice);
+    }
+    return { accepted: true, action: "completed" };
+  }
+
+  if (invoice.status === "EXPIRED" || invoice.status === "DECLINED") {
+    await markCheckoutAsCancelledByProviderOrderId(invoiceId, invoice);
+    return { accepted: true, action: "cancelled" };
+  }
+
+  await syncCreatedPayPalOrderRecord(invoiceId, invoice);
+  return { accepted: true, action: "synced" };
 }

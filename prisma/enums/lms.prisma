@@ -48,6 +48,7 @@ enum OrderStatus {
 
 enum PaymentProvider {
   PAYPAL
+  XENDIT
 }
 
 enum PaymentStatus {

@@ -10,6 +10,7 @@ import {
   createCheckoutController,
   getCheckoutStatusController,
   webhookController,
+  xenditWebhookController,
 } from "./checkout.controller.js";
 import {
   cancelCheckoutValidator,
@@ -56,5 +57,6 @@ router.get(
 );
 
 router.post("/webhook/paypal", asyncHandler(webhookController));
+router.post("/webhook/xendit", asyncHandler(xenditWebhookController));
 
 export default router;

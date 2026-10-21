@@ -14,6 +14,8 @@ import {
   checkCourseSlugAvailability,
   askCourseLearningAssistant,
   askLearnerAssistant,
+  clearLearnerAssistantConversation,
+  getLearnerAssistantConversationHistory,
   getCourseStudentsForManagement,
   listAuthoredCourses,
   listCourseCouponsForManagement,
@@ -259,6 +261,22 @@ export async function askCourseLearningAssistantController(req, res) {
 export async function askLearnerAssistantController(req, res) {
   const data = await askLearnerAssistant(req.user.id, req.body);
   return res.json({ message: "Learner assistant reply generated", data });
+}
+
+export async function getLearnerAssistantHistoryController(req, res) {
+  const data = await getLearnerAssistantConversationHistory(
+    req.user.id,
+    req.query?.conversation_id,
+  );
+  return res.json({ message: "Learner assistant history fetched", data });
+}
+
+export async function clearLearnerAssistantHistoryController(req, res) {
+  const data = await clearLearnerAssistantConversation(
+    req.user.id,
+    req.body?.conversation_id,
+  );
+  return res.json({ message: "Learner assistant conversation cleared", data });
 }
 
 export async function updateCoursePricingController(req, res) {

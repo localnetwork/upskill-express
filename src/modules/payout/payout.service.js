@@ -518,11 +518,17 @@ async function createPayPalPayoutBatch({
   currency,
   receiverEmail,
   note,
+  retryToken = "",
 }) {
   const accessToken = await getPayPalPayoutAccessToken();
 
-  const senderBatchId = String(payoutRequestId).slice(0, 30);
-  const senderItemId = String(payoutRequestId).slice(0, 127);
+  // PayPal rejects reused sender_batch_id values, so retries need a fresh one.
+  const senderBatchId = retryToken
+    ? `${String(payoutRequestId).slice(0, 20)}-${retryToken}`.slice(0, 30)
+    : String(payoutRequestId).slice(0, 30);
+  const senderItemId = retryToken
+    ? `${payoutRequestId}-${retryToken}`.slice(0, 127)
+    : String(payoutRequestId).slice(0, 127);
   const response = await axios.post(
     `${env.paypalBaseUrl}/v1/payments/payouts`,
     {
@@ -548,7 +554,9 @@ async function createPayPalPayoutBatch({
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
-        "PayPal-Request-Id": String(payoutRequestId),
+        "PayPal-Request-Id": retryToken
+          ? `${payoutRequestId}-${retryToken}`
+          : String(payoutRequestId),
       },
     },
   );
@@ -1026,7 +1034,7 @@ export async function getMyPayoutSummary(educatorId) {
   return {
     minimumPayoutAmount: MIN_PAYOUT_AMOUNT_PHP,
     withdrawalFeeRate: PAYOUT_WITHDRAWAL_FEE_RATE,
-    currency: settings.defaultCurrency,
+    currency: env.paypalPayoutCurrency,
     payoutCycle: cycleWindow.payoutCycle,
     availableBalance: Number(availableBalance.toFixed(2)),
     thisMonthEarnings: Number(thisMonthEarnings.toFixed(2)),
@@ -1141,7 +1149,7 @@ export async function requestPayout(educatorId, payload) {
       data: {
         educatorId,
         amount: payoutAmount,
-        currency: settings.defaultCurrency,
+        currency: env.paypalPayoutCurrency,
         status: "APPROVED",
         reviewedAt: now,
         reviewNote: "Auto-approved payout request",
@@ -1393,7 +1401,89 @@ export async function rejectPayout(adminId, payoutRequestId, reviewNote) {
   return updated;
 }
 
-export async function executePayout(payoutRequestId) {
+export async function retryMyFailedPayout(educatorId, payoutRequestId) {
+  const payout = await prisma.payoutRequest.findFirst({
+    where: { id: payoutRequestId, educatorId },
+    select: { id: true, status: true },
+  });
+  if (!payout) {
+    throw new ApiError(404, "Payout request not found");
+  }
+  if (payout.status !== "FAILED") {
+    throw new ApiError(400, "Only failed payouts can be retried");
+  }
+
+  // Atomically claim the retry so double-clicks cannot send two payouts.
+  const claimed = await prisma.payoutRequest.updateMany({
+    where: { id: payout.id, status: "FAILED" },
+    data: { status: "APPROVED", reviewNote: "Retry requested by instructor" },
+  });
+  if (claimed.count === 0) {
+    throw new ApiError(409, "This payout is already being retried");
+  }
+  await appendPayoutEvent(payout.id, "PAYOUT.RETRIED", {
+    retriedById: educatorId,
+  });
+
+  return executePayout(payout.id, {
+    retryToken: Date.now().toString(36),
+  });
+}
+
+export async function returnMyFailedPayout(educatorId, payoutRequestId) {
+  const payout = await prisma.payoutRequest.findFirst({
+    where: { id: payoutRequestId, educatorId },
+    select: { id: true, status: true },
+  });
+  if (!payout) {
+    throw new ApiError(404, "Payout request not found");
+  }
+  if (payout.status !== "FAILED") {
+    throw new ApiError(400, "Only failed payouts can be returned to balance");
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.payoutRequest.updateMany({
+      where: { id: payout.id, status: "FAILED" },
+      data: {
+        status: "REJECTED",
+        reviewNote: "Returned to available balance by instructor",
+        reviewedAt: new Date(),
+      },
+    });
+    if (claimed.count === 0) {
+      throw new ApiError(409, "This payout can no longer be returned");
+    }
+    // Releasing the items makes the earnings available for a new payout.
+    await tx.payoutRequestItem.deleteMany({
+      where: { payoutRequestId: payout.id },
+    });
+    await tx.payoutRequestEvent.create({
+      data: {
+        payoutRequestId: payout.id,
+        eventType: "PAYOUT.RETURNED",
+        occurredAt: new Date(),
+        payload: { returnedById: educatorId },
+      },
+    });
+    return tx.payoutRequest.findUnique({
+      where: { id: payout.id },
+      include: payoutRequestItemsInclude,
+    });
+  });
+
+  await createNotification({
+    userId: educatorId,
+    type: "PAYOUT",
+    title: "Payout returned to balance",
+    message: `The amount for failed payout ${payout.id} is available again.`,
+    metadata: { payoutRequestId: payout.id },
+  });
+
+  return updated;
+}
+
+export async function executePayout(payoutRequestId, options = {}) {
   const payout = await prisma.payoutRequest.findUnique({
     where: { id: payoutRequestId },
     include: {
@@ -1431,9 +1521,10 @@ export async function executePayout(payoutRequestId) {
     payoutResult = await createPayPalPayoutBatch({
       payoutRequestId: payout.id,
       amount: payout.amount,
-      currency: payout.currency,
+      currency: env.paypalPayoutCurrency,
       receiverEmail: payout.educator.payoutAccount.paypalEmail,
       note: payout.note || undefined,
+      retryToken: options.retryToken || "",
     });
   } catch (error) {
     const providerMessage = getPayPalErrorMessage(error);
@@ -1486,6 +1577,7 @@ export async function executePayout(payoutRequestId) {
     where: { id: payoutRequestId },
     data: {
       status: "EXECUTED",
+      currency: env.paypalPayoutCurrency,
       executedAt: new Date(),
       paypalBatchId: providerBatchId,
       reviewNote:

@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 export const createCheckoutValidator = z.object({
+  payment_method: z
+    .string()
+    .transform((value) => value.trim().toLowerCase())
+    .pipe(z.enum(["paypal", "gcash", "paymaya"]))
+    .optional(),
   couponCode: z.string().optional(),
   couponCodes: z.array(z.string().min(3).max(64)).optional(),
   taxRegionCode: z.string().optional(),

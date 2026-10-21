@@ -279,6 +279,52 @@ export async function createCloudflareDirectUpload({
   return { uploadUrl, uid };
 }
 
+export async function createCloudflareTusUpload({
+  uploadLength,
+  maxDurationSeconds = 3600,
+  requireSignedUrls = true,
+  title,
+} = {}) {
+  if (!env.cfStreamAccountId || !env.cfStreamApiToken) {
+    throw new Error(
+      "Cloudflare Stream upload is not configured (missing CF_STREAM_ACCOUNT_ID or CF_STREAM_API_TOKEN)",
+    );
+  }
+  const length = Math.floor(Number(uploadLength) || 0);
+  if (length <= 0) {
+    throw new Error("Upload length is required for resumable upload");
+  }
+
+  const toB64 = (value) => Buffer.from(String(value), "utf8").toString("base64");
+  const safeName = String(title || "course-video").slice(0, 120);
+  const safeMaxDuration = Math.max(1, Math.floor(Number(maxDurationSeconds) || 3600));
+  const metadata = [
+    `name ${toB64(safeName)}`,
+    `maxDurationSeconds ${toB64(safeMaxDuration)}`,
+    ...(requireSignedUrls ? ["requiresignedurls"] : []),
+  ].join(",");
+
+  const endpoint = `${CLOUDFLARE_STREAM_BASE_URL}/${encodeURIComponent(env.cfStreamAccountId)}/stream?direct_user=true`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: getCloudflareAuthHeaders({
+      "Tus-Resumable": "1.0.0",
+      "Upload-Length": String(length),
+      "Upload-Metadata": metadata,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Cloudflare Stream tus upload creation failed (${response.status})`);
+  }
+
+  const uploadUrl = String(response.headers.get("location") || "").trim();
+  const uid = String(response.headers.get("stream-media-id") || "").trim();
+  if (!uploadUrl || !uid) {
+    throw new Error("Cloudflare Stream tus upload did not return location or media id");
+  }
+  return { uploadUrl, uid };
+}
+
 async function isCloudflareVideoReady(videoId) {
   const endpoint = `${CLOUDFLARE_STREAM_BASE_URL}/${encodeURIComponent(env.cfStreamAccountId)}/stream/${encodeURIComponent(videoId)}`;
   const { response, payload } = await fetchCloudflareJson(endpoint, {

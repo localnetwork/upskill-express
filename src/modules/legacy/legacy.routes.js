@@ -29,6 +29,7 @@ import {
   buildCloudflarePlaybackUrl,
   buildCloudflareSignedEmbedUrl,
   createCloudflareDirectUpload,
+  createCloudflareTusUpload,
   deleteCloudflareStreamVideo,
   extractCloudflareVideoIdFromPlaybackUrl,
   isCloudflareStreamEnabled,
@@ -286,7 +287,7 @@ function mapLegacyMedia(media) {
 function mapLessonTypeToLegacyResource(type, lesson) {
   if (type === "QUIZ") return "quiz";
   if (type === "CODING_EXERCISE") return "coding_exercise";
-  if (type === "VIDEO" || lesson.videoUrl) return "video";
+  if (type === "VIDEO" || lesson.videoUrl || lesson.videoUpload) return "video";
   if (lesson.assignmentText) return "article";
   return "null";
 }
@@ -305,6 +306,7 @@ function lessonIncludeForTopics() {
   return supportsLessonTopics
     ? {
         topic: true,
+        videoUpload: true,
         lessonTopics: {
           include: {
             topic: true,
@@ -313,6 +315,7 @@ function lessonIncludeForTopics() {
       }
     : {
         topic: true,
+        videoUpload: true,
       };
 }
 
@@ -461,6 +464,17 @@ function mapLessonToLegacyCurriculum(lesson) {
             : lesson.assignmentText
               ? { content: lesson.assignmentText }
               : null,
+    upload:
+      lesson.videoUpload && !lesson.videoUrl
+        ? {
+            status: "UPLOADING",
+            uid: lesson.videoUpload.providerVideoId,
+            upload_url: lesson.videoUpload.uploadUrl,
+            file_name: lesson.videoUpload.fileName,
+            size_in_bytes: Number(lesson.videoUpload.sizeInBytes),
+            started_at: lesson.videoUpload.createdAt,
+          }
+        : null,
   };
 }
 
@@ -859,9 +873,40 @@ function compareCodingOutput(actualOutput, expectedOutput, comparisonMode) {
   return actual === expected;
 }
 
-function compareCodingSource(sourceCode, expectedOutput, mode, comparisonMode) {
-  const source = String(sourceCode || "").trim();
-  const expected = String(expectedOutput || "").trim();
+const MARKUP_LANGUAGES = new Set(["html", "css"]);
+
+// Markup is whitespace/case-insensitive, so indentation or line breaks should not fail a check.
+function normalizeMarkup(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/>\s+</g, "><")
+    .trim()
+    .toLowerCase();
+}
+
+function compareCodingSource(
+  sourceCode,
+  expectedOutput,
+  mode,
+  comparisonMode,
+  language = "",
+) {
+  const isMarkup = MARKUP_LANGUAGES.has(String(language || "").toLowerCase());
+  let source = String(sourceCode || "").trim();
+  let expected = String(expectedOutput || "").trim();
+
+  if (comparisonMode === "REGEX") {
+    try {
+      return new RegExp(expected, isMarkup ? "is" : "").test(source);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  if (isMarkup) {
+    source = normalizeMarkup(source);
+    expected = normalizeMarkup(expected);
+  }
 
   if (mode === "EXACT_CODE") {
     return source === expected;
@@ -869,14 +914,6 @@ function compareCodingSource(sourceCode, expectedOutput, mode, comparisonMode) {
 
   if (comparisonMode === "INCLUDES" || mode === "CODE_INCLUDES") {
     return source.includes(expected);
-  }
-
-  if (comparisonMode === "REGEX") {
-    try {
-      return new RegExp(expected).test(source);
-    } catch (_error) {
-      return false;
-    }
   }
 
   return source === expected;
@@ -3018,6 +3055,7 @@ router.post(
             validator.expectedOutput,
             validator.mode,
             validator.comparisonMode,
+            language,
           );
           results.push({
             id: validator.id,
@@ -3462,6 +3500,86 @@ router.post(
 );
 
 router.post(
+  "/course-resources/videos/tus-upload-url",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.body.curriculum_id,
+      );
+      if (!isCloudflareStreamEnabled()) {
+        throw new ApiError(400, "Cloudflare Stream is not configured");
+      }
+
+      const sizeInBytes = Math.floor(Number(req.body.size_in_bytes || 0));
+      if (!Number.isFinite(sizeInBytes) || sizeInBytes <= 0) {
+        throw new ApiError(400, "size_in_bytes is required");
+      }
+
+      const duration = Math.max(1, Math.floor(Number(req.body.duration || 0) || 3600));
+      const fileName = String(req.body.file_name || "Course video").slice(0, 255);
+      const mimeType = String(req.body.mime_type || "video/mp4").slice(0, 255);
+
+      const existingUpload = await prisma.lessonVideoUpload.findUnique({
+        where: { lessonId: lesson.id },
+      });
+      if (
+        existingUpload &&
+        !req.body.restart &&
+        existingUpload.fileName === fileName &&
+        Number(existingUpload.sizeInBytes) === sizeInBytes
+      ) {
+        return res.status(200).json({
+          data: {
+            upload_url: existingUpload.uploadUrl,
+            uid: existingUpload.providerVideoId,
+            resumed: true,
+          },
+        });
+      }
+      if (existingUpload) {
+        await prisma.lessonVideoUpload.delete({ where: { id: existingUpload.id } });
+        await deleteCloudflareStreamVideo(existingUpload.providerVideoId).catch(
+          () => {},
+        );
+      }
+
+      const { uploadUrl, uid } = await createCloudflareTusUpload({
+        uploadLength: sizeInBytes,
+        maxDurationSeconds: duration,
+        requireSignedUrls: true,
+        title: fileName || lesson.title,
+      });
+
+      await prisma.lessonVideoUpload.create({
+        data: {
+          lessonId: lesson.id,
+          userId: req.user.id,
+          providerVideoId: uid,
+          uploadUrl,
+          fileName,
+          mimeType,
+          sizeInBytes,
+          durationInSeconds: Number(req.body.duration || 0) || 0,
+        },
+      });
+
+      return res.status(201).json({
+        data: {
+          upload_url: uploadUrl,
+          uid,
+          resumed: false,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
   "/course-resources/videos/complete",
   authenticate,
   authorize("EDUCATOR"),
@@ -3500,6 +3618,7 @@ router.post(
           durationInSeconds: Number(req.body.duration || 0),
         },
       });
+      await prisma.lessonVideoUpload.deleteMany({ where: { lessonId: lesson.id } });
 
       return res.status(201).json({
         data: {
@@ -3680,6 +3799,15 @@ router.delete(
       const existingCloudflareVideoId = isCloudflareStreamEnabled()
         ? extractCloudflareVideoIdFromPlaybackUrl(lesson.videoUrl)
         : "";
+      const pendingUpload = await prisma.lessonVideoUpload.findUnique({
+        where: { lessonId: lesson.id },
+      });
+      if (pendingUpload) {
+        await prisma.lessonVideoUpload.delete({ where: { id: pendingUpload.id } });
+        await deleteCloudflareStreamVideo(pendingUpload.providerVideoId).catch(
+          () => {},
+        );
+      }
       const updatedLesson = await prisma.lesson.update({
         where: { id: lesson.id },
         data: { videoUrl: null },
