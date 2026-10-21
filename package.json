@@ -6,7 +6,7 @@
   "scripts": {
     "predev": "npm run prisma:generate",
     "dev": "nodemon server.js",
-    "prestart": "npm run prisma:generate",
+    "prestart": "npm install && npm run prisma:generate",
     "start": "node server.js",
     "migrate:uploads:r2": "node scripts/migrate-uploads-to-r2.js",
     "prisma:merge": "node scripts/merge-prisma.js",

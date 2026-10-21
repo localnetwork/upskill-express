@@ -3144,6 +3144,49 @@ router.post(
 );
 
 router.post(
+  "/course-curriculums/:lessonId/coding-run",
+  authenticate,
+  authorize("LEARNER"),
+  async (req, res, next) => {
+    try {
+      const { lesson } = await ensureLearnerOwnsCodingLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      await assertLessonUnlockedForUser(req.user.id, lesson.id);
+      const language = String(req.body.language || "")
+        .trim()
+        .toLowerCase();
+      const sourceCode = String(req.body.sourceCode || "");
+      const stdin = String(req.body.stdin || "").slice(0, 5000);
+
+      if (!language || !JUDGE0_LANGUAGE_IDS[language]) {
+        throw new ApiError(400, "Unsupported coding language");
+      }
+      if (!sourceCode.trim()) {
+        throw new ApiError(400, "Source code is required");
+      }
+      if (sourceCode.length > 50000) {
+        throw new ApiError(400, "Source code is too large");
+      }
+
+      const run = await executeJudge0Code({ language, sourceCode, stdin });
+      return res.json({
+        data: {
+          output: run.actualOutput,
+          stderr: run.stderr,
+          compileOutput: run.compileOutput,
+          statusDescription: run.statusDescription,
+          hasError: run.hasExecutionError,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
   "/course-curriculums/:lessonId/coding-submit",
   authenticate,
   authorize("LEARNER"),
