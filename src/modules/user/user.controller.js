@@ -4,6 +4,8 @@ import {
   listCurrentUserDevices,
   listCurrentUserActivity,
   listUsers,
+  adminUpdateUser,
+  adminSetUserSuspended,
   getFriendRequestStatus,
   sendFriendRequest,
   cancelFriendRequest,
@@ -81,4 +83,14 @@ export async function respondToFriendRequestController(req, res) {
     req.body.action,
   );
   return res.json({ message: "Friend request updated", data });
+}
+
+export async function adminUpdateUserController(req, res) {
+  const data = await adminUpdateUser(req.user.id, req.params.userId, req.body);
+  return res.json({ message: "User updated", data });
+}
+
+export async function adminSetUserSuspendedController(req, res) {
+  const data = await adminSetUserSuspended(req.user.id, req.params.userId, req.body.suspended);
+  return res.json({ message: req.body.suspended ? "User suspended" : "User reactivated", data });
 }

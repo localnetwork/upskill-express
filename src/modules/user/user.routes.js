@@ -10,6 +10,8 @@ import {
   friendRequestRespondParamValidator,
   friendRequestTargetParamValidator,
   updateUserValidator,
+  adminUpdateUserValidator,
+  adminSuspendUserValidator,
 } from "./user.validator.js";
 import {
   cancelFriendRequestController,
@@ -18,6 +20,8 @@ import {
   getFriendRequestStatusController,
   listMyDevicesController,
   listUsersController,
+  adminUpdateUserController,
+  adminSetUserSuspendedController,
   listMyActivityController,
   meController,
   removeMyDeviceController,
@@ -119,6 +123,8 @@ router.get(
   }),
   asyncHandler(listUsersController),
 );
+router.patch("/:userId/suspend", authenticate, authorize("ADMIN"), validate(adminSuspendUserValidator), asyncHandler(adminSetUserSuspendedController));
+router.patch("/:userId", authenticate, authorize("ADMIN"), validate(adminUpdateUserValidator), asyncHandler(adminUpdateUserController));
 router.delete("/:userId", authenticate, authorize("ADMIN"), asyncHandler(deleteUserController));
 
 export default router;

@@ -4,6 +4,16 @@ export const reviewCourseValidator = z.object({
   note: z.string().optional(),
 });
 
+export const createRoleValidator = z.object({
+  name: z.string().trim().min(2).max(40),
+  description: z.string().trim().max(255).optional(),
+  permissionIds: z.array(z.string().min(1)).optional(),
+});
+
+export const setRolePermissionsValidator = z.object({
+  permissionIds: z.array(z.string().min(1)),
+});
+
 export const updatePlatformSettingsValidator = z
   .object({
     platformFeePercent: z.number().min(0).max(100).optional(),

@@ -1,4 +1,11 @@
 import {
+  createRole,
+  deleteRole,
+  listPermissions,
+  listRoles,
+  setRolePermissions,
+} from "./admin-roles.service.js";
+import {
   approveCourse,
   getAdminPlatformSettings,
   getAdminActivityAnalytics,
@@ -7,6 +14,31 @@ import {
   rejectCourse,
   updateAdminPlatformSettings,
 } from "./admin.service.js";
+
+export async function listPermissionsController(_req, res) {
+  const data = await listPermissions();
+  return res.json({ message: "Permissions fetched", data });
+}
+
+export async function listRolesController(_req, res) {
+  const data = await listRoles();
+  return res.json({ message: "Roles fetched", data });
+}
+
+export async function createRoleController(req, res) {
+  const data = await createRole(req.body);
+  return res.status(201).json({ message: "Role created", data });
+}
+
+export async function setRolePermissionsController(req, res) {
+  const data = await setRolePermissions(req.params.roleId, req.body.permissionIds);
+  return res.json({ message: "Role permissions updated", data });
+}
+
+export async function deleteRoleController(req, res) {
+  const data = await deleteRole(req.params.roleId);
+  return res.json({ message: "Role deleted", data });
+}
 
 export async function approveCourseController(req, res) {
   const data = await approveCourse(req.user.id, req.params.courseId, req.body.note);

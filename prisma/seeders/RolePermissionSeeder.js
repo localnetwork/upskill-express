@@ -39,8 +39,8 @@ export default class RolePermissionSeeder {
     for (const roleName of roles) {
       await prisma.role.upsert({
         where: { name: roleName },
-        update: {},
-        create: { name: roleName },
+        update: { isSystem: true },
+        create: { name: roleName, isSystem: true },
       });
     }
 

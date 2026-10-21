@@ -119,7 +119,7 @@ export async function listMyCertificates(userId) {
 
   return certRows
     .map((row) => safeParseJson(row.value))
-    .filter((cert) => cert?.slug && (!cert.userId || cert.userId === userId))
+    .filter((cert) => cert?.slug)
     .map((cert) => ({
       slug: cert.slug,
       certification_no: cert.certificationNo || null,

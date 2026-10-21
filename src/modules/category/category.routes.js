@@ -9,6 +9,7 @@ import {
   deleteCategoryController,
   getCategoryController,
   listCategoriesController,
+  suggestCategoryContentController,
   updateCategoryController,
 } from "./category.controller.js";
 import { createCategoryValidator, updateCategoryValidator } from "./category.validator.js";
@@ -33,6 +34,7 @@ router.get(
   }),
   asyncHandler(getCategoryController),
 );
+router.post("/ai-suggest", authenticate, authorize("ADMIN"), asyncHandler(suggestCategoryContentController));
 router.post("/", authenticate, authorize("ADMIN"), validate(createCategoryValidator), asyncHandler(createCategoryController));
 router.patch("/:categoryId", authenticate, authorize("ADMIN"), validate(updateCategoryValidator), asyncHandler(updateCategoryController));
 router.delete("/:categoryId", authenticate, authorize("ADMIN"), asyncHandler(deleteCategoryController));

@@ -1,3 +1,4 @@
+import { suggestCategoryContent } from "./category.ai.js";
 import {
   createCategory,
   deleteCategory,
@@ -5,6 +6,11 @@ import {
   listCategories,
   updateCategory,
 } from "./category.service.js";
+
+export async function suggestCategoryContentController(req, res) {
+  const data = await suggestCategoryContent(req.body);
+  return res.json({ message: "Category content generated", data });
+}
 
 function toLegacyCategory(category) {
   return {

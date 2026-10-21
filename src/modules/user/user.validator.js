@@ -55,3 +55,12 @@ export const friendRequestRespondParamValidator = z.object({
 export const friendRequestRespondBodyValidator = z.object({
   action: z.enum(["ACCEPT", "DECLINE"]),
 });
+
+export const adminUpdateUserValidator = z.object({
+  firstName: z.string().max(80).optional(),
+  lastName: z.string().max(80).optional(),
+  headline: z.string().max(100).optional(),
+  biography: z.string().max(2000).optional(),
+});
+
+export const adminSuspendUserValidator = z.object({ suspended: z.boolean() });

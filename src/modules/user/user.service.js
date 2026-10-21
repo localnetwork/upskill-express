@@ -322,6 +322,42 @@ export async function listUsers(query) {
   );
 }
 
+export async function adminUpdateUser(actorId, userId, payload) {
+  const user = await findById(userId);
+  if (!user || user.deletedAt) throw new ApiError(404, "User not found");
+
+  const data = {};
+  const firstName = payload.firstName ?? payload.firstname;
+  const lastName = payload.lastName ?? payload.lastname;
+  if (firstName !== undefined) data.firstName = firstName.trim() || null;
+  if (lastName !== undefined) data.lastName = lastName.trim() || null;
+  if (payload.headline !== undefined) data.headline = payload.headline.trim() || null;
+  if (payload.biography !== undefined) data.biography = payload.biography.trim() || null;
+
+  const updated = Object.keys(data).length ? await updateById(userId, data) : user;
+  const full = await findById(updated.id);
+  return mapUser(full);
+}
+
+export async function adminSetUserSuspended(actorId, userId, suspended) {
+  if (actorId === userId) throw new ApiError(403, "You cannot suspend your own account");
+
+  const [actor, target] = await Promise.all([findById(actorId), findById(userId)]);
+  if (!target || target.deletedAt) throw new ApiError(404, "User not found");
+
+  const actorRoles = new Set((actor?.roles || []).map((row) => row.role.name));
+  const shared = (target.roles || []).some((row) => actorRoles.has(row.role.name));
+  if (shared) {
+    throw new ApiError(403, "You cannot suspend an account that has the same role as yours");
+  }
+
+  await updateById(userId, {
+    isActive: !suspended,
+    ...(suspended ? { refreshTokenHash: null } : {}),
+  });
+  return mapUser(await findById(userId));
+}
+
 export async function softDeleteUser(userId) {
   const user = await findById(userId);
   if (!user || user.deletedAt) {

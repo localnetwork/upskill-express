@@ -242,7 +242,9 @@ model TrustedDevice {
 
 model Role {
   id          String           @id @default(cuid())
-  name        RoleName         @unique
+  name        String           @unique
+  description String?
+  isSystem    Boolean          @default(false)
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
   users       UserRole[]

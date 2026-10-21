@@ -7,20 +7,36 @@ import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
   activityReportController,
   approveCourseController,
+  createRoleController,
+  deleteRoleController,
   getPlatformSettingsController,
   listAdminCoursesController,
+  listPermissionsController,
+  listRolesController,
   rejectCourseController,
   revenueReportController,
+  setRolePermissionsController,
   updatePlatformSettingsController,
 } from "./admin.controller.js";
 import {
+  createRoleValidator,
   reviewCourseValidator,
+  setRolePermissionsValidator,
   updatePlatformSettingsValidator,
 } from "./admin.validator.js";
 
 const router = Router();
 
 router.use(authenticate, authorize("ADMIN"));
+router.get("/permissions", asyncHandler(listPermissionsController));
+router.get("/roles", asyncHandler(listRolesController));
+router.post("/roles", validate(createRoleValidator), asyncHandler(createRoleController));
+router.put(
+  "/roles/:roleId/permissions",
+  validate(setRolePermissionsValidator),
+  asyncHandler(setRolePermissionsController),
+);
+router.delete("/roles/:roleId", asyncHandler(deleteRoleController));
 router.get(
   "/courses",
   cacheGetResponse({
