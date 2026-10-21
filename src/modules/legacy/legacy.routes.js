@@ -2021,7 +2021,7 @@ router.get("/user/:slug", async (req, res, next) => {
     const certifications = certificateSlugs
       .map((slug) => {
         const cert = certificatePayloadBySlug.get(slug);
-        if (!cert) return null;
+        if (!cert || cert.showOnProfile === false) return null;
         return {
           slug,
           certification_no: cert.certificationNo || null,

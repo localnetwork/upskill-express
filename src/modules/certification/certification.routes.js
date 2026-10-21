@@ -6,9 +6,24 @@ import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import {
   generateCourseCertificateController,
   getCertificateBySlugController,
+  listMyCertificatesController,
+  setCertificateVisibilityController,
 } from "./certification.controller.js";
 
 const router = Router();
+
+router.get(
+  "/me",
+  authenticate,
+  authorize("LEARNER"),
+  asyncHandler(listMyCertificatesController),
+);
+router.patch(
+  "/:slug/visibility",
+  authenticate,
+  authorize("LEARNER"),
+  asyncHandler(setCertificateVisibilityController),
+);
 
 router.get(
   "/:slug",

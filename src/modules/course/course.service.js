@@ -626,6 +626,36 @@ export async function createCourse(userId, payload) {
   return course;
 }
 
+// Recovers answer_markdown from truncated/invalid JSON so users never see raw JSON.
+function extractAnswerMarkdownFromBrokenJson(content) {
+  const raw = String(content || "");
+  const match = raw.match(/"answer_markdown"\s*:\s*"/);
+  if (!match) return "";
+
+  let body = raw.slice(match.index + match[0].length);
+  let end = -1;
+  for (let i = 0; i < body.length; i += 1) {
+    if (body[i] === "\\") {
+      i += 1;
+    } else if (body[i] === '"') {
+      end = i;
+      break;
+    }
+  }
+  if (end >= 0) body = body.slice(0, end);
+  body = body.replace(/\\$/, "");
+
+  try {
+    return JSON.parse(`"${body}"`);
+  } catch (_error) {
+    return body
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, "\\");
+  }
+}
+
 function readJsonFromAiContent(content) {
   const raw = String(content || "").trim();
   if (!raw) return null;
@@ -3849,6 +3879,19 @@ function clipText(value, maxLength) {
     : normalized;
 }
 
+// Like clipText but keeps line breaks so markdown (headings, lists, code) survives.
+function clipMarkdown(value, maxLength) {
+  const normalized = String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!normalized) return "";
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 1)}…`
+    : normalized;
+}
+
 function buildCourseAssistantSuggestedTopics(course) {
   const topics = [];
   const seen = new Set();
@@ -5593,7 +5636,8 @@ export async function askCourseLearningAssistant(userId, slug, payload = {}) {
     "You must ONLY answer questions directly related to the given course context. " +
     "If question is outside scope, do not answer it; return in_scope=false. " +
     "Return ONLY valid JSON with this schema: {\"in_scope\":boolean,\"answer_markdown\":string}. " +
-    "Use concise markdown formatting (short paragraphs, bullets, numbered steps when relevant).";
+    "Use concise markdown formatting (short paragraphs, bullets, numbered steps when relevant). " +
+    "Put a blank line before and after headings, lists and code blocks, and put each list item on its own line.";
 
   let aiResponse;
   try {
@@ -5644,16 +5688,20 @@ export async function askCourseLearningAssistant(userId, slug, payload = {}) {
     );
   }
 
-  const rawReply = clipText(aiResponse?.data?.choices?.[0]?.message?.content, 8000);
-  const parsedReply = readJsonFromAiContent(rawReply) || {};
+  const fullContent = String(aiResponse?.data?.choices?.[0]?.message?.content || "");
+  const parsedReply = readJsonFromAiContent(fullContent) || {};
+  const rawReply = clipMarkdown(fullContent, 8000);
   const hasInScopeFlag =
     typeof parsedReply?.in_scope === "boolean" ||
     parsedReply?.in_scope === "true" ||
     parsedReply?.in_scope === "false";
   const parsedInScope =
     parsedReply?.in_scope === true || parsedReply?.in_scope === "true";
-  const parsedAnswer = clipText(parsedReply?.answer_markdown, 6000);
-  const fallbackReply = clipText(rawReply, 6000);
+  const parsedAnswer = clipMarkdown(parsedReply?.answer_markdown, 6000);
+  const fallbackReply = clipMarkdown(
+    extractAnswerMarkdownFromBrokenJson(fullContent) || rawReply,
+    6000,
+  );
 
   const reply = hasInScopeFlag
     ? parsedInScope

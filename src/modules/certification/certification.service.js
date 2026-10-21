@@ -97,6 +97,68 @@ export async function getCertificateBySlug(slug) {
   return normalizeStoredCertificate(setting.value, { studentName });
 }
 
+export async function listMyCertificates(userId) {
+  const indexRows = await prisma.platformSetting.findMany({
+    where: { key: { startsWith: `${CERTIFICATE_INDEX_KEY_PREFIX}${userId}::` } },
+    select: { value: true },
+  });
+
+  const slugs = Array.from(
+    new Set(
+      indexRows
+        .map((row) => safeParseJson(row.value)?.slug)
+        .filter(Boolean),
+    ),
+  );
+  if (!slugs.length) return [];
+
+  const certRows = await prisma.platformSetting.findMany({
+    where: { key: { in: slugs.map(getCertificateSettingKey) } },
+    select: { value: true },
+  });
+
+  return certRows
+    .map((row) => safeParseJson(row.value))
+    .filter((cert) => cert?.slug && (!cert.userId || cert.userId === userId))
+    .map((cert) => ({
+      slug: cert.slug,
+      certification_no: cert.certificationNo || null,
+      reference_no: cert.referenceNo || null,
+      certification_url: cert.certificationUrl || null,
+      course_title: cert.courseTitle || "Course",
+      instructor_name: cert.instructorName || "",
+      issued_at: cert.issuedAt || null,
+      show_on_profile: cert.showOnProfile !== false,
+    }))
+    .sort(
+      (a, b) =>
+        new Date(b.issued_at || 0).getTime() -
+        new Date(a.issued_at || 0).getTime(),
+    );
+}
+
+export async function setCertificateProfileVisibility(userId, slug, show) {
+  const normalizedSlug = String(slug || "").trim();
+  const key = getCertificateSettingKey(normalizedSlug);
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key },
+    select: { value: true },
+  });
+  const parsed = safeParseJson(setting?.value);
+
+  if (!parsed || parsed.userId !== userId) {
+    throw new ApiError(404, "Certificate not found");
+  }
+
+  const next = { ...parsed, showOnProfile: Boolean(show) };
+  await prisma.platformSetting.update({
+    where: { key },
+    data: { value: JSON.stringify(next) },
+  });
+
+  return { slug: normalizedSlug, show_on_profile: next.showOnProfile };
+}
+
 export async function generateCourseCertificate(userId, courseSlug) {
   const enrollment = await prisma.enrollment.findFirst({
     where: {
