@@ -30,19 +30,17 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "fs": "^0.0.1-security",
+    "glob": "^13.0.6",
     "joi": "^18.2.1",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "nodemon": "^3.1.14",
     "path": "^0.12.7",
+    "prisma": "^5.22.0",
+    "prisma-merge": "^0.2.0",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.3",
     "speakeasy": "^2.0.0",
     "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "glob": "^13.0.6",
-    "prisma": "^5.22.0",
-    "prisma-merge": "^0.2.0"
   }
 }
