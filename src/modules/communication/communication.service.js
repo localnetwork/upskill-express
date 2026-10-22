@@ -3,6 +3,7 @@ import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { createNotification } from "../notification/notification.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import { mapWithConcurrency } from "../../shared/utils/concurrency.js";
 
 const ANNOUNCEMENT_DRAFT_KEY_PREFIX = "communication:announcement-draft:";
 const ANNOUNCEMENT_HISTORY_KEY_PREFIX = "communication:announcement-history:";
@@ -387,27 +388,32 @@ export async function listInstructorAssignments(educatorId) {
     enrollmentCounts.map((row) => [row.courseId, Number(row?._count?._all || 0)]),
   );
 
-  const rows = await Promise.all(
-    assignmentLessons.map(async (lesson) => {
-      const completedCount = await prisma.lessonProgress.count({
-        where: {
-          lessonId: lesson.id,
-          isCompleted: true,
-        },
-      });
-      const enrolledCount = Number(enrolledByCourseId[lesson.courseId] || 0);
-      const pendingCount = Math.max(enrolledCount - completedCount, 0);
-      return {
-        id: lesson.id,
-        title: lesson.title || "Assignment",
-        course: lesson.course,
-        enrolledCount,
-        completedCount,
-        pendingCount,
-        createdAt: lesson.createdAt,
-      };
-    }),
+  const completedRows = await prisma.lessonProgress.groupBy({
+    by: ["lessonId"],
+    where: {
+      lessonId: { in: assignmentLessons.map((lesson) => lesson.id) },
+      isCompleted: true,
+    },
+    _count: { _all: true },
+  });
+  const completedByLessonId = Object.fromEntries(
+    completedRows.map((row) => [row.lessonId, Number(row._count?._all || 0)]),
   );
+
+  const rows = assignmentLessons.map((lesson) => {
+    const completedCount = completedByLessonId[lesson.id] || 0;
+    const enrolledCount = Number(enrolledByCourseId[lesson.courseId] || 0);
+    const pendingCount = Math.max(enrolledCount - completedCount, 0);
+    return {
+      id: lesson.id,
+      title: lesson.title || "Assignment",
+      course: lesson.course,
+      enrolledCount,
+      completedCount,
+      pendingCount,
+      createdAt: lesson.createdAt,
+    };
+  });
 
   return rows;
 }
@@ -628,8 +634,7 @@ export async function sendAnnouncement(educatorId, payload) {
 
   const uniqueUserIds = Array.from(new Set(enrollments.map((row) => row.userId)));
 
-  await Promise.all(
-    uniqueUserIds.map((userId) =>
+  await mapWithConcurrency(uniqueUserIds, (userId) =>
       createNotification({
         userId,
         type: "SYSTEM",

@@ -3,6 +3,7 @@ import { ApiError } from "../../shared/utils/ApiError.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { emitChatToUser } from "../../shared/realtime/socket.js";
 import { getOnlineStatusForUsers } from "../../shared/realtime/socket.js";
+import { mapWithConcurrency } from "../../shared/utils/concurrency.js";
 
 function assertChatPrismaClientReady() {
   if (
@@ -321,8 +322,9 @@ export async function listConversations(userId, query = {}) {
       resolveMediaPathsById(backgroundMediaIds),
     ]);
 
-  const data = await Promise.all(
-    rows.map(async (conversation) => {
+  const data = await mapWithConcurrency(
+    rows,
+    async (conversation) => {
       const me = conversation.participants.find((item) => item.userId === userId);
       const others = conversation.participants
         .filter((item) => item.userId !== userId)
@@ -385,7 +387,7 @@ export async function listConversations(userId, query = {}) {
           : null,
         unreadCount,
       };
-    }),
+    },
   );
 
   const totalUnread = data.reduce(
@@ -946,10 +948,8 @@ export async function getChatUnreadCount(userId) {
     },
   });
 
-  const counts = await Promise.all(
-    memberships.map((item) =>
-      computeUnreadForConversation(item.conversationId, userId, item.lastReadAt),
-    ),
+  const counts = await mapWithConcurrency(memberships, (item) =>
+    computeUnreadForConversation(item.conversationId, userId, item.lastReadAt),
   );
 
   return {
