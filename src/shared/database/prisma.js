@@ -36,14 +36,34 @@ function validateDatabaseConfig() {
 
 validateDatabaseConfig();
 
+// Prisma's default pool is (cpu * 2 + 1) connections; cap it explicitly so the
+// app can't exhaust the hosted database, and wait longer before timing out.
+function withPoolParams(url) {
+  if (!url) return url;
+  const parsed = new URL(url);
+  if (!parsed.searchParams.has("connection_limit")) {
+    parsed.searchParams.set(
+      "connection_limit",
+      process.env.PRISMA_CONNECTION_LIMIT || "10",
+    );
+  }
+  if (!parsed.searchParams.has("pool_timeout")) {
+    parsed.searchParams.set(
+      "pool_timeout",
+      process.env.PRISMA_POOL_TIMEOUT || "30",
+    );
+  }
+  return parsed.toString();
+}
+
 const globalForPrisma = globalThis;
 
 export const prisma =
   globalForPrisma.prisma ||
   new PrismaClient({
+    datasourceUrl: withPoolParams(process.env.DATABASE_URL),
     log: ["error", "warn"],
   }).$extends(withAccelerate());
 
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
-}
+// Reuse one client across nodemon/hot reloads and in production too.
+globalForPrisma.prisma = prisma;

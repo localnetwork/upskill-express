@@ -6,6 +6,7 @@ import { createNotification } from "../notification/notification.service.js";
 import { env } from "../../shared/config/env.js";
 import { getPlatformCommerceSettings } from "../platform-settings/platform-settings.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
+import { mapWithConcurrency } from "../../shared/utils/concurrency.js";
 
 const MIN_PAYOUT_AMOUNT_PHP = 500;
 const PAYOUT_REVIEW_ESTIMATE_DAYS = 3;
@@ -1302,7 +1303,7 @@ export async function listMyPayouts(educatorId, query) {
     }),
     prisma.payoutRequest.count({ where }),
   ]);
-  const refreshedRows = await Promise.all(rows.map(refreshExecutedPayoutStatus));
+  const refreshedRows = await mapWithConcurrency(rows, refreshExecutedPayoutStatus);
   return toPagedResult(refreshedRows, total, page, limit);
 }
 
@@ -1324,7 +1325,7 @@ export async function listAllPayouts(query) {
     }),
     prisma.payoutRequest.count({ where }),
   ]);
-  const refreshedRows = await Promise.all(rows.map(refreshExecutedPayoutStatus));
+  const refreshedRows = await mapWithConcurrency(rows, refreshExecutedPayoutStatus);
   return toPagedResult(refreshedRows, total, page, limit);
 }
 

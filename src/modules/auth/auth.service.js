@@ -1,6 +1,11 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { signAccessToken, signPreAuthToken, signRefreshToken, verifyRefreshToken } from "../../shared/utils/jwt.js";
+import { sendEmail } from "../../shared/mail/mailer.js";
+import {
+  buildPasswordResetEmail,
+  buildVerificationEmail,
+} from "../../shared/mail/templates.js";
 import { comparePassword, compareToken, hashPassword, hashToken, randomToken } from "../../shared/utils/security.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { createUser, findUserByEmail, findUserById, findUserByUsername, updateUser } from "./auth.repository.js";
@@ -253,11 +258,16 @@ export async function register(payload) {
     dedupeWindowSeconds: 5,
   });
 
+  const verificationEmail = buildVerificationEmail({
+    firstName: user.firstName,
+    token: verificationToken,
+  });
+  void sendEmail({ to: user.email, ...verificationEmail });
+
   return {
     accessToken,
     refreshToken,
     user: mapAuthUser(user, [roleName]),
-    verificationToken,
   };
 }
 
@@ -375,6 +385,14 @@ export async function googleAuth(payload, context = {}) {
       context.req,
       payload?.locationLabel,
     );
+    if (!existingUser.emailVerifiedAt) {
+      // Google already verified this address.
+      await updateUser(existingUser.id, {
+        verificationToken: null,
+        emailVerifiedAt: new Date(),
+      });
+      existingUser.emailVerifiedAt = new Date();
+    }
     const trustedDevice = await resolveTrustedDeviceForLogin(
       existingUser.id,
       payload?.trustedDeviceToken,
@@ -511,7 +529,7 @@ export async function refreshTokens(refreshToken) {
 
 export async function forgotPassword(email) {
   const user = await findUserByEmail(email);
-  if (!user) {
+  if (!user || user.deletedAt) {
     return { success: true };
   }
   const token = randomToken(24);
@@ -519,7 +537,12 @@ export async function forgotPassword(email) {
     resetPasswordToken: token,
     resetPasswordTokenExp: new Date(Date.now() + 1000 * 60 * 30),
   });
-  return { token };
+  const resetEmail = buildPasswordResetEmail({
+    firstName: user.firstName,
+    token,
+  });
+  await sendEmail({ to: user.email, ...resetEmail });
+  return { success: true };
 }
 
 export async function resetPassword(token, password) {

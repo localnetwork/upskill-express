@@ -50,6 +50,12 @@ export const env = {
     "http://localhost:3000"
   ).replace(/\/$/, ""),
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
+  emailUser: process.env.EMAIL_USER || "",
+  emailPassword: process.env.EMAIL_PASSWORD || "",
+  emailHost: process.env.EMAIL_HOST || "",
+  emailPort: Number(process.env.EMAIL_PORT) || 465,
+  emailService: process.env.EMAIL_SERVICES || "",
+  emailFromName: process.env.EMAIL_FROM_NAME || "Upskill",
   uploadDir: process.env.UPLOAD_DIR || "uploads",
   cfAccessKeyId: process.env.CF_ACCESS_KEY_ID || "",
   cfAccessSecret: process.env.CF_ACCESS_SECRET || "",

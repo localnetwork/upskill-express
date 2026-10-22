@@ -657,7 +657,6 @@ export async function sendAnnouncement(educatorId, payload) {
           },
         },
       }),
-    ),
   );
   const sentAt = new Date();
   await appendAnnouncementHistory(educatorId, {

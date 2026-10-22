@@ -22,6 +22,29 @@ import {
   emitCheckoutStatusToUser,
   emitNotificationToUser,
 } from "../../shared/realtime/socket.js";
+import { sendEmail } from "../../shared/mail/mailer.js";
+import { buildReceiptEmail } from "../../shared/mail/templates.js";
+
+async function sendOrderReceiptEmail(order, userId) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true },
+    });
+    if (!user?.email) return;
+    const receipt = buildReceiptEmail({
+      firstName: user.firstName,
+      order,
+      paidAt: new Date(),
+    });
+    await sendEmail({ to: user.email, ...receipt });
+  } catch (error) {
+    console.error("[mail] Failed to send order receipt", {
+      orderId: order?.id,
+      message: error?.message,
+    });
+  }
+}
 
 const DEFAULT_CURRENCY = "PHP";
 const appBaseUrl = env.frontendUrl.replace(/\/$/, "");
@@ -319,6 +342,7 @@ async function finalizeCapturedPaymentByProviderOrderId(
       message: `Order ${order.id} has been paid and enrollments are active.`,
       metadata: { orderId: order.id },
     });
+    void sendOrderReceiptEmail(order, result.userId);
   }
 
   emitCheckoutStatusToUser(result.userId, {

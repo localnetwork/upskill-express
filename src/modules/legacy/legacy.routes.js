@@ -800,6 +800,9 @@ function normalizeCodingStepsForLanguage(asset, language) {
         title: String(item?.title || `Step ${index + 1}`),
         instruction: String(item?.instruction || item?.instructions || ""),
         starterCode: String(item?.starter_code || item?.starterCode || ""),
+        hints: Array.isArray(item?.hints)
+          ? item.hints.map((hint) => String(hint || "").trim()).filter(Boolean)
+          : [],
         validators: fallbackValidators,
       };
     })

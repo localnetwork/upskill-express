@@ -10,6 +10,7 @@ import { addToCart, removeFromCart } from "../cart/cart.service.js";
 import { env } from "../../shared/config/env.js";
 import { attachAICoverImage } from "./course-cover-image.service.js";
 import { getLessonAccessMapForEnrollment } from "../progress/lesson-access.service.js";
+import { buildAICodingExercise } from "./course-coding-exercise.service.js";
 import {
   buildCloudflareEmbedUrlFromPlaybackUrl,
 } from "../../shared/storage/cloudflare-stream.js";
@@ -740,43 +741,6 @@ function buildDefaultQuizQuestions({
   ];
 }
 
-function buildDefaultCodingStarterCode({
-  courseTitle,
-  sectionTitle,
-  lessonTitle,
-}) {
-  const safeCourseTitle = trimForDb(courseTitle, 120) || "this course";
-  const safeSectionTitle = trimForDb(sectionTitle, 120) || "this section";
-  const safeLessonTitle = trimForDb(lessonTitle, 120) || "this lesson";
-
-  return {
-    languages: ["javascript"],
-    hints: [
-      "Start with a minimal working solution, then refactor.",
-      "Test each step before moving to the next one.",
-    ],
-    step_challenges: {
-      javascript: [
-        {
-          id: `step-${Date.now()}-1`,
-          title: "Create a baseline solution",
-          step_number: 1,
-          instruction: `Write a basic JavaScript snippet for "${safeLessonTitle}" from ${safeSectionTitle} in ${safeCourseTitle}.`,
-          starter_code:
-            "function solve() {\n  // TODO: implement the lesson objective\n  return 'done';\n}\n\nconsole.log(solve());",
-          validation_mode: "CODE_INCLUDES",
-          expected_output: "function solve",
-          input: "",
-          comparison_mode: "INCLUDES",
-        },
-      ],
-    },
-    metadata: {
-      status: "Draft",
-    },
-  };
-}
-
 function hasCodingStepChallenges(rawStarterCode) {
   const parsed = safeParseJson(rawStarterCode);
   const stepChallenges =
@@ -789,9 +753,10 @@ function hasCodingStepChallenges(rawStarterCode) {
   );
 }
 
-function buildAIGeneratedLessonTypeFields({
+async function buildAIGeneratedLessonTypeFields({
   lessonType,
   courseTitle,
+  courseDescription,
   sectionTitle,
   lessonTitle,
   lessonDescription,
@@ -810,17 +775,19 @@ function buildAIGeneratedLessonTypeFields({
   }
 
   if (lessonType === "CODING_EXERCISE") {
+    const exercise = await buildAICodingExercise({
+      courseTitle,
+      courseDescription,
+      sectionTitle,
+      lessonTitle,
+      lessonDescription,
+    });
     return {
       codingInstructions:
+        trimForDb(exercise.instructions, 5000) ||
         trimForDb(lessonDescription, 5000) ||
         `Implement the objective of "${trimForDb(lessonTitle, 180) || "this coding lesson"}".`,
-      codingStarterCode: JSON.stringify(
-        buildDefaultCodingStarterCode({
-          courseTitle,
-          sectionTitle,
-          lessonTitle,
-        }),
-      ),
+      codingStarterCode: JSON.stringify(exercise.asset),
     };
   }
 
@@ -1636,13 +1603,14 @@ export async function createCourseAIDraft(userId, payload, options = {}) {
             sectionPayload.title,
             course.title,
           ),
-          ...buildAIGeneratedLessonTypeFields({
+          ...(await buildAIGeneratedLessonTypeFields({
             lessonType,
             courseTitle: course.title,
+            courseDescription: course.description,
             sectionTitle: sectionPayload.title,
             lessonTitle: resolvedLessonTitle,
             lessonDescription: lessonPayload.description,
-          }),
+          })),
           assignmentText:
             lessonType === "RESOURCE" || lessonType === "ASSIGNMENT"
               ? resolveCurriculumDescriptionText(
@@ -2121,11 +2089,9 @@ export async function listCourses(query, user) {
 
   const where = {
     deletedAt: null,
-    workflowStatus: user?.roles?.includes("ADMIN")
-      ? undefined
-      : query.includePending === "true" && user?.roles?.includes("EDUCATOR")
-        ? undefined
-        : "PUBLISHED",
+    isPublished: true,
+    // Publishing requires prior approval, so PUBLISHED implies approved.
+    workflowStatus: "PUBLISHED",
     AND: [
       searchTerm
         ? {
@@ -6017,13 +5983,14 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
           title: uniqueLessonTitle,
           description: lessonDescription || null,
           type,
-          ...buildAIGeneratedLessonTypeFields({
+          ...(await buildAIGeneratedLessonTypeFields({
             lessonType: type,
             courseTitle: course.title,
+            courseDescription: course.description,
             sectionTitle: section.title,
             lessonTitle: uniqueLessonTitle,
             lessonDescription,
-          }),
+          })),
           assignmentText:
             type === "RESOURCE" || type === "ASSIGNMENT"
               ? lessonDescription || null
@@ -6446,7 +6413,7 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
                 type: nextType,
                 ...(nextType === "QUIZ" &&
                 normalizeQuizQuestions(lesson.quizQuestions).length === 0
-                  ? buildAIGeneratedLessonTypeFields({
+                  ? await buildAIGeneratedLessonTypeFields({
                       lessonType: "QUIZ",
                       courseTitle: course.title,
                       sectionTitle: ownerSection?.title || "",
@@ -6456,9 +6423,10 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
                   : {}),
                 ...(nextType === "CODING_EXERCISE" &&
                 !hasCodingStepChallenges(lesson.codingStarterCode)
-                  ? buildAIGeneratedLessonTypeFields({
+                  ? await buildAIGeneratedLessonTypeFields({
                       lessonType: "CODING_EXERCISE",
                       courseTitle: course.title,
+                      courseDescription: course.description,
                       sectionTitle: ownerSection?.title || "",
                       lessonTitle: nextTitle,
                       lessonDescription: nextDescription,
@@ -6529,7 +6497,7 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
             type: nextType,
             ...(nextType === "QUIZ" &&
             normalizeQuizQuestions(lesson.quizQuestions).length === 0
-              ? buildAIGeneratedLessonTypeFields({
+              ? await buildAIGeneratedLessonTypeFields({
                   lessonType: "QUIZ",
                   courseTitle: course.title,
                   sectionTitle: ownerSection?.title || "",
@@ -6539,9 +6507,10 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
               : {}),
             ...(nextType === "CODING_EXERCISE" &&
             !hasCodingStepChallenges(lesson.codingStarterCode)
-              ? buildAIGeneratedLessonTypeFields({
+              ? await buildAIGeneratedLessonTypeFields({
                   lessonType: "CODING_EXERCISE",
                   courseTitle: course.title,
+                  courseDescription: course.description,
                   sectionTitle: ownerSection?.title || "",
                   lessonTitle: nextTitle,
                   lessonDescription: nextDescription,
@@ -6719,7 +6688,7 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
         type: nextType,
         ...(nextType === "QUIZ" &&
         normalizeQuizQuestions(selectedLesson.quizQuestions).length === 0
-          ? buildAIGeneratedLessonTypeFields({
+          ? await buildAIGeneratedLessonTypeFields({
               lessonType: "QUIZ",
               courseTitle: course.title,
               sectionTitle: selectedSection?.title || "",
@@ -6729,9 +6698,10 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
           : {}),
         ...(nextType === "CODING_EXERCISE" &&
         !hasCodingStepChallenges(selectedLesson.codingStarterCode)
-          ? buildAIGeneratedLessonTypeFields({
+          ? await buildAIGeneratedLessonTypeFields({
               lessonType: "CODING_EXERCISE",
               courseTitle: course.title,
+              courseDescription: course.description,
               sectionTitle: selectedSection?.title || "",
               lessonTitle: nextTitle,
               lessonDescription: nextDescription,
