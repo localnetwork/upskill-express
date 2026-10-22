@@ -1,5 +1,7 @@
 import crypto from "crypto";
+import axios from "axios";
 import { prisma } from "../../shared/database/prisma.js";
+import { createNotification } from "../notification/notification.service.js";
 import { randomToken } from "../../shared/utils/security.js";
 
 const MAX_ACTIVE_TRUSTED_DEVICES = 20;
@@ -111,6 +113,79 @@ export function resolveDeviceLocationLabel(req, clientLocationLabel) {
 
 function computeTokenDigest(token) {
   return crypto.createHash("sha256").update(String(token)).digest("hex");
+}
+
+function isPrivateIp(ip) {
+  const value = String(ip || "").toLowerCase();
+  return (
+    !value ||
+    value === "unknown" ||
+    value === "::1" ||
+    value === "localhost" ||
+    value.startsWith("127.") ||
+    value.startsWith("10.") ||
+    value.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(value) ||
+    value.startsWith("fc") ||
+    value.startsWith("fe80")
+  );
+}
+
+// Best-effort lookup; sends only the IP to ipwho.is and never throws.
+async function lookupIpGeolocation(ipAddress) {
+  const ip = String(ipAddress || "").replace(/^::ffff:/, "");
+  if (isPrivateIp(ip)) return null;
+  try {
+    const { data } = await axios.get(
+      `https://ipwho.is/${encodeURIComponent(ip)}`,
+      { timeout: 2500 },
+    );
+    if (!data?.success) return null;
+    return {
+      city: data.city || null,
+      region: data.region || null,
+      country: data.country || null,
+      latitude: Number.isFinite(Number(data.latitude)) ? Number(data.latitude) : null,
+      longitude: Number.isFinite(Number(data.longitude)) ? Number(data.longitude) : null,
+      isp: data.connection?.isp || null,
+      timezone: data.timezone?.id || null,
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+export async function notifyNewDeviceLogin(
+  userId,
+  { deviceName, locationLabel, ipAddress, provider, userAgent },
+) {
+  const geo = await lookupIpGeolocation(ipAddress);
+  const geoLabel = geo
+    ? [geo.city, geo.region, geo.country].filter(Boolean).join(", ")
+    : "";
+  const resolvedLabel = geoLabel || locationLabel || null;
+
+  await createNotification({
+    userId,
+    type: "SYSTEM",
+    title: "New device login detected",
+    message: `A new device signed in to your account from ${resolvedLabel || ipAddress || "an unknown location"}.`,
+    metadata: {
+      notificationKind: "SECURITY_NEW_DEVICE_LOGIN",
+      provider: provider || "password",
+      deviceName: deviceName || "Unknown device",
+      userAgent: userAgent ? String(userAgent).slice(0, 300) : null,
+      locationLabel: resolvedLabel,
+      ipAddress: ipAddress || null,
+      city: geo?.city || null,
+      region: geo?.region || null,
+      country: geo?.country || null,
+      latitude: geo?.latitude ?? null,
+      longitude: geo?.longitude ?? null,
+      isp: geo?.isp || null,
+      timezone: geo?.timezone || null,
+    },
+  });
 }
 
 function mapTrustedDevice(device) {

@@ -4,6 +4,7 @@ import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import {
+  downloadMyOrderInvoiceController,
   getMyOrderController,
   listMyOrdersController,
 } from "./order.controller.js";
@@ -20,6 +21,10 @@ router.get(
     tags: ["orders"],
   }),
   asyncHandler(listMyOrdersController),
+);
+router.get(
+  "/:orderId/invoice",
+  asyncHandler(downloadMyOrderInvoiceController),
 );
 router.get(
   "/:orderId",

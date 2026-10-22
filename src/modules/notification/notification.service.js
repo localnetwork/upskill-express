@@ -2,6 +2,75 @@ import { prisma } from "../../shared/database/prisma.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { emitNotificationToUser } from "../../shared/realtime/socket.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
+import { getUserProfilePicture } from "../user/user.service.js";
+import { getMyOrder } from "../order/order.service.js";
+
+const PERSON_KEYS = ["requester", "responder"];
+
+async function enrichNotifications(userId, rows, { withOrder = false } = {}) {
+  const personIds = new Set();
+  for (const row of rows) {
+    for (const key of PERSON_KEYS) {
+      const id = row.metadata?.[key]?.id;
+      if (id) personIds.add(id);
+    }
+  }
+
+  const pictures = new Map();
+  await Promise.all(
+    Array.from(personIds).map(async (id) => {
+      try {
+        const picture = await getUserProfilePicture(id);
+        if (picture?.path) pictures.set(id, picture.path);
+      } catch (_error) {}
+    }),
+  );
+
+  return Promise.all(
+    rows.map(async (row) => {
+      if (!row.metadata || typeof row.metadata !== "object") return row;
+      const metadata = { ...row.metadata };
+      for (const key of PERSON_KEYS) {
+        if (metadata[key]?.id) {
+          metadata[key] = {
+            ...metadata[key],
+            picture: pictures.get(metadata[key].id) || null,
+          };
+        }
+      }
+
+      if (withOrder && metadata.orderId) {
+        try {
+          const order = await getMyOrder(userId, metadata.orderId);
+          metadata.order = {
+            id: order.id,
+            status: order.status,
+            currency: order.currency,
+            subtotalAmount: order.subtotalAmount,
+            discountAmount: order.discountAmount,
+            taxAmount: order.taxAmount,
+            totalAmount: order.totalAmount,
+            paymentMethod: order.paymentMethod,
+            createdAt: order.createdAt,
+            items: order.items.map((item) => ({
+              id: item.id,
+              totalAmount: item.totalAmount,
+              title: item.course?.title,
+              slug: item.course?.slug,
+              image: item.course?.cover_image?.path || null,
+              instructor:
+                `${item.course?.educator?.firstName || ""} ${item.course?.educator?.lastName || ""}`.trim() ||
+                item.course?.educator?.username ||
+                "",
+            })),
+          };
+        } catch (_error) {}
+      }
+
+      return { ...row, metadata };
+    }),
+  );
+}
 
 export async function createNotification(payload) {
   const notification = await prisma.notification.create({
@@ -74,7 +143,7 @@ export async function listMyNotifications(userId, query) {
     }),
     prisma.notification.count({ where }),
   ]);
-  return toPagedResult(rows, total, page, limit);
+  return toPagedResult(await enrichNotifications(userId, rows), total, page, limit);
 }
 
 export async function markAsRead(userId, notificationId) {
@@ -96,5 +165,8 @@ export async function getMyNotification(userId, notificationId) {
     throw new ApiError(404, "Notification not found");
   }
 
-  return notification;
+  const [enriched] = await enrichNotifications(userId, [notification], {
+    withOrder: true,
+  });
+  return enriched;
 }

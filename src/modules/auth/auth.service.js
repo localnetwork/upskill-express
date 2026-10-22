@@ -17,28 +17,13 @@ import {
   buildDeviceName,
   getRequestIpAddress,
   getRequestUserAgent,
+  notifyNewDeviceLogin,
   registerTrustedDevice,
   resolveDeviceLocationLabel,
   resolveTrustedDeviceForLogin,
 } from "./trusted-device.service.js";
 
 const USER_PICTURE_KEY_PREFIX = "profile_picture::";
-
-async function notifyNewDeviceLogin(userId, { deviceName, locationLabel, ipAddress, provider }) {
-  await createNotification({
-    userId,
-    type: "SYSTEM",
-    title: "New device login detected",
-    message: `A new device signed in to your account from ${locationLabel || ipAddress || "an unknown location"}.`,
-    metadata: {
-      notificationKind: "SECURITY_NEW_DEVICE_LOGIN",
-      provider: provider || "password",
-      deviceName: deviceName || "Unknown device",
-      locationLabel: locationLabel || null,
-      ipAddress: ipAddress || null,
-    },
-  });
-}
 
 function getRoles(user) {
   return (user.roles || []).map((item) => item.role.name);
@@ -333,6 +318,7 @@ export async function login(payload, context = {}) {
       deviceName,
       locationLabel: requestLocationLabel,
       ipAddress: requestIpAddress,
+      userAgent: requestUserAgent,
       provider: "password",
     });
   }
@@ -425,6 +411,7 @@ export async function googleAuth(payload, context = {}) {
         deviceName,
         locationLabel: requestLocationLabel,
         ipAddress: requestIpAddress,
+        userAgent: requestUserAgent,
         provider: "google",
       });
     }

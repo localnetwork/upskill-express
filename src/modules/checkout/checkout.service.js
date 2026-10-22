@@ -24,6 +24,7 @@ import {
 } from "../../shared/realtime/socket.js";
 import { sendEmail } from "../../shared/mail/mailer.js";
 import { buildReceiptEmail } from "../../shared/mail/templates.js";
+import { resolvePaymentMethodLabel } from "../order/order.service.js";
 
 async function sendOrderReceiptEmail(order, userId) {
   try {
@@ -32,9 +33,16 @@ async function sendOrderReceiptEmail(order, userId) {
       select: { email: true, firstName: true },
     });
     if (!user?.email) return;
+    const payment = await prisma.payment.findUnique({
+      where: { orderId: order.id },
+      select: { provider: true, rawResponse: true },
+    });
     const receipt = buildReceiptEmail({
       firstName: user.firstName,
-      order,
+      order: {
+        ...order,
+        paymentMethod: resolvePaymentMethodLabel(payment),
+      },
       paidAt: new Date(),
     });
     await sendEmail({ to: user.email, ...receipt });

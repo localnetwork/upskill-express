@@ -2138,11 +2138,25 @@ export async function listCourses(query, user) {
       ? [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }]
       : { createdAt: "desc" };
 
-  const [rows, total] = await Promise.all([
-    prisma.course.findMany({
-      where,
+  const isTopRated = sort === "top_rated" || sort === "top-rated";
+  let topRatedIds = null;
+  if (isTopRated) {
+    const ratingRows = await prisma.review.groupBy({
+      by: ["courseId"],
+      where: { course: where },
+      _avg: { rating: true },
+      _count: { rating: true },
+      orderBy: [{ _avg: { rating: "desc" } }, { _count: { rating: "desc" } }],
       skip,
       take: limit,
+    });
+    topRatedIds = ratingRows.map((row) => row.courseId);
+  }
+
+  const [rawRows, total] = await Promise.all([
+    prisma.course.findMany({
+      where: topRatedIds ? { AND: [where, { id: { in: topRatedIds } }] } : where,
+      ...(topRatedIds ? {} : { skip, take: limit }),
       include: {
         educator: {
           select: {
@@ -2175,6 +2189,9 @@ export async function listCourses(query, user) {
     }),
     prisma.course.count({ where }),
   ]);
+  const rows = topRatedIds
+    ? topRatedIds.map((id) => rawRows.find((row) => row.id === id)).filter(Boolean)
+    : rawRows;
   const courseIds = rows.map((row) => row.id);
   const ratingsByCourseId = new Map();
 

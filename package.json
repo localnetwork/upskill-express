@@ -37,6 +37,7 @@
     "nodemailer": "^10.2.0",
     "nodemon": "^3.1.14",
     "path": "^0.12.7",
+    "pdfkit": "^0.20.2",
     "prisma": "^5.22.0",
     "prisma-merge": "^0.2.0",
     "qrcode": "^1.5.4",

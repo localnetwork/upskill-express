@@ -189,7 +189,7 @@ function safeParseJson(value) {
   }
 }
 
-async function getUserProfilePicture(userId) {
+export async function getUserProfilePicture(userId) {
   const setting = await prisma.platformSetting.findUnique({
     where: { key: getUserPictureSettingKey(userId) },
     select: { value: true },

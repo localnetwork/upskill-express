@@ -113,7 +113,7 @@ const PAYMENT_METHOD_LABELS = {
   PAYPAL: "PayPal",
 };
 
-function resolvePaymentMethodLabel(payment) {
+export function resolvePaymentMethodLabel(payment) {
   if (!payment) return null;
   if (payment.provider !== "XENDIT") return PAYMENT_METHOD_LABELS.PAYPAL;
   const raw = payment.rawResponse && typeof payment.rawResponse === "object"

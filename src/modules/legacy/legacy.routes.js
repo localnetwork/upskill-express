@@ -51,6 +51,7 @@ import {
   hasActiveTrustedDeviceByIdentifier,
   getRequestIpAddress,
   getRequestUserAgent,
+  notifyNewDeviceLogin,
   registerTrustedDevice,
   resolveDeviceLocationLabel,
 } from "../auth/trusted-device.service.js";
@@ -125,25 +126,6 @@ function toBoolean(value, fallback = false) {
   if (typeof value === "boolean") return value;
   const normalized = String(value).trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";
-}
-
-async function notifyNewDeviceLogin(
-  userId,
-  { deviceName, locationLabel, ipAddress, provider },
-) {
-  await createNotification({
-    userId,
-    type: "SYSTEM",
-    title: "New device login detected",
-    message: `A new device signed in to your account from ${locationLabel || ipAddress || "an unknown location"}.`,
-    metadata: {
-      notificationKind: "SECURITY_NEW_DEVICE_LOGIN",
-      provider: provider || "password",
-      deviceName: deviceName || "Unknown device",
-      locationLabel: locationLabel || null,
-      ipAddress: ipAddress || null,
-    },
-  });
 }
 
 async function findUserWithRolesById(id) {
@@ -4175,6 +4157,7 @@ router.post("/verify-2fa", async (req, res, next) => {
         deviceName,
         locationLabel: requestLocationLabel,
         ipAddress: requestIpAddress,
+        userAgent: requestUserAgent,
         provider: "2fa_totp",
       });
     }
@@ -4330,6 +4313,7 @@ router.post("/verify-backup-code", async (req, res, next) => {
         deviceName,
         locationLabel: requestLocationLabel,
         ipAddress: requestIpAddress,
+        userAgent: requestUserAgent,
         provider: "2fa_backup_code",
       });
     }
