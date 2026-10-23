@@ -1,6 +1,8 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { createNotification } from "../notification/notification.service.js";
+import { sendEmail } from "../../shared/mail/mailer.js";
+import { buildCoursePublishedEmail } from "../../shared/mail/templates.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { getAdminActivityReport } from "../analytics/analytics.service.js";
 import {
@@ -67,23 +69,38 @@ export async function approveCourse(adminId, courseId, note) {
   const updated = await prisma.course.update({
     where: { id: courseId },
     data: {
-      workflowStatus: "APPROVED",
+      workflowStatus: "PUBLISHED",
+      isPublished: true,
       approvedById: adminId,
       approvedAt: new Date(),
       rejectedAt: null,
       rejectedReason: null,
+    },
+    include: {
+      educator: { select: { email: true, firstName: true } },
     },
   });
 
   await createNotification({
     userId: updated.educatorId,
     type: "COURSE_APPROVAL",
-    title: "Course approved",
-    message: `Your course "${updated.title}" is approved.`,
-    metadata: { courseId: updated.id, note: note || null },
+    title: "Course approved and published",
+    message: `Your course "${updated.title}" is approved and now live.`,
+    metadata: { courseId: updated.id, slug: updated.slug, note: note || null },
   });
 
-  return updated;
+  if (updated.educator?.email) {
+    const email = buildCoursePublishedEmail({
+      firstName: updated.educator.firstName,
+      courseTitle: updated.title,
+      courseSlug: updated.slug,
+      note,
+    });
+    await sendEmail({ to: updated.educator.email, ...email });
+  }
+
+  const { educator: _educator, ...publishedCourse } = updated;
+  return publishedCourse;
 }
 
 export async function rejectCourse(adminId, courseId, note) {

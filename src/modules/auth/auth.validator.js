@@ -2,7 +2,15 @@ import { z } from "zod";
 import { createdUserValidator } from "../user/user.validator.js";
 
 export const registerValidator = createdUserValidator.extend({
-  username: z.string().min(3).max(40),
+  username: z
+    .string()
+    .trim()
+    .min(3, "Username must be at least 3 characters")
+    .max(40, "Username must be at most 40 characters")
+    .regex(
+      /^[a-zA-Z0-9._-]+$/,
+      "Use only letters, numbers, dots, underscores and hyphens",
+    ),
   role: z.string().optional(),
 });
 

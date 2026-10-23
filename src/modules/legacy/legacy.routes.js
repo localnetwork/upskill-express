@@ -36,6 +36,19 @@ import {
   triggerCloudflareAutoCaption,
   uploadVideoToCloudflareStream,
 } from "../../shared/storage/cloudflare-stream.js";
+import { deleteStreamVideosForLessons } from "../../shared/storage/stream-cleanup.js";
+import {
+  buildBunnyEmbedUrlFromPlaybackUrl,
+  buildBunnyPlaybackUrl,
+  buildBunnySignedEmbedUrl,
+  buildBunnyTusHeaders,
+  createBunnyTusUpload,
+  deleteBunnyStreamVideo,
+  extractBunnyVideoIdFromPlaybackUrl,
+  isBunnyStreamEnabled,
+  triggerBunnyAutoCaption,
+  uploadVideoToBunnyStream,
+} from "../../shared/storage/bunny-stream.js";
 import { updateLessonProgress } from "../progress/progress.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { createNotification } from "../notification/notification.service.js";
@@ -75,14 +88,43 @@ const JUDGE0_LANGUAGE_IDS = {
   php: 68,
   go: 60,
   csharp: 51,
+  c: 50,
+  cpp: 54,
+  ruby: 72,
+  rust: 73,
+  kotlin: 78,
+  swift: 83,
+  sql: 82,
 };
 
 function mapVideoPlaybackToEmbedUrl(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  const embedUrl = buildCloudflareEmbedUrlFromPlaybackUrl(raw);
+  const embedUrl =
+    buildBunnyEmbedUrlFromPlaybackUrl(raw) ||
+    buildCloudflareEmbedUrlFromPlaybackUrl(raw);
   return embedUrl || raw;
 }
+async function getCourseCaptionLanguage(courseId) {
+  const course = await prisma.course.findUnique({
+    where: { id: courseId },
+    select: { language: true },
+  });
+  return course?.language || "";
+}
+
+const isBunnyUploadRecord = (record) =>
+  /bunnycdn\.com/i.test(String(record?.uploadUrl || ""));
+
+async function deleteStreamVideoByUploadRecord(record) {
+  if (!record?.providerVideoId) return;
+  if (isBunnyUploadRecord(record)) {
+    await deleteBunnyStreamVideo(record.providerVideoId).catch(() => {});
+  } else {
+    await deleteCloudflareStreamVideo(record.providerVideoId).catch(() => {});
+  }
+}
+
 const USER_PICTURE_KEY_PREFIX = "profile_picture::";
 
 function getUserPictureSettingKey(userId) {
@@ -2567,6 +2609,7 @@ router.delete(
         req.user.id,
         req.params.sectionId,
       );
+      await deleteStreamVideosForLessons({ sectionId: section.id });
       await prisma.courseSection.delete({ where: { id: section.id } });
       return res.json({ success: true });
     } catch (error) {
@@ -2873,6 +2916,7 @@ router.delete(
         req.user.id,
         req.params.lessonId,
       );
+      await deleteStreamVideosForLessons({ id: lesson.id });
       await prisma.lesson.delete({ where: { id: lesson.id } });
       return res.json({ success: true });
     } catch (error) {
@@ -3504,6 +3548,12 @@ router.post(
         req.user.id,
         req.body.curriculum_id,
       );
+      if (isBunnyStreamEnabled()) {
+        throw new ApiError(
+          400,
+          "Direct upload URLs are not supported with Bunny Stream; use tus-upload-url",
+        );
+      }
       if (!isCloudflareStreamEnabled()) {
         throw new ApiError(400, "Cloudflare Stream is not configured");
       }
@@ -3537,9 +3587,10 @@ router.post(
         req.user.id,
         req.body.curriculum_id,
       );
-      if (!isCloudflareStreamEnabled()) {
-        throw new ApiError(400, "Cloudflare Stream is not configured");
+      if (!isBunnyStreamEnabled() && !isCloudflareStreamEnabled()) {
+        throw new ApiError(400, "Video streaming provider is not configured");
       }
+      const useBunny = isBunnyStreamEnabled();
 
       const sizeInBytes = Math.floor(Number(req.body.size_in_bytes || 0));
       if (!Number.isFinite(sizeInBytes) || sizeInBytes <= 0) {
@@ -3553,9 +3604,13 @@ router.post(
       const existingUpload = await prisma.lessonVideoUpload.findUnique({
         where: { lessonId: lesson.id },
       });
+      const existingIsBunny = Boolean(
+        existingUpload && isBunnyUploadRecord(existingUpload),
+      );
       if (
         existingUpload &&
         !req.body.restart &&
+        existingIsBunny === useBunny &&
         existingUpload.fileName === fileName &&
         Number(existingUpload.sizeInBytes) === sizeInBytes
       ) {
@@ -3563,23 +3618,26 @@ router.post(
           data: {
             upload_url: existingUpload.uploadUrl,
             uid: existingUpload.providerVideoId,
+            headers: useBunny
+              ? buildBunnyTusHeaders(existingUpload.providerVideoId)
+              : undefined,
             resumed: true,
           },
         });
       }
       if (existingUpload) {
         await prisma.lessonVideoUpload.delete({ where: { id: existingUpload.id } });
-        await deleteCloudflareStreamVideo(existingUpload.providerVideoId).catch(
-          () => {},
-        );
+        await deleteStreamVideoByUploadRecord(existingUpload);
       }
 
-      const { uploadUrl, uid } = await createCloudflareTusUpload({
-        uploadLength: sizeInBytes,
-        maxDurationSeconds: duration,
-        requireSignedUrls: true,
-        title: fileName || lesson.title,
-      });
+      const { uploadUrl, uid, headers } = useBunny
+        ? await createBunnyTusUpload({ title: fileName || lesson.title })
+        : await createCloudflareTusUpload({
+            uploadLength: sizeInBytes,
+            maxDurationSeconds: duration,
+            requireSignedUrls: true,
+            title: fileName || lesson.title,
+          });
 
       await prisma.lessonVideoUpload.create({
         data: {
@@ -3598,6 +3656,7 @@ router.post(
         data: {
           upload_url: uploadUrl,
           uid,
+          headers: headers || undefined,
           resumed: false,
         },
       });
@@ -3620,11 +3679,18 @@ router.post(
 
       const uid = String(req.body.uid || "").trim();
       if (!uid) {
-        throw new ApiError(400, "Cloudflare video uid is required");
+        throw new ApiError(400, "Video uid is required");
       }
 
-      const videoPath = buildCloudflarePlaybackUrl(uid);
-      triggerCloudflareAutoCaption(uid);
+      const useBunny = isBunnyStreamEnabled();
+      const videoPath = useBunny
+        ? buildBunnyPlaybackUrl(uid)
+        : buildCloudflarePlaybackUrl(uid);
+      if (useBunny) {
+        triggerBunnyAutoCaption(uid, await getCourseCaptionLanguage(lesson.courseId));
+      } else {
+        triggerCloudflareAutoCaption(uid);
+      }
       const sizeInBytes = Number(req.body.size_in_bytes || 0);
       const media = await prisma.media.create({
         data: {
@@ -3677,7 +3743,20 @@ router.post(
       }
 
       let videoPath = mediaPath(req.file);
-      if (isCloudflareStreamEnabled()) {
+      if (isBunnyStreamEnabled()) {
+        const fileBuffer = await readUploadedFileBuffer(req.file);
+        const bunnyVideoId = await uploadVideoToBunnyStream({
+          filename: req.file.originalname,
+          title: req.file.originalname || lesson.title || "Course video",
+          fileBuffer,
+        });
+        videoPath = buildBunnyPlaybackUrl(bunnyVideoId);
+        triggerBunnyAutoCaption(
+          bunnyVideoId,
+          await getCourseCaptionLanguage(lesson.courseId),
+        );
+        await cleanupTransientUploadedFile(req.file);
+      } else if (isCloudflareStreamEnabled()) {
         const fileBuffer = await readUploadedFileBuffer(req.file);
         const cloudflareVideoId = await uploadVideoToCloudflareStream({
           filename: req.file.originalname,
@@ -3743,14 +3822,20 @@ async function streamTokenHandler(req, res, next) {
       mediaId: queryId,
       roles: req.user.roles,
     });
-    const cloudflareVideoId = extractCloudflareVideoIdFromPlaybackUrl(
+    const bunnyVideoId = extractBunnyVideoIdFromPlaybackUrl(
       mediaSource.storagePath,
     );
-    const embedUrl = cloudflareVideoId
-      ? await buildCloudflareSignedEmbedUrl(cloudflareVideoId, {
-          ttlSeconds: 60,
-        })
-      : "";
+    const cloudflareVideoId = bunnyVideoId
+      ? ""
+      : extractCloudflareVideoIdFromPlaybackUrl(mediaSource.storagePath);
+    let embedUrl = "";
+    if (bunnyVideoId) {
+      embedUrl = buildBunnySignedEmbedUrl(bunnyVideoId, { ttlSeconds: 300 });
+    } else if (cloudflareVideoId) {
+      embedUrl = await buildCloudflareSignedEmbedUrl(cloudflareVideoId, {
+        ttlSeconds: 60,
+      });
+    }
 
     return res.json({
       data: {
@@ -3824,6 +3909,9 @@ router.delete(
         req.user.id,
         req.params.lessonId,
       );
+      const existingBunnyVideoId = extractBunnyVideoIdFromPlaybackUrl(
+        lesson.videoUrl,
+      );
       const existingCloudflareVideoId = isCloudflareStreamEnabled()
         ? extractCloudflareVideoIdFromPlaybackUrl(lesson.videoUrl)
         : "";
@@ -3832,14 +3920,15 @@ router.delete(
       });
       if (pendingUpload) {
         await prisma.lessonVideoUpload.delete({ where: { id: pendingUpload.id } });
-        await deleteCloudflareStreamVideo(pendingUpload.providerVideoId).catch(
-          () => {},
-        );
+        await deleteStreamVideoByUploadRecord(pendingUpload);
       }
       const updatedLesson = await prisma.lesson.update({
         where: { id: lesson.id },
         data: { videoUrl: null },
       });
+      if (existingBunnyVideoId) {
+        await deleteBunnyStreamVideo(existingBunnyVideoId).catch(() => {});
+      }
       if (existingCloudflareVideoId) {
         await deleteCloudflareStreamVideo(existingCloudflareVideoId).catch(
           () => {},

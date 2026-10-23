@@ -5,7 +5,12 @@ import { recordActivityEvent } from "../analytics/analytics.service.js";
 async function getOrCreateCart(userId) {
   const cart = await prisma.cart.findUnique({ where: { userId } });
   if (cart) return cart;
-  return prisma.cart.create({ data: { userId } });
+  // Concurrent requests can both miss the lookup; upsert avoids the unique(userId) collision.
+  return prisma.cart.upsert({
+    where: { userId },
+    create: { userId },
+    update: {},
+  });
 }
 
 function decimal(value) {

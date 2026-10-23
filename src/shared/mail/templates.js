@@ -125,6 +125,30 @@ export function buildPasswordResetEmail({ firstName, token }) {
   };
 }
 
+export function buildCoursePublishedEmail({
+  firstName,
+  courseTitle,
+  courseSlug,
+  note,
+}) {
+  const name = firstName || "there";
+  const link = `${baseUrl()}/courses/${encodeURIComponent(courseSlug)}`;
+  return {
+    subject: `Your course "${courseTitle}" is live`,
+    text: `Hi ${name},\n\nGreat news: "${courseTitle}" has been approved and published. Learners can now find and enroll in it:\n${link}${note ? `\n\nReviewer note: ${note}` : ""}`,
+    html: layout({
+      preheader: `"${courseTitle}" has been approved and is now live.`,
+      eyebrow: "Course published",
+      title: "Your course is live",
+      bodyHtml: `${paragraph(`Hi ${escapeHtml(name)}, your course <strong>${escapeHtml(courseTitle)}</strong> passed review and has been published. Learners can now find and enroll in it.`)}
+        ${note ? callout(`<strong style="color:${INK};">Reviewer note:</strong> ${escapeHtml(note)}`) : ""}
+        ${button(link, "View your course")}
+        ${linkFallback(link)}`,
+      footerNote: "You're receiving this because you submitted a course for review.",
+    }),
+  };
+}
+
 export function buildReceiptEmail({ firstName, order, paidAt }) {
   const currency = order.currency || "PHP";
   const name = firstName || "there";

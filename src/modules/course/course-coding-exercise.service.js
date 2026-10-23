@@ -4,6 +4,7 @@ import { env } from "../../shared/config/env.js";
 // Languages the coding exercise editor supports.
 export const CODING_LANGUAGES = [
   "html",
+  "css",
   "javascript",
   "typescript",
   "python",
@@ -11,18 +12,33 @@ export const CODING_LANGUAGES = [
   "php",
   "go",
   "csharp",
+  "c",
+  "cpp",
+  "ruby",
+  "rust",
+  "kotlin",
+  "swift",
+  "sql",
 ];
 const MARKUP_LANGUAGES = new Set(["html", "css"]);
 
 const LANGUAGE_PATTERNS = [
-  ["html", /\b(html5?|css3?|markup|semantic|web ?page|stylesheets?|flexbox|bootstrap|tailwind)\b/gi],
+  ["html", /\b(html5?|markup|semantic|web ?page)\b/gi],
+  ["css", /\b(css3?|stylesheets?|flexbox|grid layout|bootstrap|tailwind|sass|scss)\b/gi],
   ["typescript", /\b(typescript|tsx?)\b/gi],
   ["javascript", /\b(javascript|js|node\.?js|react(\.?js)?|vue(\.?js)?|angular|ecmascript|es6|jquery|express(\.?js)?)\b/gi],
   ["python", /\b(python|django|flask|pandas|numpy)\b/gi],
   ["java", /\b(java|spring( boot)?|jvm)\b/gi],
+  ["kotlin", /\b(kotlin|android)\b/gi],
+  ["swift", /\b(swift|swiftui|ios)\b/gi],
   ["php", /\b(php|laravel)\b/gi],
   ["go", /\b(golang|go (lang|language|programming))\b/gi],
   ["csharp", /(c#|csharp|\.net|asp\.net)/gi],
+  ["cpp", /(c\+\+|\bcpp\b)/gi],
+  ["c", /\b(c (language|programming))\b/gi],
+  ["ruby", /\b(ruby|rails)\b/gi],
+  ["rust", /\b(rust|cargo)\b/gi],
+  ["sql", /\b(sql|mysql|postgres(ql)?|sqlite|database queries)\b/gi],
 ];
 
 const clean = (value) => String(value || "").trim();
@@ -68,6 +84,46 @@ const FALLBACK_TEMPLATES = {
     starter: "<!DOCTYPE html>\n<html>\n  <body>\n    <!-- TODO: add a heading -->\n  </body>\n</html>",
     solution: "<!DOCTYPE html>\n<html>\n  <body>\n    <h1>Hello, world</h1>\n  </body>\n</html>",
     check: { name: "Has an <h1> with text", type: "regex", value: "<h1[^>]*>\\s*\\S+" },
+  },
+  css: {
+    starter: "h1 {\n  /* TODO: change the heading color */\n}",
+    solution: "h1 {\n  color: royalblue;\n}",
+    check: { name: "Sets a color on h1", type: "regex", value: "h1\\s*\\{[^}]*\\bcolor\\s*:\\s*[^;}]+" },
+  },
+  c: {
+    starter: "#include <stdio.h>\n\nint main(void) {\n  /* TODO: print a greeting */\n  return 0;\n}",
+    solution: "#include <stdio.h>\n\nint main(void) {\n  printf(\"Hello, world\\n\");\n  return 0;\n}",
+    check: { name: "Uses printf", type: "contains", value: "printf(" },
+  },
+  cpp: {
+    starter: "#include <iostream>\n\nint main() {\n  // TODO: print a greeting\n  return 0;\n}",
+    solution: "#include <iostream>\n\nint main() {\n  std::cout << \"Hello, world\" << std::endl;\n  return 0;\n}",
+    check: { name: "Uses std::cout", type: "contains", value: "std::cout" },
+  },
+  ruby: {
+    starter: "# TODO: print a greeting\n",
+    solution: "puts 'Hello, world'",
+    check: { name: "Uses puts", type: "contains", value: "puts " },
+  },
+  rust: {
+    starter: "fn main() {\n    // TODO: print a greeting\n}",
+    solution: "fn main() {\n    println!(\"Hello, world\");\n}",
+    check: { name: "Uses println!", type: "contains", value: "println!(" },
+  },
+  kotlin: {
+    starter: "fun main() {\n    // TODO: print a greeting\n}",
+    solution: "fun main() {\n    println(\"Hello, world\")\n}",
+    check: { name: "Uses println", type: "contains", value: "println(" },
+  },
+  swift: {
+    starter: "// TODO: print a greeting\n",
+    solution: "print(\"Hello, world\")",
+    check: { name: "Uses print", type: "contains", value: "print(" },
+  },
+  sql: {
+    starter: "-- TODO: select the number 1\n",
+    solution: "SELECT 1;",
+    check: { name: "Uses SELECT", type: "contains", value: "SELECT" },
   },
   javascript: {
     starter: "// TODO: print a greeting\n",
@@ -147,7 +203,7 @@ function toValidator(check, stepIndex, checkIndex) {
   };
 }
 
-function buildStep({ index, title, instruction, starterCode, solution, checks, hints, language }) {
+function buildStep({ index, title, instruction, starterCode, solution, checks, hints, language, previewHtml }) {
   const validators = (Array.isArray(checks) ? checks : [])
     .filter((check) => checkPasses(check, solution, language))
     .map((check, checkIndex) => toValidator(check, index, checkIndex));
@@ -159,6 +215,7 @@ function buildStep({ index, title, instruction, starterCode, solution, checks, h
     title: clean(title) || `Step ${index + 1}`,
     instruction: clean(instruction),
     starter_code: String(starterCode || ""),
+    ...(language === "css" && clean(previewHtml) ? { preview_html: clean(previewHtml) } : {}),
     hints: (Array.isArray(hints) ? hints : []).map(clean).filter(Boolean),
     validators,
     validation_mode: validators[0].mode,
@@ -217,7 +274,10 @@ async function requestAIExercise({ language, courseTitle, sectionTitle, lessonTi
     (isMarkup
       ? "Use regex checks for flexible tag matching (e.g. <h1[^>]*>\\s*\\S+) and keep values lowercase. "
       : "Use short contains checks for key constructs, or regex when flexible. ") +
-    "Give each step 1-3 checks. hint is one short nudge that does not reveal the full solution.";
+    "Give each step 1-3 checks. hint is one short nudge that does not reveal the full solution." +
+    (language === "css"
+      ? ' For CSS, also include "preview_html" in every step: a small HTML snippet (body contents only, no <style>) the learner\'s CSS is applied to, using the classes/elements the instruction mentions.'
+      : "");
 
   const response = await axios.post(
     `${env.deepseekBaseUrl.replace(/\/+$/g, "")}/chat/completions`,
@@ -271,6 +331,7 @@ export async function buildAICodingExercise(context) {
         title: raw?.title,
         instruction: raw?.instruction,
         starterCode: raw?.starter_code,
+        previewHtml: raw?.preview_html,
         solution,
         checks: raw?.checks,
         hints: [clean(raw?.hint), `Answer:\n${solution}`],

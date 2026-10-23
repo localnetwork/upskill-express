@@ -1,5 +1,6 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { Prisma } from "@prisma/client";
+import { deleteStreamVideosForLessons } from "../../shared/storage/stream-cleanup.js";
 import axios from "axios";
 import { randomUUID } from "crypto";
 import { ApiError } from "../../shared/utils/ApiError.js";
@@ -14,6 +15,7 @@ import { buildAICodingExercise } from "./course-coding-exercise.service.js";
 import {
   buildCloudflareEmbedUrlFromPlaybackUrl,
 } from "../../shared/storage/cloudflare-stream.js";
+import { buildBunnyEmbedUrlFromPlaybackUrl } from "../../shared/storage/bunny-stream.js";
 
 const COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
 const PROMO_MEDIA_TYPES = ["PROMO_VIDEO"];
@@ -23,7 +25,9 @@ let learnerAssistantTableReady = false;
 function mapVideoPlaybackToEmbedUrl(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  const embedUrl = buildCloudflareEmbedUrlFromPlaybackUrl(raw);
+  const embedUrl =
+    buildBunnyEmbedUrlFromPlaybackUrl(raw) ||
+    buildCloudflareEmbedUrlFromPlaybackUrl(raw);
   return embedUrl || raw;
 }
 
@@ -1321,6 +1325,7 @@ function normalizeAIDraftPayload(draft, fallbackPrompt) {
 
   return {
     title: safeTitle,
+    slugSuggestion: String(source.slug || "").trim().slice(0, 150),
     subtitle,
     description,
     welcomeMessage,
@@ -1383,7 +1388,8 @@ async function generateCourseDraftViaAI(prompt, options = {}) {
 
   const systemPrompt =
     "You are an expert instructional designer. Return only valid JSON with no markdown fences. " +
-    "Schema: { title, subtitle, description, welcome_message, congratulations_message, language, instructional_level, category, cover_image_query, what_you_will_learn[], requirements[], who_should_attend[], sections:[{ title, description, lessons:[{ title, description, type, estimated_minutes }] }] }. " +
+    "Schema: { title, slug, subtitle, description, welcome_message, congratulations_message, language, instructional_level, category, cover_image_query, what_you_will_learn[], requirements[], who_should_attend[], sections:[{ title, description, lessons:[{ title, description, type, estimated_minutes }] }] }. " +
+    "slug is a short, lowercase, hyphenated URL slug (3-6 words, a-z 0-9 and hyphens only) that is specific to this course's topic and distinct from a generic title slug (e.g. 'html-css-responsive-websites-bootcamp'). " +
     "cover_image_query is 2-4 concrete English keywords describing a photo that visually fits the course topic (e.g. 'python programming laptop'). " +
     "Constraints: title <= 60 chars, subtitle <= 180 chars, 4-8 sections, 3-8 lessons each section, lesson type one of VIDEO|RESOURCE|ASSIGNMENT|QUIZ|CODING_EXERCISE, estimated_minutes is number. " +
     "Section and lesson titles must be descriptive and specific; never use generic placeholders like 'Section 1' or 'Lesson 1'.";
@@ -1489,17 +1495,35 @@ export async function createCourseAIDraft(userId, payload, options = {}) {
     progressPercent: 45,
   });
 
-  const course = await createCourse(userId, {
-    title: aiDraft.title,
-    subtitle: aiDraft.subtitle,
-    description: aiDraft.description,
-    welcomeMessage: aiDraft.welcomeMessage || null,
-    congratulationsMessage: aiDraft.congratulationsMessage || null,
-    language: aiDraft.language,
-    categoryId,
-    levelId,
-    published: false,
-  });
+  let course;
+  const slugSeeds = [aiDraft.slugSuggestion, aiDraft.title].filter(
+    (seed) => slugify(String(seed || "")),
+  );
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const baseSlug = slugSeeds[Math.min(attempt, slugSeeds.length - 1)] || aiDraft.title;
+    const uniqueSlug = await makeUniqueSlug(
+      attempt >= 2 ? `${baseSlug}-${Math.random().toString(36).slice(2, 6)}` : baseSlug,
+    );
+    try {
+      course = await createCourse(userId, {
+        title: aiDraft.title,
+        slug: uniqueSlug,
+        subtitle: aiDraft.subtitle,
+        description: aiDraft.description,
+        welcomeMessage: aiDraft.welcomeMessage || null,
+        congratulationsMessage: aiDraft.congratulationsMessage || null,
+        language: aiDraft.language,
+        categoryId,
+        levelId,
+        published: false,
+      });
+      break;
+    } catch (error) {
+      // Concurrent bulk drafts can claim the same slug; retry with another one.
+      const isSlugConflict = error instanceof ApiError && error.statusCode === 409;
+      if (!isSlugConflict || attempt === 4) throw error;
+    }
+  }
 
   emitProgress({
     step: "saving_goals",
@@ -6563,6 +6587,7 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
           (applyToAll && wantsDelete) ||
           (wantsDelete && wantsAllCurriculums);
         if (shouldApplyAll) {
+          await deleteStreamVideosForLessons({ courseId: course.id });
           const deleted = await prisma.lesson.deleteMany({
             where: { courseId: course.id },
           });
@@ -6574,6 +6599,7 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
           findLessonByRef(operation?.curriculum_id, operation?.section_id) ||
           findLessonByRef(operation?.curriculum_title, operation?.section_title);
         if (!lesson) continue;
+        await deleteStreamVideosForLessons({ id: lesson.id });
         await prisma.lesson.delete({
           where: { id: lesson.id },
         });
@@ -6589,6 +6615,7 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
       ) {
         const shouldApplyAll = applyToAll && wantsDelete && wantsAllSections;
         if (shouldApplyAll) {
+          await deleteStreamVideosForLessons({ courseId: course.id });
           const deleted = await prisma.courseSection.deleteMany({
             where: { courseId: course.id },
           });
@@ -6600,6 +6627,7 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
           findSectionByRef(operation?.section_id) ||
           findSectionByRef(operation?.section_title);
         if (!section) continue;
+        await deleteStreamVideosForLessons({ sectionId: section.id });
         await prisma.courseSection.delete({
           where: { id: section.id },
         });

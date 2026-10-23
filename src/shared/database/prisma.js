@@ -15,7 +15,7 @@ function validateDatabaseConfig() {
 
   if (!url.includes("pgbouncer=true")) {
     console.warn(
-      "[prisma] WARNING: DATABASE_URL is missing pgbouncer=true — Neon requires this parameter behind PgBouncer"
+      "[prisma] WARNING: DATABASE_URL is missing pgbouncer=true — requires this parameter behind PgBouncer",
     );
   }
 
@@ -24,12 +24,12 @@ function validateDatabaseConfig() {
     const limit = parseInt(match[1], 10);
     if (limit > 5) {
       console.warn(
-        `[prisma] WARNING: connection_limit=${limit} is large for a pooled connection. Consider lowering it to 5 or less.`
+        `[prisma] WARNING: connection_limit=${limit} is large for a pooled connection. Consider lowering it to 5 or less.`,
       );
     }
   } else {
     console.warn(
-      "[prisma] WARNING: connection_limit not set in DATABASE_URL. Behind PgBouncer, set it to 3 or less."
+      "[prisma] WARNING: connection_limit not set in DATABASE_URL. Behind PgBouncer, set it to 3 or less.",
     );
   }
 }

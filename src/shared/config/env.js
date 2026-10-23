@@ -69,6 +69,13 @@ export const env = {
   cfStreamSigningKeyId: process.env.CF_STREAM_SIGNING_KEY_ID || "",
   cfStreamAutoCaptionLanguage:
     process.env.CF_STREAM_AUTO_CAPTION_LANGUAGE || "en",
+  streamApiKey: process.env.STREAM_API_KEY || "",
+  streamLibraryId: process.env.STREAM_LIBRARY_ID || "",
+  streamPullZone: process.env.STREAM_PULL_ZONE || "",
+  streamTokenKey: process.env.STREAM_TOKEN_KEY || "",
+  streamCaptionLanguages: process.env.STREAM_CAPTION_LANGUAGES || "",
+  streamTokenIpValidation:
+    String(process.env.STREAM_TOKEN_IP_VALIDATION || "").toLowerCase() === "true",
   googleClientId: process.env.GOOGLE_CLIENT_ID || "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
   aiKey: process.env.AI_KEY || process.env.DEEPSEEK_API_KEY || "",

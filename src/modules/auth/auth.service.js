@@ -1,14 +1,31 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
-import { signAccessToken, signPreAuthToken, signRefreshToken, verifyRefreshToken } from "../../shared/utils/jwt.js";
+import {
+  signAccessToken,
+  signPreAuthToken,
+  signRefreshToken,
+  verifyRefreshToken,
+} from "../../shared/utils/jwt.js";
 import { sendEmail } from "../../shared/mail/mailer.js";
 import {
   buildPasswordResetEmail,
   buildVerificationEmail,
 } from "../../shared/mail/templates.js";
-import { comparePassword, compareToken, hashPassword, hashToken, randomToken } from "../../shared/utils/security.js";
+import {
+  comparePassword,
+  compareToken,
+  hashPassword,
+  hashToken,
+  randomToken,
+} from "../../shared/utils/security.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
-import { createUser, findUserByEmail, findUserById, findUserByUsername, updateUser } from "./auth.repository.js";
+import {
+  createUser,
+  findUserByEmail,
+  findUserById,
+  findUserByUsername,
+  updateUser,
+} from "./auth.repository.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { createNotification } from "../notification/notification.service.js";
 import { env } from "../../shared/config/env.js";
@@ -78,7 +95,9 @@ async function getUserProfilePicture(userId) {
   });
 
   const parsed = safeParseJson(setting?.value);
-  const mediaId = String(parsed?.mediaId || parsed?.id || setting?.value || "").trim();
+  const mediaId = String(
+    parsed?.mediaId || parsed?.id || setting?.value || "",
+  ).trim();
   if (!mediaId) return null;
 
   const media = await prisma.media.findFirst({
@@ -121,14 +140,18 @@ function buildTokenPayload(user) {
 function normalizeRole(rawRole) {
   if (!rawRole) return "LEARNER";
   const value = String(rawRole).trim().toUpperCase();
-  if (value === "2" || value === "EDUCATOR" || value === "INSTRUCTOR") return "EDUCATOR";
-  if (value === "3" || value === "LEARNER" || value === "STUDENT") return "LEARNER";
+  if (value === "2" || value === "EDUCATOR" || value === "INSTRUCTOR")
+    return "EDUCATOR";
+  if (value === "3" || value === "LEARNER" || value === "STUDENT")
+    return "LEARNER";
   return "LEARNER";
 }
 
 function normalizeGoogleProfile(data) {
   return {
-    email: String(data?.email || "").trim().toLowerCase(),
+    email: String(data?.email || "")
+      .trim()
+      .toLowerCase(),
     emailVerified: String(data?.email_verified || "").toLowerCase() === "true",
     givenName: data?.given_name ? String(data.given_name).trim() : "",
     familyName: data?.family_name ? String(data.family_name).trim() : "",
@@ -267,12 +290,12 @@ export async function login(payload, context = {}) {
     ? await findUserByEmail(identifier)
     : await findUserByUsername(identifier);
   if (!user) {
-    throw new ApiError(401, "Invalid credentials");
+    throw new ApiError(401, "These credentials do not match our records.");
   }
 
   const valid = await comparePassword(payload.password, user.passwordHash);
   if (!valid) {
-    throw new ApiError(401, "Invalid credentials");
+    throw new ApiError(401, "These credentials do not match our records.");
   }
 
   if (user.deletedAt || !user.isActive) {
@@ -305,13 +328,16 @@ export async function login(payload, context = {}) {
 
   await updateUser(user.id, { refreshTokenHash });
   const deviceName = payload?.deviceName || buildDeviceName(requestUserAgent);
-  const { trustedDeviceToken, isNewDevice } = await registerTrustedDevice(user.id, {
-    deviceIdentifier: payload?.deviceIdentifier,
-    deviceName,
-    userAgent: requestUserAgent,
-    ipAddress: requestIpAddress,
-    locationLabel: requestLocationLabel,
-  });
+  const { trustedDeviceToken, isNewDevice } = await registerTrustedDevice(
+    user.id,
+    {
+      deviceIdentifier: payload?.deviceIdentifier,
+      deviceName,
+      userAgent: requestUserAgent,
+      ipAddress: requestIpAddress,
+      locationLabel: requestLocationLabel,
+    },
+  );
 
   if (isNewDevice) {
     await notifyNewDeviceLogin(user.id, {
@@ -350,8 +376,7 @@ export async function login(payload, context = {}) {
 
 export async function googleAuth(payload, context = {}) {
   const profile = await verifyGoogleIdToken(payload.idToken);
-  const roleName =
-    payload.mode === "instructor" ? "EDUCATOR" : "LEARNER";
+  const roleName = payload.mode === "instructor" ? "EDUCATOR" : "LEARNER";
   const existingUser = await findUserByEmail(profile.email);
 
   if (payload.intent === "login") {
@@ -384,7 +409,11 @@ export async function googleAuth(payload, context = {}) {
       payload?.trustedDeviceToken,
     );
 
-    if (existingUser.twoFactorEnabled && existingUser.twoFactorSecret && !trustedDevice.trusted) {
+    if (
+      existingUser.twoFactorEnabled &&
+      existingUser.twoFactorSecret &&
+      !trustedDevice.trusted
+    ) {
       const userPicture = await getUserProfilePicture(existingUser.id);
       return {
         requires_2fa: true,
@@ -398,13 +427,16 @@ export async function googleAuth(payload, context = {}) {
     const refreshTokenHash = await hashToken(refreshToken);
     await updateUser(existingUser.id, { refreshTokenHash });
     const deviceName = payload?.deviceName || buildDeviceName(requestUserAgent);
-    const { trustedDeviceToken, isNewDevice } = await registerTrustedDevice(existingUser.id, {
-      deviceIdentifier: payload?.deviceIdentifier,
-      deviceName,
-      userAgent: requestUserAgent,
-      ipAddress: requestIpAddress,
-      locationLabel: requestLocationLabel,
-    });
+    const { trustedDeviceToken, isNewDevice } = await registerTrustedDevice(
+      existingUser.id,
+      {
+        deviceIdentifier: payload?.deviceIdentifier,
+        deviceName,
+        userAgent: requestUserAgent,
+        ipAddress: requestIpAddress,
+        locationLabel: requestLocationLabel,
+      },
+    );
 
     if (isNewDevice) {
       await notifyNewDeviceLogin(existingUser.id, {
