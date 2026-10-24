@@ -19,6 +19,7 @@ import {
   handleSubscriptionWebhook,
   handleXenditSubscriptionWebhook,
   listAllPlans,
+  listMySubscriptions,
   listPublicPlans,
   getCatalogSummary,
   listSubscriptionsAdmin,
@@ -81,6 +82,14 @@ router.get(
   authenticate,
   asyncHandler(async (req, res) => {
     res.json({ data: await getAccessSummary(req.user.id) });
+  }),
+);
+
+router.get(
+  "/mine",
+  authenticate,
+  asyncHandler(async (req, res) => {
+    res.json({ data: await listMySubscriptions(req.user.id) });
   }),
 );
 

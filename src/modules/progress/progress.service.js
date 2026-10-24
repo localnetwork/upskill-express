@@ -133,45 +133,53 @@ export async function updateLessonProgress(userId, payload) {
   const defaultCongratulationsMessage = `Congratulations on completing "${enrollment.course.title}"! Great work finishing the course.`;
 
   if (isFirstProgressUpdate) {
-    const existingWelcomeNotification = await prisma.notification.findFirst({
-      where: {
-        userId,
-        type: "ENROLLMENT",
-        AND: [
-          {
-            metadata: {
-              path: ["notificationKind"],
-              equals: "COURSE_WELCOME_MESSAGE",
-            },
+    // Concurrent progress saves (e.g. several lessons reporting at once) would all pass the "no welcome yet" check,
+    // so serialize check + create per learner/course with an advisory lock.
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`welcome:${userId}:${enrollment.course.id}`}))`;
+        const existingWelcomeNotification = await tx.notification.findFirst({
+          where: {
+            userId,
+            type: "ENROLLMENT",
+            AND: [
+              {
+                metadata: {
+                  path: ["notificationKind"],
+                  equals: "COURSE_WELCOME_MESSAGE",
+                },
+              },
+              {
+                metadata: {
+                  path: ["courseId"],
+                  equals: enrollment.course.id,
+                },
+              },
+            ],
           },
-          {
-            metadata: {
-              path: ["courseId"],
-              equals: enrollment.course.id,
-            },
-          },
-        ],
-      },
-      select: { id: true },
-    });
+          select: { id: true },
+        });
 
-    if (!existingWelcomeNotification) {
-      const welcomeMessage =
-        String(enrollment.course?.welcomeMessage || "").trim() ||
-        defaultWelcomeMessage;
-      await createNotification({
-        userId,
-        type: "ENROLLMENT",
-        title: `Welcome message from ${instructorName}`,
-        message: welcomeMessage,
-        metadata: {
-          notificationKind: "COURSE_WELCOME_MESSAGE",
-          courseId: enrollment.course.id,
-          courseTitle: enrollment.course.title,
-          instructorName,
-        },
-      });
-    }
+        if (!existingWelcomeNotification) {
+          const welcomeMessage =
+            String(enrollment.course?.welcomeMessage || "").trim() ||
+            defaultWelcomeMessage;
+          await createNotification({
+            userId,
+            type: "ENROLLMENT",
+            title: `Welcome message from ${instructorName}`,
+            message: welcomeMessage,
+            metadata: {
+              notificationKind: "COURSE_WELCOME_MESSAGE",
+              courseId: enrollment.course.id,
+              courseTitle: enrollment.course.title,
+              instructorName,
+            },
+          });
+        }
+      },
+      { timeout: 15000 },
+    );
   }
 
   if (!wasCompleted && isNowCompleted) {

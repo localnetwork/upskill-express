@@ -8,27 +8,38 @@ const PUBLISHED_COURSE = {
   OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
 };
 
-// Learner access: ACTIVE/COMPLETED and not past its end date. Spread into a where clause.
+// Learner access: ACTIVE/COMPLETED, not past its end date, and (for subscription access) a live subscription. Spread into a where clause.
 export function activeEnrollmentFilter(now = new Date()) {
   return {
     status: { in: ["ACTIVE", "COMPLETED"] },
-    OR: [{ accessEndsAt: null }, { accessEndsAt: { gt: now } }],
+    AND: [
+      { OR: [{ accessEndsAt: null }, { accessEndsAt: { gt: now } }] },
+      {
+        OR: [
+          { accessSource: { not: "SUBSCRIPTION" } },
+          { user: { subscriptions: { some: liveSubscriptionWhere(now) } } },
+        ],
+      },
+    ],
+  };
+}
+
+function liveSubscriptionWhere(now) {
+  return {
+    OR: [
+      {
+        status: { in: ["ACTIVE", "TRIALING", "PAST_DUE"] },
+        OR: [{ currentPeriodEnd: null }, { currentPeriodEnd: { gt: now } }],
+      },
+      // Canceled plans keep access until the paid period ends.
+      { status: "CANCELED", currentPeriodEnd: { gt: now } },
+    ],
   };
 }
 
 async function getActiveSubscription(userId, now = new Date()) {
   return prisma.subscription.findFirst({
-    where: {
-      userId,
-      OR: [
-        {
-          status: { in: ["ACTIVE", "TRIALING", "PAST_DUE"] },
-          OR: [{ currentPeriodEnd: null }, { currentPeriodEnd: { gt: now } }],
-        },
-        // Canceled plans keep access until the paid period ends.
-        { status: "CANCELED", currentPeriodEnd: { gt: now } },
-      ],
-    },
+    where: { userId, ...liveSubscriptionWhere(now) },
     include: { plan: true },
     orderBy: { createdAt: "desc" },
   });

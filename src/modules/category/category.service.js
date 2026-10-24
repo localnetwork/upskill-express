@@ -93,6 +93,28 @@ function buildCategoryTree(categories) {
   return roots;
 }
 
+// Adds `courses_count` (published courses, including all descendant categories) to every tree node.
+async function attachCourseCounts(tree) {
+  const groups = await prisma.course.groupBy({
+    by: ["categoryId"],
+    where: {
+      deletedAt: null,
+      categoryId: { not: null },
+      OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
+    },
+    _count: { _all: true },
+  });
+  const direct = new Map(groups.map((g) => [g.categoryId, g._count._all]));
+
+  const roll = (node) => {
+    let total = direct.get(node.id) || 0;
+    for (const child of node.children || []) total += roll(child);
+    node.courses_count = total;
+    return total;
+  };
+  tree.forEach(roll);
+}
+
 async function categoryImageColumnExists() {
   if (categorySupportsImageField) return true;
   if (categoryImageColumnExistsCache !== null) return categoryImageColumnExistsCache;
@@ -383,6 +405,7 @@ export async function listCategories(query) {
     }
 
     const tree = buildCategoryTree(rows);
+    await attachCourseCounts(tree);
     const total = rows.length;
     return {
       data: tree,

@@ -226,6 +226,34 @@ export async function confirmSubscription(userId, subscriptionId) {
   return updated;
 }
 
+export async function listMySubscriptions(userId) {
+  const rows = await prisma.subscription.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+    include: { plan: { select: { name: true, interval: true, price: true, currency: true } } },
+  });
+  const now = new Date();
+  return rows.map((row) => ({
+    id: row.id,
+    planName: row.plan.name,
+    interval: row.plan.interval,
+    price: row.plan.price,
+    currency: row.plan.currency,
+    // A period that has passed is expired even if the status hasn't been updated yet.
+    status:
+      ["ACTIVE", "TRIALING", "PAST_DUE", "CANCELED"].includes(row.status) &&
+      row.currentPeriodEnd &&
+      row.currentPeriodEnd <= now
+        ? "EXPIRED"
+        : row.status,
+    cancelAtPeriodEnd: row.cancelAtPeriodEnd,
+    currentPeriodStart: row.currentPeriodStart,
+    currentPeriodEnd: row.currentPeriodEnd,
+    canceledAt: row.canceledAt,
+    createdAt: row.createdAt,
+  }));
+}
+
 export async function cancelMySubscription(userId) {
   const subscription = await prisma.subscription.findFirst({
     where: { userId, status: { in: ["ACTIVE", "TRIALING", "PAST_DUE"] } },

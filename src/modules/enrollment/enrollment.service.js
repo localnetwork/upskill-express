@@ -1,5 +1,6 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
+import { activeEnrollmentFilter } from "../access/access.service.js";
 
 function pickLatestMediaByTypes(mediaList = [], types = []) {
   return mediaList.find((item) => types.includes(item.mediaType)) || null;
@@ -16,10 +17,9 @@ function mapLegacyMedia(media) {
 
 export async function listMyEnrollments(userId, query) {
   const { page, limit, skip } = getPagination(query);
-  const where = {
-    userId,
-    status: query.status || undefined,
-  };
+  // Expired trial/subscription access must not appear in the learner's library.
+  const where = { userId, ...activeEnrollmentFilter() };
+  if (["ACTIVE", "COMPLETED"].includes(query.status)) where.status = query.status;
   const [rows, total] = await Promise.all([
     prisma.enrollment.findMany({
       where,
