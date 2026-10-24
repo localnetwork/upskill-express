@@ -45,7 +45,11 @@ async function resolveAuthUserFromToken(token) {
     include: {
       roles: {
         include: {
-          role: true,
+          role: {
+            include: {
+              permissions: { include: { permission: true } },
+            },
+          },
         },
       },
     },
@@ -59,6 +63,13 @@ async function resolveAuthUserFromToken(token) {
     id: user.id,
     email: user.email,
     roles: user.roles.map((item) => item.role.name),
+    permissions: Array.from(
+      new Set(
+        user.roles.flatMap((item) =>
+          item.role.permissions.map((row) => row.permission.name),
+        ),
+      ),
+    ),
   };
 }
 

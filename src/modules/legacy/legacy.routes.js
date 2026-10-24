@@ -11,6 +11,7 @@ import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { upload } from "../../shared/middleware/upload.middleware.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
+import { canReviewCourseContent } from "../../shared/utils/permissions.js";
 import {
   signAccessToken,
   signRefreshToken,
@@ -1742,12 +1743,13 @@ function assertPlaybackStreamRequest(req) {
   }
 }
 
-function signStreamPlaybackToken({ userId, mediaId, roles = [] }) {
+function signStreamPlaybackToken({ userId, mediaId, roles = [], permissions = [] }) {
   return jwt.sign(
     {
       sub: String(userId),
       mediaId: String(mediaId),
       roles: Array.isArray(roles) ? roles : [],
+      permissions: Array.isArray(permissions) ? permissions : [],
       type: "stream-playback",
     },
     env.jwtAccessSecret,
@@ -1776,7 +1778,7 @@ async function assertUserCanAccessMedia(user, mediaSource) {
     ? roleListRaw.map((role) => String(role || "").toUpperCase())
     : [];
 
-  if (roleList.includes("ADMIN")) {
+  if (roleList.includes("ADMIN") || canReviewCourseContent(user)) {
     return;
   }
 
@@ -3821,6 +3823,7 @@ async function streamTokenHandler(req, res, next) {
       userId: req.user.id,
       mediaId: queryId,
       roles: req.user.roles,
+      permissions: req.user.permissions,
     });
     const bunnyVideoId = extractBunnyVideoIdFromPlaybackUrl(
       mediaSource.storagePath,
@@ -3883,7 +3886,7 @@ async function streamHandler(req, res, next) {
       throw new ApiError(404, "Media not found");
     }
     await assertUserCanAccessMedia(
-      { id: String(streamPayload.sub), roles: streamPayload.roles || [] },
+      { id: String(streamPayload.sub), roles: streamPayload.roles || [], permissions: streamPayload.permissions || [] },
       mediaSource,
     );
 

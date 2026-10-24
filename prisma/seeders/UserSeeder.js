@@ -33,6 +33,38 @@ export default class UserSeeder {
         password: "Educator@12345",
         role: "EDUCATOR",
       },
+      {
+        username: "finance",
+        email: "finance@upskill.local",
+        firstName: "Finance",
+        lastName: "Officer",
+        password: "Finance@12345",
+        role: "FINANCE_OFFICER",
+      },
+      {
+        username: "reviewer",
+        email: "reviewer@upskill.local",
+        firstName: "Course",
+        lastName: "Reviewer",
+        password: "Reviewer@12345",
+        role: "COURSE_REVIEWER",
+      },
+      {
+        username: "support",
+        email: "support@upskill.local",
+        firstName: "Support",
+        lastName: "Agent",
+        password: "Support@12345",
+        role: "SUPPORT_AGENT",
+      },
+      {
+        username: "analyst",
+        email: "analyst@upskill.local",
+        firstName: "Data",
+        lastName: "Analyst",
+        password: "Analyst@12345",
+        role: "ANALYST",
+      },
     ];
 
     for (const userData of users) {

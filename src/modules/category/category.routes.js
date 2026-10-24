@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
-import { authorize } from "../../shared/middleware/rbac.middleware.js";
+import { authorizePermission } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
@@ -34,9 +34,9 @@ router.get(
   }),
   asyncHandler(getCategoryController),
 );
-router.post("/ai-suggest", authenticate, authorize("ADMIN"), asyncHandler(suggestCategoryContentController));
-router.post("/", authenticate, authorize("ADMIN"), validate(createCategoryValidator), asyncHandler(createCategoryController));
-router.patch("/:categoryId", authenticate, authorize("ADMIN"), validate(updateCategoryValidator), asyncHandler(updateCategoryController));
-router.delete("/:categoryId", authenticate, authorize("ADMIN"), asyncHandler(deleteCategoryController));
+router.post("/ai-suggest", authenticate, authorizePermission("categories.manage"), asyncHandler(suggestCategoryContentController));
+router.post("/", authenticate, authorizePermission("categories.manage"), validate(createCategoryValidator), asyncHandler(createCategoryController));
+router.patch("/:categoryId", authenticate, authorizePermission("categories.manage"), validate(updateCategoryValidator), asyncHandler(updateCategoryController));
+router.delete("/:categoryId", authenticate, authorizePermission("categories.manage"), asyncHandler(deleteCategoryController));
 
 export default router;

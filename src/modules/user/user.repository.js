@@ -61,7 +61,11 @@ export function findById(id) {
     where: { id },
     include: {
       roles: {
-        include: { role: true },
+        include: {
+          role: {
+            include: { permissions: { include: { permission: true } } },
+          },
+        },
       },
     },
   });

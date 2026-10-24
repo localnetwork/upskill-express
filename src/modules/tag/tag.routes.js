@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
-import { authorize } from "../../shared/middleware/rbac.middleware.js";
+import { authorizePermission } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
@@ -33,8 +33,8 @@ router.get(
   }),
   asyncHandler(getTagController),
 );
-router.post("/", authenticate, authorize("ADMIN"), validate(createTagValidator), asyncHandler(createTagController));
-router.patch("/:tagId", authenticate, authorize("ADMIN"), validate(updateTagValidator), asyncHandler(updateTagController));
-router.delete("/:tagId", authenticate, authorize("ADMIN"), asyncHandler(deleteTagController));
+router.post("/", authenticate, authorizePermission("tags.manage"), validate(createTagValidator), asyncHandler(createTagController));
+router.patch("/:tagId", authenticate, authorizePermission("tags.manage"), validate(updateTagValidator), asyncHandler(updateTagController));
+router.delete("/:tagId", authenticate, authorizePermission("tags.manage"), asyncHandler(deleteTagController));
 
 export default router;

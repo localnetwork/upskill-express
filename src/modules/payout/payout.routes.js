@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
-import { authorize } from "../../shared/middleware/rbac.middleware.js";
+import { authorize, authorizePermission } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
@@ -82,7 +82,7 @@ router.get(
 router.get(
   "/admin",
   authenticate,
-  authorize("ADMIN"),
+  authorizePermission("payouts.manage"),
   cacheGetResponse({
     prefix: "payouts:admin",
     ttlSeconds: 60,
@@ -94,27 +94,27 @@ router.get(
 router.post(
   "/admin/auto-process",
   authenticate,
-  authorize("ADMIN"),
+  authorizePermission("payouts.manage"),
   asyncHandler(runAutoPayoutController),
 );
 router.post(
   "/admin/:payoutId/approve",
   authenticate,
-  authorize("ADMIN"),
+  authorizePermission("payouts.manage"),
   validate(reviewPayoutValidator),
   asyncHandler(approvePayoutController),
 );
 router.post(
   "/admin/:payoutId/reject",
   authenticate,
-  authorize("ADMIN"),
+  authorizePermission("payouts.manage"),
   validate(reviewPayoutValidator),
   asyncHandler(rejectPayoutController),
 );
 router.post(
   "/admin/:payoutId/execute",
   authenticate,
-  authorize("ADMIN"),
+  authorizePermission("payouts.manage"),
   asyncHandler(executePayoutController),
 );
 

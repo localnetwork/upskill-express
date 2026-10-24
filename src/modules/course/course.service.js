@@ -4,6 +4,7 @@ import { deleteStreamVideosForLessons } from "../../shared/storage/stream-cleanu
 import axios from "axios";
 import { randomUUID } from "crypto";
 import { ApiError } from "../../shared/utils/ApiError.js";
+import { canReviewCourseContent } from "../../shared/utils/permissions.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { slugify } from "../../shared/utils/slugify.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
@@ -12,6 +13,7 @@ import { env } from "../../shared/config/env.js";
 import { attachAICoverImage } from "./course-cover-image.service.js";
 import { getLessonAccessMapForEnrollment } from "../progress/lesson-access.service.js";
 import { buildAICodingExercise } from "./course-coding-exercise.service.js";
+import { buildAIArticleContent } from "./course-article.service.js";
 import {
   buildCloudflareEmbedUrlFromPlaybackUrl,
 } from "../../shared/storage/cloudflare-stream.js";
@@ -796,6 +798,29 @@ async function buildAIGeneratedLessonTypeFields({
   }
 
   return {};
+}
+
+// RESOURCE lessons are articles: store a full AI-written article, falling back to the short description.
+async function buildAILessonAssignmentText({
+  lessonType,
+  courseTitle,
+  courseDescription,
+  sectionTitle,
+  lessonTitle,
+  lessonDescription,
+  fallbackText,
+}) {
+  if (lessonType === "ASSIGNMENT") return fallbackText || null;
+  if (lessonType !== "RESOURCE") return null;
+
+  const article = await buildAIArticleContent({
+    courseTitle,
+    courseDescription,
+    sectionTitle,
+    lessonTitle,
+    lessonDescription,
+  });
+  return article || fallbackText || null;
 }
 
 function looksLikeGenericSectionTitle(value) {
@@ -1635,15 +1660,20 @@ export async function createCourseAIDraft(userId, payload, options = {}) {
             lessonTitle: resolvedLessonTitle,
             lessonDescription: lessonPayload.description,
           })),
-          assignmentText:
-            lessonType === "RESOURCE" || lessonType === "ASSIGNMENT"
-              ? resolveCurriculumDescriptionText(
-                  lessonPayload.description,
-                  resolvedLessonTitle,
-                  sectionPayload.title,
-                  course.title,
-                )
-              : null,
+          assignmentText: await buildAILessonAssignmentText({
+            lessonType,
+            courseTitle: course.title,
+            courseDescription: course.description,
+            sectionTitle: sectionPayload.title,
+            lessonTitle: resolvedLessonTitle,
+            lessonDescription: lessonPayload.description,
+            fallbackText: resolveCurriculumDescriptionText(
+              lessonPayload.description,
+              resolvedLessonTitle,
+              sectionPayload.title,
+              course.title,
+            ),
+          }),
           position: lessonIndex + 1,
           durationInSeconds: Number(lessonPayload.durationInSeconds || 0),
           isPreview: sectionIndex === 0 && lessonIndex === 0,
@@ -2822,7 +2852,7 @@ export async function getCourseForManagement(user, slug) {
   }
 
   const isOwner = course.educatorId === user?.id;
-  const isAdmin = Array.isArray(user?.roles) && user.roles.includes("ADMIN");
+  const isAdmin = canReviewCourseContent(user);
   if (!isOwner && !isAdmin) {
     throw new ApiError(403, "Forbidden");
   }
@@ -3403,7 +3433,7 @@ function canViewCourseRoute(course, actor) {
   if (course.workflowStatus === "PUBLISHED") return true;
 
   if (!actor?.id) return false;
-  if (Array.isArray(actor.roles) && actor.roles.includes("ADMIN")) return true;
+  if (canReviewCourseContent(actor)) return true;
   if (course.educatorId === actor.id) return true;
 
   return false;
@@ -6032,10 +6062,15 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
             lessonTitle: uniqueLessonTitle,
             lessonDescription,
           })),
-          assignmentText:
-            type === "RESOURCE" || type === "ASSIGNMENT"
-              ? lessonDescription || null
-              : null,
+          assignmentText: await buildAILessonAssignmentText({
+            lessonType: type,
+            courseTitle: course.title,
+            courseDescription: course.description,
+            sectionTitle: section.title,
+            lessonTitle: uniqueLessonTitle,
+            lessonDescription,
+            fallbackText: lessonDescription || null,
+          }),
           position: lessonIndex + 1,
           durationInSeconds,
           isPreview: false,
@@ -6473,10 +6508,15 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
                       lessonDescription: nextDescription,
                     })
                   : {}),
-                assignmentText:
-                  nextType === "RESOURCE" || nextType === "ASSIGNMENT"
-                    ? nextDescription
-                    : null,
+                assignmentText: await buildAILessonAssignmentText({
+                  lessonType: nextType,
+                  courseTitle: course.title,
+                  courseDescription: course.description,
+                  sectionTitle: ownerSection?.title || "",
+                  lessonTitle: nextTitle,
+                  lessonDescription: nextDescription,
+                  fallbackText: nextDescription,
+                }),
               },
             });
             await applyTopicForLesson(lesson.id, {
@@ -6557,10 +6597,15 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
                   lessonDescription: nextDescription,
                 })
               : {}),
-            assignmentText:
-              nextType === "RESOURCE" || nextType === "ASSIGNMENT"
-                ? nextDescription
-                : null,
+            assignmentText: await buildAILessonAssignmentText({
+              lessonType: nextType,
+              courseTitle: course.title,
+              courseDescription: course.description,
+              sectionTitle: ownerSection?.title || "",
+              lessonTitle: nextTitle,
+              lessonDescription: nextDescription,
+              fallbackText: nextDescription,
+            }),
           },
         });
         await applyTopicForLesson(lesson.id, {
@@ -6752,10 +6797,15 @@ export async function updateCourseWithAI(userId, courseId, payload = {}) {
               lessonDescription: nextDescription,
             })
           : {}),
-        assignmentText:
-          nextType === "RESOURCE" || nextType === "ASSIGNMENT"
-            ? nextDescription
-            : null,
+        assignmentText: await buildAILessonAssignmentText({
+          lessonType: nextType,
+          courseTitle: course.title,
+          courseDescription: course.description,
+          sectionTitle: selectedSection?.title || "",
+          lessonTitle: nextTitle,
+          lessonDescription: nextDescription,
+          fallbackText: nextDescription,
+        }),
       },
     });
     const bestTopic = pickBestTopicForAIGeneratedLesson(updateTopicCatalog, {

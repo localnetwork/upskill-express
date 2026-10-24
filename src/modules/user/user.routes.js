@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
-import { authorize } from "../../shared/middleware/rbac.middleware.js";
+import { authorize, authorizePermission } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import {
@@ -114,7 +114,7 @@ router.post(
 router.get(
   "/",
   authenticate,
-  authorize("ADMIN"),
+  authorizePermission("users.view", "users.manage", "users.suspend"),
   cacheGetResponse({
     prefix: "users:list",
     ttlSeconds: 60,
@@ -123,8 +123,8 @@ router.get(
   }),
   asyncHandler(listUsersController),
 );
-router.patch("/:userId/suspend", authenticate, authorize("ADMIN"), validate(adminSuspendUserValidator), asyncHandler(adminSetUserSuspendedController));
-router.patch("/:userId", authenticate, authorize("ADMIN"), validate(adminUpdateUserValidator), asyncHandler(adminUpdateUserController));
+router.patch("/:userId/suspend", authenticate, authorizePermission("users.suspend"), validate(adminSuspendUserValidator), asyncHandler(adminSetUserSuspendedController));
+router.patch("/:userId", authenticate, authorizePermission("users.manage"), validate(adminUpdateUserValidator), asyncHandler(adminUpdateUserController));
 router.delete("/:userId", authenticate, authorize("ADMIN"), asyncHandler(deleteUserController));
 
 export default router;

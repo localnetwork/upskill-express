@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { comparePassword, hashPassword } from "../../shared/utils/security.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
+import { STAFF_ROLE_NAMES } from "../../shared/constants/staffRoles.js";
 import { prisma } from "../../shared/database/prisma.js";
 import { countMany, findById, findByUsername, findMany, updateById } from "./user.repository.js";
 import { listUserActivityEvents, recordActivityEvent } from "../analytics/analytics.service.js";
@@ -23,7 +24,7 @@ function normalizeRoleFilter(rawRole) {
   const normalizedRole = normalizeQueryString(rawRole).toUpperCase();
   if (!normalizedRole || normalizedRole === "ALL") return null;
 
-  const allowedRoles = new Set(["ADMIN", "EDUCATOR", "LEARNER"]);
+  const allowedRoles = new Set(["ADMIN", "EDUCATOR", "LEARNER", ...STAFF_ROLE_NAMES]);
   return allowedRoles.has(normalizedRole) ? normalizedRole : null;
 }
 
@@ -66,7 +67,14 @@ function mapUser(user) {
     link_youtube: user.link_youtube || "",
     link_github: user.link_github || "",
     roles,
-    permissions: mapPermissionsFromRoles(roles),
+    permissions: [
+      ...new Set([
+        ...mapPermissionsFromRoles(roles),
+        ...(user.roles || []).flatMap((row) =>
+          (row.role.permissions || []).map((item) => item.permission.name),
+        ),
+      ]),
+    ],
   };
 }
 
@@ -346,6 +354,9 @@ export async function adminSetUserSuspended(actorId, userId, suspended) {
   if (!target || target.deletedAt) throw new ApiError(404, "User not found");
 
   const actorRoles = new Set((actor?.roles || []).map((row) => row.role.name));
+  if (!actorRoles.has("ADMIN") && (target.roles || []).some((row) => row.role.name === "ADMIN")) {
+    throw new ApiError(403, "Only an admin can suspend an admin account");
+  }
   const shared = (target.roles || []).some((row) => actorRoles.has(row.role.name));
   if (shared) {
     throw new ApiError(403, "You cannot suspend an account that has the same role as yours");

@@ -4,6 +4,8 @@ import {
   listPermissions,
   listRoles,
   setRolePermissions,
+  setUserStaffRoles,
+  createUserByAdmin,
 } from "./admin-roles.service.js";
 import {
   approveCourse,
@@ -33,6 +35,16 @@ export async function createRoleController(req, res) {
 export async function setRolePermissionsController(req, res) {
   const data = await setRolePermissions(req.params.roleId, req.body.permissionIds);
   return res.json({ message: "Role permissions updated", data });
+}
+
+export async function createUserByAdminController(req, res) {
+  const data = await createUserByAdmin(req.body);
+  return res.status(201).json({ message: "User created", data });
+}
+
+export async function setUserStaffRolesController(req, res) {
+  const data = await setUserStaffRoles(req.user.id, req.params.userId, req.body.roles);
+  return res.json({ message: "User staff roles updated", data });
 }
 
 export async function deleteRoleController(req, res) {
