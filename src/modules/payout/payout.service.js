@@ -7,6 +7,7 @@ import { env } from "../../shared/config/env.js";
 import { getPlatformCommerceSettings } from "../platform-settings/platform-settings.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { mapWithConcurrency } from "../../shared/utils/concurrency.js";
+import { getAvailableEducatorEarnings } from "../earnings/earnings.service.js";
 
 const MIN_PAYOUT_AMOUNT_PHP = 500;
 const PAYOUT_REVIEW_ESTIMATE_DAYS = 3;
@@ -913,6 +914,19 @@ async function getAvailableOrderItems(educatorId, eligibilityCutoff) {
   return normalizeOrderItemsForPayout(rows);
 }
 
+// Subscription/trial earnings enter the payout flow as pseudo order items.
+async function getAvailableEarningItems(educatorId) {
+  const rows = await getAvailableEducatorEarnings(prisma, educatorId);
+  return rows.map((row) => ({
+    id: row.id,
+    kind: "EARNING",
+    unitPrice: Number(row.amount),
+    discountAmount: 0,
+    payoutPlatformFeeAmount: 0,
+    payoutEducatorAmount: Number(row.amount),
+  }));
+}
+
 export async function getMyPayoutSummary(educatorId) {
   const now = new Date();
   const settings = await getPlatformCommerceSettings();
@@ -993,11 +1007,15 @@ export async function getMyPayoutSummary(educatorId) {
     }),
   ]);
 
-  const availableBalance = Number(
-    (eligibleItems || [])
-      .reduce((sum, item) => sum + Number(item?.payoutEducatorAmount || 0), 0)
-      .toFixed(2),
+  const earningItems = await getAvailableEarningItems(educatorId);
+  const earningsBalance = Number(
+    earningItems.reduce((sum, item) => sum + item.payoutEducatorAmount, 0).toFixed(2),
   );
+  const salesBalance = (eligibleItems || []).reduce(
+    (sum, item) => sum + Number(item?.payoutEducatorAmount || 0),
+    0,
+  );
+  const availableBalance = Number((salesBalance + earningsBalance).toFixed(2));
   const normalizedCurrentMonthItems = normalizeOrderItemsForPayout(currentMonthItems || []);
   const thisMonthEarnings = Number(
     normalizedCurrentMonthItems
@@ -1038,6 +1056,8 @@ export async function getMyPayoutSummary(educatorId) {
     currency: env.paypalPayoutCurrency,
     payoutCycle: cycleWindow.payoutCycle,
     availableBalance: Number(availableBalance.toFixed(2)),
+    salesBalance: Number(salesBalance.toFixed(2)),
+    subscriptionEarningsBalance: earningsBalance,
     thisMonthEarnings: Number(thisMonthEarnings.toFixed(2)),
     hasVerifiedPayoutAccount,
     canRequestPayout: cannotRequestReason.length === 0,
@@ -1088,10 +1108,11 @@ export async function requestPayout(educatorId, payload) {
     );
   }
 
-  const items = await getAvailableOrderItems(
-    educatorId,
-    cycleWindow.eligibilityCutoff,
-  );
+  const [saleItems, earningItems] = await Promise.all([
+    getAvailableOrderItems(educatorId, cycleWindow.eligibilityCutoff),
+    getAvailableEarningItems(educatorId),
+  ]);
+  const items = [...saleItems, ...earningItems];
   if (items.length === 0) {
     throw new ApiError(
       400,
@@ -1156,7 +1177,12 @@ export async function requestPayout(educatorId, payload) {
         reviewNote: "Auto-approved payout request",
         note: payload.note || null,
         calculationSnapshot: {
-          orderItemIds: selected.map((item) => item.id),
+          orderItemIds: selected
+            .filter((item) => item.kind !== "EARNING")
+            .map((item) => item.id),
+          earningIds: selected
+            .filter((item) => item.kind === "EARNING")
+            .map((item) => item.id),
           gross: selected.reduce(
             (sum, item) => sum + Number(item.unitPrice),
             0,
@@ -1183,7 +1209,17 @@ export async function requestPayout(educatorId, payload) {
       },
     });
 
-    for (const item of selected) {
+    const selectedEarningIds = selected
+      .filter((item) => item.kind === "EARNING")
+      .map((item) => item.id);
+    if (selectedEarningIds.length > 0) {
+      await tx.educatorEarning.updateMany({
+        where: { id: { in: selectedEarningIds }, payoutRequestId: null },
+        data: { payoutRequestId: payout.id },
+      });
+    }
+
+    for (const item of selected.filter((entry) => entry.kind !== "EARNING")) {
       await tx.payoutRequestItem.create({
         data: {
           payoutRequestId: payout.id,
@@ -1386,6 +1422,10 @@ export async function rejectPayout(adminId, payoutRequestId, reviewNote) {
       reviewNote: reviewNote || null,
     },
   });
+  await prisma.educatorEarning.updateMany({
+    where: { payoutRequestId: updated.id },
+    data: { payoutRequestId: null, status: "AVAILABLE" },
+  });
   await appendPayoutEvent(updated.id, "PAYOUT.REJECTED", {
     rejectedById: adminId,
     reviewNote: reviewNote || null,
@@ -1458,6 +1498,10 @@ export async function returnMyFailedPayout(educatorId, payoutRequestId) {
     // Releasing the items makes the earnings available for a new payout.
     await tx.payoutRequestItem.deleteMany({
       where: { payoutRequestId: payout.id },
+    });
+    await tx.educatorEarning.updateMany({
+      where: { payoutRequestId: payout.id },
+      data: { payoutRequestId: null, status: "AVAILABLE" },
     });
     await tx.payoutRequestEvent.create({
       data: {
@@ -1586,6 +1630,10 @@ export async function executePayout(payoutRequestId, options = {}) {
           ? `PayPal batch status: ${batchStatus}`
           : payout.reviewNote,
     },
+  });
+  await prisma.educatorEarning.updateMany({
+    where: { payoutRequestId: updated.id },
+    data: { status: "PAID" },
   });
   const executionEventType =
     batchStatus && batchStatus !== "SUCCESS"

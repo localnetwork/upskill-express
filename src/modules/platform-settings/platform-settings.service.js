@@ -23,7 +23,64 @@ const SETTINGS = {
     defaultValue: "PHP",
     description: "Default currency used for checkout and payout records",
   },
+  trialEnabled: {
+    key: "TRIAL_ENABLED",
+    defaultValue: true,
+    description: "Give newly verified learners a free trial",
+  },
+  trialDays: {
+    key: "TRIAL_DAYS",
+    defaultValue: 7,
+    description: "Length of the learner free trial in days",
+  },
+  trialMaxCoursesPerLearner: {
+    key: "TRIAL_MAX_COURSES",
+    defaultValue: 3,
+    description: "Max Trial Pool courses a learner can open during the trial",
+  },
+  trialPoolMaxPercent: {
+    key: "TRIAL_POOL_MAX_PERCENT",
+    defaultValue: 20,
+    description: "Max share of published courses that can be in the Trial Pool",
+  },
+  trialConversionBonus: {
+    key: "TRIAL_CONVERSION_BONUS",
+    defaultValue: 50,
+    description: "Bonus paid to an educator when a trial learner buys their course",
+  },
+  trialConversionWindowDays: {
+    key: "TRIAL_CONVERSION_WINDOW_DAYS",
+    defaultValue: 30,
+    description: "Days after trial access in which a purchase counts as a conversion",
+  },
+  subscriptionPoolPercent: {
+    key: "SUBSCRIPTION_POOL_PERCENT",
+    defaultValue: 45,
+    description: "Share of net subscription revenue distributed to educators by watch time",
+  },
 };
+
+const NUMERIC_SETTING_KEYS = {
+  trialDays: { min: 1, max: 60, integer: true },
+  trialMaxCoursesPerLearner: { min: 1, max: 50, integer: true },
+  trialPoolMaxPercent: { min: 0, max: 100 },
+  trialConversionBonus: { min: 0, max: 100000 },
+  trialConversionWindowDays: { min: 1, max: 365, integer: true },
+  subscriptionPoolPercent: { min: 0, max: 100 },
+};
+
+function toBoundedNumber(value, fallback, { min, max, integer }) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized)) return fallback;
+  const bounded = Math.min(Math.max(normalized, min), max);
+  return integer ? Math.round(bounded) : Number(bounded.toFixed(2));
+}
+
+function toBoolean(value, fallback) {
+  if (typeof value === "boolean") return value;
+  if (value === undefined || value === null) return fallback;
+  return String(value).toLowerCase() === "true";
+}
 
 function toPercent(value, fallback) {
   const normalized = Number(value);
@@ -68,6 +125,20 @@ function mapSettings(rows = []) {
       values.get(SETTINGS.defaultCurrency.key),
       SETTINGS.defaultCurrency.defaultValue,
     ),
+    trialEnabled: toBoolean(
+      values.get(SETTINGS.trialEnabled.key),
+      SETTINGS.trialEnabled.defaultValue,
+    ),
+    ...Object.fromEntries(
+      Object.entries(NUMERIC_SETTING_KEYS).map(([name, rules]) => [
+        name,
+        toBoundedNumber(
+          values.get(SETTINGS[name].key),
+          SETTINGS[name].defaultValue,
+          rules,
+        ),
+      ]),
+    ),
   };
 }
 
@@ -105,7 +176,32 @@ export async function updatePlatformCommerceSettings(payload) {
       payload.defaultCurrency === undefined
         ? current.defaultCurrency
         : toCurrency(payload.defaultCurrency, current.defaultCurrency),
+    trialEnabled: toBoolean(payload.trialEnabled, current.trialEnabled),
+    ...Object.fromEntries(
+      Object.entries(NUMERIC_SETTING_KEYS).map(([name, rules]) => [
+        name,
+        payload[name] === undefined
+          ? current[name]
+          : toBoundedNumber(payload[name], current[name], rules),
+      ]),
+    ),
   };
+
+  const extraUpserts = ["trialEnabled", ...Object.keys(NUMERIC_SETTING_KEYS)].map(
+    (name) =>
+      prisma.platformSetting.upsert({
+        where: { key: SETTINGS[name].key },
+        update: {
+          value: String(next[name]),
+          description: SETTINGS[name].description,
+        },
+        create: {
+          key: SETTINGS[name].key,
+          value: String(next[name]),
+          description: SETTINGS[name].description,
+        },
+      }),
+  );
 
   await prisma.$transaction([
     prisma.platformSetting.upsert({
@@ -156,6 +252,7 @@ export async function updatePlatformCommerceSettings(payload) {
         description: SETTINGS.defaultCurrency.description,
       },
     }),
+    ...extraUpserts,
   ]);
 
   return next;

@@ -39,6 +39,10 @@ export const env = {
     process.env.PAYPAL_WEBHOOK_ID ||
     process.env.PAYPAL_PAYOUTS_WEBHOOK_ID ||
     "",
+  paypalSubscriptionWebhookId:
+    process.env.PAYPAL_SUBSCRIPTION_WEBHOOK_ID ||
+    process.env.PAYPAL_WEBHOOK_ID ||
+    "",
   xenditBaseUrl: process.env.XENDIT_BASE_URL || "https://api.xendit.co",
   xenditSecretKey: process.env.XENDIT_SECRET_KEY || "",
   xenditCallbackToken: process.env.XENDIT_CALLBACK_TOKEN || "",

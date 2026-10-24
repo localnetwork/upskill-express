@@ -1,4 +1,5 @@
 import path from "path";
+import { activeEnrollmentFilter } from "../access/access.service.js";
 import { Readable } from "stream";
 import fs from "fs/promises";
 import jwt from "jsonwebtoken";
@@ -638,7 +639,7 @@ async function ensureLearnerOwnsQuizLesson(userId, lessonId) {
     where: {
       userId,
       courseId: lesson.courseId,
-      status: "ACTIVE",
+      ...activeEnrollmentFilter(),
     },
   });
 
@@ -669,7 +670,7 @@ async function ensureLearnerOwnsCodingLesson(userId, lessonId) {
     where: {
       userId,
       courseId: lesson.courseId,
-      status: "ACTIVE",
+      ...activeEnrollmentFilter(),
     },
   });
 
@@ -1443,7 +1444,7 @@ async function canAccessCourseMedia(userId, courseId) {
       where: {
         userId,
         courseId,
-        status: "ACTIVE",
+        ...activeEnrollmentFilter(),
       },
       select: { id: true },
     }),
@@ -1796,7 +1797,7 @@ async function assertUserCanAccessMedia(user, mediaSource) {
         where: {
           userId,
           courseId: mediaSource.courseId,
-          status: "ACTIVE",
+          ...activeEnrollmentFilter(),
         },
         select: { id: true, courseId: true },
       }),

@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { activeEnrollmentFilter } from "../access/access.service.js";
 import { prisma } from "../../shared/database/prisma.js";
 import { env } from "../../shared/config/env.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
@@ -163,7 +164,8 @@ export async function generateCourseCertificate(userId, courseSlug) {
   const enrollment = await prisma.enrollment.findFirst({
     where: {
       userId,
-      status: { in: ["ACTIVE", "COMPLETED"] },
+      ...activeEnrollmentFilter(),
+      accessSource: { not: "TRIAL" },
       course: {
         slug: String(courseSlug || "").trim(),
         deletedAt: null,

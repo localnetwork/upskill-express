@@ -7,6 +7,7 @@ import {
   startAutoNudgeScheduler,
   stopAutoNudgeScheduler,
 } from "./src/modules/communication/communication.scheduler.js";
+import { startAccessScheduler, stopAccessScheduler } from "./src/modules/access/access.scheduler.js";
 import { prisma } from "./src/shared/database/prisma.js";
 
 const PORT = env.port;
@@ -26,6 +27,7 @@ async function shutdown(signal) {
   // Stop scheduled tasks
   stopAutoPayoutScheduler();
   stopAutoNudgeScheduler();
+  stopAccessScheduler();
 
   // Force exit after timeout if something hangs
   const forceExitTimer = setTimeout(() => {
@@ -78,4 +80,5 @@ server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   startAutoPayoutScheduler();
   startAutoNudgeScheduler();
+  startAccessScheduler();
 });

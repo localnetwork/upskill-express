@@ -60,7 +60,7 @@ export async function resetPasswordController(req, res) {
 }
 
 export async function verifyEmailController(req, res) {
-  const result = await verifyEmail(req.body.token);
+  const result = await verifyEmail(req.body.token, { req });
   return res.status(200).json({
     message: "Email verified",
     data: result,

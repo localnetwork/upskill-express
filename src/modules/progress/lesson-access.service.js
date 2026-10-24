@@ -1,4 +1,5 @@
 import { prisma } from "../../shared/database/prisma.js";
+import { activeEnrollmentFilter } from "../access/access.service.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 
 function normalizeUnlockType(value) {
@@ -195,7 +196,7 @@ export async function assertLessonUnlockedForUser(userId, lessonId) {
     where: {
       userId,
       courseId: lesson.courseId,
-      status: "ACTIVE",
+      ...activeEnrollmentFilter(),
     },
     select: { id: true },
   });

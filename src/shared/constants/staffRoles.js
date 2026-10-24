@@ -15,6 +15,8 @@ export const STAFF_PERMISSIONS = {
   "reports.revenue": "View revenue reports",
   "settings.view": "View platform settings",
   "settings.manage": "Change platform settings",
+  "earnings.manage": "Manage subscription plans and calculate or publish educator earnings cycles",
+  "trial.manage": "View the free-trial funnel and extend learner trials",
 };
 
 export const STAFF_ROLES = {
@@ -22,6 +24,7 @@ export const STAFF_ROLES = {
     description: "Handles payouts, revenue reports and platform fee settings",
     permissions: [
       "payouts.manage",
+      "earnings.manage",
       "reports.revenue",
       "settings.view",
       "settings.manage",
@@ -39,7 +42,7 @@ export const STAFF_ROLES = {
   },
   SUPPORT_AGENT: {
     description: "Looks up users and suspends or reactivates accounts",
-    permissions: ["users.view", "users.suspend", "courses.list"],
+    permissions: ["users.view", "users.suspend", "courses.list", "trial.manage"],
   },
   ANALYST: {
     description: "Read-only access to reports and the course list",
@@ -100,6 +103,7 @@ export const ROLE_GUIDES = {
     summary: "Handles money movement: educator payouts, revenue visibility and platform fees.",
     access: [
       "Review, approve, reject and execute educator payouts",
+      "Manage subscription plans, then calculate and publish monthly educator earnings",
       "View revenue reports",
       "View and change platform settings such as platform fee",
       "Opens the Employee Dashboard: Payouts, Reports and Platform Settings tabs",
@@ -135,6 +139,7 @@ export const ROLE_GUIDES = {
     access: [
       "Search and view the user list",
       "Suspend and reactivate learner and educator accounts",
+      "View the free-trial funnel and extend a learner's trial",
       "View the course list to help users find a course",
       "Opens the Employee Dashboard: Users and Course Review (list only) tabs",
     ],

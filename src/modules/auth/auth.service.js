@@ -1,4 +1,5 @@
 import { prisma } from "../../shared/database/prisma.js";
+import { startTrialIfEligible } from "../access/trial.service.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import {
   signAccessToken,
@@ -515,6 +516,10 @@ export async function googleAuth(payload, context = {}) {
     dedupeWindowSeconds: 5,
   });
 
+  await startTrialIfEligible(user.id, {
+    ipAddress: getRequestIpAddress(context.req),
+  });
+
   return {
     accessToken,
     refreshToken,
@@ -586,7 +591,7 @@ export async function resetPassword(token, password) {
   return { success: true };
 }
 
-export async function verifyEmail(token) {
+export async function verifyEmail(token, context = {}) {
   const user = await prisma.user.findFirst({
     where: { verificationToken: token, deletedAt: null },
   });
@@ -598,6 +603,10 @@ export async function verifyEmail(token) {
   await updateUser(user.id, {
     verificationToken: null,
     emailVerifiedAt: new Date(),
+  });
+
+  await startTrialIfEligible(user.id, {
+    ipAddress: context.req ? getRequestIpAddress(context.req) : null,
   });
 
   return { success: true };

@@ -1,4 +1,5 @@
 import { prisma } from "../../shared/database/prisma.js";
+
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 
@@ -107,7 +108,7 @@ export async function addToCart(userId, courseId, options = {}) {
       },
     }),
     prisma.enrollment.findFirst({
-      where: { userId, courseId },
+      where: { userId, courseId, accessSource: "PURCHASE" },
     }),
   ]);
 

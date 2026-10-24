@@ -1,4 +1,5 @@
 import { prisma } from "../../shared/database/prisma.js";
+import { activeEnrollmentFilter } from "../access/access.service.js";
 import { Prisma } from "@prisma/client";
 import { deleteStreamVideosForLessons } from "../../shared/storage/stream-cleanup.js";
 import axios from "axios";
@@ -2279,7 +2280,7 @@ export async function listCourses(query, user) {
       prisma.enrollment.findMany({
         where: {
           userId: user.id,
-          status: "ACTIVE",
+          ...activeEnrollmentFilter(),
         },
         select: { courseId: true },
       }),
@@ -3499,7 +3500,9 @@ export async function getCourseRoute(slug, actor = null) {
 
   const [isEnrolled, isInCart, isInWishlist, activePromotionCouponRows] = await Promise.all([
     actor?.id
-      ? prisma.enrollment.findFirst({ where: { userId: actor.id, courseId: course.id } })
+      ? prisma.enrollment.findFirst({
+          where: { userId: actor.id, courseId: course.id, ...activeEnrollmentFilter() },
+        })
       : Promise.resolve(null),
     actor?.id
       ? prisma.cartItem.findFirst({
@@ -3727,7 +3730,7 @@ export async function getCourseForLearner(userId, slug) {
   const enrollment = await prisma.enrollment.findFirst({
     where: {
       userId,
-      status: "ACTIVE",
+      ...activeEnrollmentFilter(),
       course: {
         OR: [{ slug }, { id: slug }],
         deletedAt: null,
@@ -4604,7 +4607,7 @@ async function getLearnerCourseStateSets(userId) {
     prisma.enrollment.findMany({
       where: {
         userId,
-        status: { in: ["ACTIVE", "COMPLETED"] },
+        ...activeEnrollmentFilter(),
       },
       select: { courseId: true },
     }),
@@ -5583,7 +5586,7 @@ export async function askCourseLearningAssistant(userId, slug, payload = {}) {
   const enrollment = await prisma.enrollment.findFirst({
     where: {
       userId,
-      status: { in: ["ACTIVE", "COMPLETED"] },
+      ...activeEnrollmentFilter(),
       course: {
         OR: [{ slug }, { id: slug }],
         deletedAt: null,

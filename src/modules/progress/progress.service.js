@@ -1,4 +1,5 @@
 import { prisma } from "../../shared/database/prisma.js";
+import { activeEnrollmentFilter } from "../access/access.service.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { createNotification } from "../notification/notification.service.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
@@ -16,6 +17,7 @@ async function getEnrollmentForLesson(userId, lessonId) {
     where: {
       userId,
       courseId: lesson.courseId,
+      ...activeEnrollmentFilter(),
     },
     include: {
       course: {

@@ -36,6 +36,63 @@ enum EnrollmentStatus {
   ACTIVE
   COMPLETED
   CANCELLED
+  EXPIRED
+}
+
+enum EnrollmentAccessSource {
+  PURCHASE
+  TRIAL
+  SUBSCRIPTION
+}
+
+enum EntitlementSource {
+  TRIAL
+  SUBSCRIPTION
+  ADMIN
+}
+
+enum PlanInterval {
+  MONTH
+  YEAR
+}
+
+enum SubscriptionStatus {
+  PENDING
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum SubscriptionInvoiceStatus {
+  PAID
+  REFUNDED
+  FAILED
+}
+
+enum TrialEventType {
+  STARTED
+  COURSE_ACCESSED
+  CONVERTED
+  EXPIRED
+}
+
+enum EarningsCycleStatus {
+  OPEN
+  CALCULATED
+  PUBLISHED
+}
+
+enum EducatorEarningType {
+  SUBSCRIPTION_POOL
+  TRIAL_CONVERSION
+}
+
+enum EducatorEarningStatus {
+  PENDING
+  AVAILABLE
+  PAID
 }
 
 enum OrderStatus {

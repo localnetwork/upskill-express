@@ -14,7 +14,7 @@ function assertConfigured() {
   }
 }
 
-async function xenditRequest(method, path, data) {
+async function xenditRequest(method, path, data, extraHeaders = {}) {
   assertConfigured();
   try {
     const response = await axios({
@@ -22,7 +22,7 @@ async function xenditRequest(method, path, data) {
       url: `${env.xenditBaseUrl}${path}`,
       data,
       auth: { username: env.xenditSecretKey, password: "" },
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...extraHeaders },
     });
     return response.data;
   } catch (error) {
@@ -106,6 +106,96 @@ export async function createXenditInvoice({
     failure_redirect_url: failureRedirectUrl,
   });
   return normalizeXenditInvoice(invoice);
+}
+
+export function isXenditConfigured() {
+  return Boolean(env.xenditSecretKey);
+}
+
+const SUBSCRIPTIONS_API_VERSION = { "api-version": "2026-01-01" };
+
+// Hosted card page that takes the first payment and saves the card for renewals.
+export async function createXenditSubscriptionSession({
+  referenceId,
+  customer,
+  amount,
+  currency,
+  description,
+  successUrl,
+  cancelUrl,
+}) {
+  return xenditRequest("POST", "/sessions", {
+    reference_id: referenceId,
+    customer: {
+      reference_id: customer.referenceId,
+      type: "INDIVIDUAL",
+      email: customer.email || undefined,
+      individual_detail: { given_names: customer.name || "Learner" },
+    },
+    session_type: "PAY",
+    allow_save_payment_method: "FORCED",
+    mode: "PAYMENT_LINK",
+    allowed_payment_channels: ["CARDS"],
+    amount: Number(Number(amount).toFixed(2)),
+    currency,
+    country: "PH",
+    locale: "en",
+    description,
+    success_return_url: successUrl,
+    cancel_return_url: cancelUrl,
+  });
+}
+
+export async function getXenditSession(sessionId) {
+  return xenditRequest("GET", `/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export async function createXenditRecurringPlan({
+  referenceId,
+  customerId,
+  tokenId,
+  amount,
+  currency,
+  interval,
+  anchorDate,
+  description,
+}) {
+  return xenditRequest(
+    "POST",
+    "/recurring/plans",
+    {
+      reference_id: referenceId,
+      customer_id: customerId,
+      currency,
+      amount: Number(Number(amount).toFixed(2)),
+      payment_tokens: [{ payment_token_id: tokenId, rank: 1 }],
+      schedule: {
+        interval,
+        interval_count: 1,
+        anchor_date: anchorDate.toISOString(),
+        retry_interval: "DAY",
+        retry_interval_count: 3,
+        total_retry: 3,
+        failed_attempt_notifications: [1, 3],
+      },
+      immediate_payment: false,
+      failed_cycle_action: "STOP",
+      notification_channels: ["EMAIL"],
+      locale: "en",
+      payment_link_for_failed_attempt: false,
+      description,
+    },
+    SUBSCRIPTIONS_API_VERSION,
+  );
+}
+
+export async function deactivateXenditRecurringPlan(planId) {
+  return xenditRequest(
+    "POST",
+    `/recurring/plans/${encodeURIComponent(planId)}/deactivate`,
+    {},
+    SUBSCRIPTIONS_API_VERSION,
+  );
 }
 
 export async function getXenditInvoice(invoiceId) {
