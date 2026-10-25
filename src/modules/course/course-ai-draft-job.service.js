@@ -23,6 +23,7 @@ function getPublicJob(job) {
     message: job.message,
     preview: job.preview,
     draftProgress: job.draftProgress,
+    course: job.course || null,
     result: job.result,
     error: job.error,
     createdAt: job.createdAt,
@@ -45,6 +46,7 @@ export function createCourseAIDraftJob(userId, payload) {
     message: "Queued",
     preview: null,
     draftProgress: null,
+    course: null,
     result: null,
     error: null,
     createdAt: nowIso,
@@ -85,6 +87,9 @@ export function createCourseAIDraftJob(userId, payload) {
           }
           if (progressPayload.draftProgress) {
             active.draftProgress = progressPayload.draftProgress;
+          }
+          if (progressPayload.course) {
+            active.course = progressPayload.course;
           }
           active.updatedAt = new Date().toISOString();
         },

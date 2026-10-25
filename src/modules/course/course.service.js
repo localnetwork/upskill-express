@@ -322,6 +322,42 @@ function normalizeLevelTitle(value) {
     .toLowerCase();
 }
 
+function tokenizeSearch(value) {
+  return String(value || "")
+    .toLowerCase()
+    .split(/[^a-z0-9+#.]+/)
+    .map((token) => token.replace(/^\.+|\.+$/g, ""))
+    .filter((token) => token.length > 1)
+    .map((token) => (token.length > 3 && token.endsWith("s") ? token.slice(0, -1) : token));
+}
+
+function scoreSearchMatch(fields, query, tokens) {
+  const phrase = query.toLowerCase();
+  let score = 0;
+  let matchedTokens = 0;
+  const lowered = fields.map(({ text, weight }) => ({
+    text: String(text || "").toLowerCase(),
+    weight,
+  }));
+
+  for (const { text, weight } of lowered) {
+    if (text.includes(phrase)) score += weight * 5;
+  }
+
+  for (const token of tokens) {
+    let best = 0;
+    for (const { text, weight } of lowered) {
+      const regex = new RegExp(`(^|[^a-z0-9])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+      if (regex.test(text)) best = Math.max(best, weight);
+    }
+    if (best > 0) matchedTokens += 1;
+    score += best;
+  }
+
+  if (tokens.length > 0 && matchedTokens === tokens.length) score += 10;
+  return { score, matchedTokens };
+}
+
 function toCourseSearchText(course) {
   return `${course?.title || ""} ${course?.subtitle || ""}`.trim();
 }
@@ -384,7 +420,7 @@ function createScoredCourseRow(course, metrics = {}) {
   };
 }
 
-function mapDiscoveryCourseItem(course) {
+function mapDiscoveryCourseItemBase(course, pictures = new Map()) {
   return {
     id: course.id,
     slug: course.slug,
@@ -405,6 +441,7 @@ function mapDiscoveryCourseItem(course) {
           username: course.educator.username,
           first_name: course.educator.firstName || "",
           last_name: course.educator.lastName || "",
+          user_picture: pictures.get(course.educator.id) || null,
         }
       : null,
     cover_image: mapLegacyMedia(
@@ -1555,6 +1592,7 @@ export async function createCourseAIDraft(userId, payload, options = {}) {
     step: "saving_goals",
     message: "Saving learning goals, requirements, and audience",
     progressPercent: 55,
+    course: { id: course.id, slug: course.slug },
   });
 
   if (
@@ -2399,6 +2437,12 @@ export async function getCourseDiscoveryData(query = {}) {
     return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
   });
 
+  const discoveryPictures = await getLatestUserPicturesMap(
+    publishedCourses.map((course) => course?.educator?.id),
+  );
+  const mapDiscoveryCourseItem = (course) =>
+    mapDiscoveryCourseItemBase(course, discoveryPictures);
+
   const trendingCourses = sortedByTrend.slice(0, limit).map(mapDiscoveryCourseItem);
   const suggestedCourses = [...scoredCourses]
     .sort((a, b) => {
@@ -2556,59 +2600,86 @@ export async function getCourseDiscoveryData(query = {}) {
   const trendingTopics = sortTrendRows(Array.from(topicTrendMap.values())).slice(0, 12);
 
   const normalizedSearch = search.toLowerCase();
-  const matchedCourses =
-    normalizedSearch.length > 0
-      ? sortedByTrend
-          .filter((course) => toCourseSearchText(course).toLowerCase().includes(normalizedSearch))
-          .slice(0, limit)
-          .map(mapDiscoveryCourseItem)
-      : [];
+  const searchTokens = tokenizeSearch(search);
+  const requiredTokens = searchTokens.length;
+  const rankCourses = (minTokens) =>
+    sortedByTrend
+      .map((course) => ({
+        course,
+        ...scoreSearchMatch(
+          [
+            { text: course.title, weight: 10 },
+            { text: course.subtitle, weight: 5 },
+            { text: course.category?.name, weight: 6 },
+            { text: course.category?.parent?.name, weight: 4 },
+            { text: course.description, weight: 1 },
+          ],
+          normalizedSearch,
+          searchTokens,
+        ),
+      }))
+      .filter((row) => row.matchedTokens >= minTokens)
+      .sort((a, b) => b.score - a.score || b.course.trendScore - a.course.trendScore);
+  let courseRows = normalizedSearch.length > 0 ? rankCourses(Math.max(1, requiredTokens)) : [];
+  if (normalizedSearch.length > 0 && courseRows.length === 0) courseRows = rankCourses(1);
+  const matchedCourses = courseRows.slice(0, limit).map((row) => mapDiscoveryCourseItem(row.course));
 
   const matchedTopics =
     normalizedSearch.length > 0
-      ? sortTrendRows(Array.from(topicTrendMap.values()))
-          .filter((topic) => String(topic.title || "").toLowerCase().includes(normalizedSearch))
+      ? Array.from(topicTrendMap.values())
+          .map((topic) => ({
+            topic,
+            ...scoreSearchMatch([{ text: topic.title, weight: 10 }], normalizedSearch, searchTokens),
+          }))
+          .filter((row) => row.matchedTokens >= Math.max(1, requiredTokens))
+          .sort((a, b) => b.score - a.score || (b.topic.score || 0) - (a.topic.score || 0))
           .slice(0, limit)
+          .map((row) => row.topic)
       : [];
 
-  const matchedUsers =
+  const matchedUserRows =
     normalizedSearch.length > 0
-      ? (
-          await prisma.user.findMany({
-            where: {
-              deletedAt: null,
-              isActive: true,
-              courses: {
-                some: {
-                  deletedAt: null,
-                  workflowStatus: "PUBLISHED",
-                },
+      ? await prisma.user.findMany({
+          where: {
+            deletedAt: null,
+            isActive: true,
+            courses: {
+              some: {
+                deletedAt: null,
+                workflowStatus: "PUBLISHED",
               },
-              OR: [
-                { username: { contains: search, mode: "insensitive" } },
-                { firstName: { contains: search, mode: "insensitive" } },
-                { lastName: { contains: search, mode: "insensitive" } },
-                { headline: { contains: search, mode: "insensitive" } },
-              ],
             },
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              headline: true,
-            },
-            take: limit,
-            orderBy: { updatedAt: "desc" },
-          })
-        ).map((user) => ({
-          id: user.id,
-          username: user.username,
-          first_name: user.firstName || "",
-          last_name: user.lastName || "",
-          headline: user.headline || "",
-        }))
+            AND: search
+              .split(/\s+/)
+              .filter(Boolean)
+              .map((word) => ({
+                OR: [
+                  { firstName: { contains: word, mode: "insensitive" } },
+                  { lastName: { contains: word, mode: "insensitive" } },
+                  { username: { contains: word, mode: "insensitive" } },
+                ],
+              })),
+          },
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            headline: true,
+          },
+          take: limit,
+          orderBy: { updatedAt: "desc" },
+        })
       : [];
+  const matchedUserPictures = await getLatestUserPicturesMap(matchedUserRows.map((user) => user.id));
+  const matchedUsers = matchedUserRows.map((user) => ({
+    id: user.id,
+    username: user.username,
+    first_name: user.firstName || "",
+    last_name: user.lastName || "",
+    headline: user.headline || "",
+    user_picture: matchedUserPictures.get(user.id) || null,
+  }));
 
   return {
     range_days: days,

@@ -41,6 +41,11 @@ model User {
   courseProgressRecords CourseProgress[]
   lessonProgress        LessonProgress[]
   notifications         Notification[]
+  communityMemberships  CommunityMember[]
+  communityPosts        CommunityPost[]
+  communityComments     CommunityComment[]
+  communityReactions    CommunityReaction[]
+  communityReports      CommunityReport[]
   payoutAccount         PayoutAccount?
   payoutRequests        PayoutRequest[]   @relation("EducatorPayoutRequests")
   reviewedPayouts       PayoutRequest[]   @relation("AdminReviewedPayoutRequests")
@@ -274,6 +279,7 @@ model Course {
   wishlists           Wishlist[]
   orderItems          OrderItem[]
   enrollments         Enrollment[]
+  community           CourseCommunity?
   reviews             Review[]
   progress            CourseProgress[]
   media               Media[]
@@ -1198,4 +1204,115 @@ model EducatorEarning {
   @@index([educatorId, status])
   @@index([cycleId])
   @@map("educator_earnings")
+}
+
+model CourseCommunity {
+  id          String   @id @default(cuid())
+  courseId    String   @unique
+  name        String
+  description String?
+  photoUrl    String?
+  coverUrl    String?
+  themeColor  String   @default("#2563eb")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  course      Course            @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  members     CommunityMember[]
+  posts       CommunityPost[]
+  reports     CommunityReport[]
+
+  @@map("course_communities")
+}
+
+model CommunityMember {
+  id          String    @id @default(cuid())
+  communityId String
+  userId      String
+  role        String    @default("MEMBER")
+  badge       String?
+  bannedAt    DateTime?
+  bannedUntil DateTime?
+  banReason   String?
+  joinedAt    DateTime  @default(now())
+
+  community   CourseCommunity @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([communityId, userId])
+  @@index([communityId, role])
+  @@map("community_members")
+}
+
+model CommunityPost {
+  id          String    @id @default(cuid())
+  communityId String
+  authorId    String
+  body        String
+  imageUrl    String?
+  imageUrls   String[]  @default([])
+  pinned      Boolean   @default(false)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  community   CourseCommunity    @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  author      User               @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  comments    CommunityComment[]
+  reactions   CommunityReaction[]
+
+  @@index([communityId, pinned, createdAt])
+  @@map("community_posts")
+}
+
+model CommunityComment {
+  id        String    @id @default(cuid())
+  postId    String
+  parentId  String?
+  mediaIndex Int?
+  authorId  String
+  body      String
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  post      CommunityPost    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author    User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent    CommunityComment? @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   CommunityComment[] @relation("CommentReplies")
+
+  @@index([postId, createdAt])
+  @@index([parentId])
+  @@map("community_comments")
+}
+
+model CommunityReaction {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  post      CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@map("community_reactions")
+}
+
+model CommunityReport {
+  id          String    @id @default(cuid())
+  communityId String
+  reporterId  String
+  targetType  String
+  targetId    String
+  reason      String
+  status      String    @default("OPEN")
+  resolvedById String?
+  resolvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  community   CourseCommunity @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  reporter    User            @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([communityId, status, createdAt])
+  @@map("community_reports")
 }
