@@ -48,6 +48,24 @@ app.use(cors({ origin: env.corsOrigin }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cacheInvalidationOnMutation());
+
+// Registered before the rate limiter so uptime monitors are never throttled.
+app.get("/api/health", async (_req, res) => {
+  const startedAt = Date.now();
+  let database = "up";
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (_error) {
+    database = "down";
+  }
+
+  res.status(database === "up" ? 200 : 503).json({
+    status: database === "up" ? "ok" : "degraded",
+    uptime: Math.round(process.uptime()),
+    timestamp: new Date().toISOString(),
+    checks: { database, latencyMs: Date.now() - startedAt },
+  });
+});
 // app.use("/api", ddosProtection);
 app.use(
   "/api",
