@@ -93,24 +93,37 @@ function buildCategoryTree(categories) {
   return roots;
 }
 
-// Adds `courses_count` (published courses, including all descendant categories) to every tree node.
+// Adds `courses_count` (published courses) and `learners_count` (enrollments), both rolled up across descendants, to every tree node.
 async function attachCourseCounts(tree) {
-  const groups = await prisma.course.groupBy({
-    by: ["categoryId"],
+  const courses = await prisma.course.findMany({
     where: {
       deletedAt: null,
       categoryId: { not: null },
       OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
     },
-    _count: { _all: true },
+    select: { categoryId: true, _count: { select: { enrollments: true } } },
   });
-  const direct = new Map(groups.map((g) => [g.categoryId, g._count._all]));
+  const direct = new Map();
+  const directLearners = new Map();
+  for (const c of courses) {
+    direct.set(c.categoryId, (direct.get(c.categoryId) || 0) + 1);
+    directLearners.set(
+      c.categoryId,
+      (directLearners.get(c.categoryId) || 0) + c._count.enrollments,
+    );
+  }
 
   const roll = (node) => {
     let total = direct.get(node.id) || 0;
-    for (const child of node.children || []) total += roll(child);
+    let learners = directLearners.get(node.id) || 0;
+    for (const child of node.children || []) {
+      const [t, l] = roll(child);
+      total += t;
+      learners += l;
+    }
     node.courses_count = total;
-    return total;
+    node.learners_count = learners;
+    return [total, learners];
   };
   tree.forEach(roll);
 }
