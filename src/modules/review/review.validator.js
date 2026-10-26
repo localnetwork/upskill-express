@@ -24,7 +24,7 @@ export const replyToReviewValidator = z.object({
     .string()
     .trim()
     .min(1, "Reply is required")
-    .max(2000, "Reply must be at most 2000 characters"),
+    .max(5000, "Reply must be at most 5000 characters"),
 });
 
 export const instructorCourseReviewsParamsValidator = z.object({

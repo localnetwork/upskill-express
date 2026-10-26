@@ -20,6 +20,7 @@ import {
   listAuthoredCourses,
   listCourseCouponsForManagement,
   listCourses,
+  listAlsoBoughtCourses,
   publishCourse,
   submitCourseForApproval,
   unpublishCourse,
@@ -169,6 +170,14 @@ export async function listCoursesController(req, res) {
     message: "Courses fetched",
     ...data,
     data: data.data.map(toLegacyCourseSummary),
+  });
+}
+
+export async function listAlsoBoughtCoursesController(req, res) {
+  const data = await listAlsoBoughtCourses(req.params.slug, req.user || null, req.query.limit);
+  return res.json({
+    message: "Courses fetched",
+    data: data.map(toLegacyCourseSummary),
   });
 }
 

@@ -8,9 +8,11 @@ async function runSeeders() {
   const __dirname = path.dirname(__filename);
   const seedersPath = path.join(__dirname, "seeders");
 
+  const only = process.argv[2]?.toLowerCase();
   const files = fs
     .readdirSync(seedersPath)
-    .filter((file) => file.endsWith(".js"));
+    .filter((file) => file.endsWith(".js"))
+    .filter((file) => !only || file.toLowerCase().startsWith(only));
 
   const seeders = [];
 

@@ -28,6 +28,7 @@ import {
   listAuthoredCoursesController,
   listCourseCouponsForManagementController,
   listCoursesController,
+  listAlsoBoughtCoursesController,
   publishCourseController,
   submitCourseController,
   unpublishCourseController,
@@ -83,6 +84,17 @@ router.get(
     tags: ["courses"],
   }),
   asyncHandler(getCourseRouteController),
+);
+router.get(
+  "/:slug/also-bought",
+  authenticateOptional,
+  cacheGetResponse({
+    prefix: "courses:also-bought",
+    ttlSeconds: 120,
+    varyByUser: true,
+    tags: ["courses", "enrollments"],
+  }),
+  asyncHandler(listAlsoBoughtCoursesController),
 );
 router.get(
   "/:slug/learn",

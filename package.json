@@ -13,7 +13,8 @@
     "prisma:generate": "npm run prisma:merge && prisma generate",
     "prisma:migrate": "npm run prisma:merge && prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "seed": "node prisma/seed.js"
+    "seed": "node prisma/seed.js",
+    "seed:reviews": "node prisma/seed.js ReviewSeeder"
   },
   "keywords": [],
   "author": "",

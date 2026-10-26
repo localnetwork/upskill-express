@@ -15,7 +15,16 @@ function normalizeReviewSort(sort) {
   return [{ createdAt: "desc" }];
 }
 
-function mapReviewAuthor(user) {
+function sanitizeReplyHtml(value) {
+  return String(value || "")
+    .replace(/<(script|style|iframe|object|embed)[\s\S]*?(<\/\1>|$)/gi, "")
+    .replace(/<\/?(script|style|iframe|object|embed|link|meta)[^>]*>/gi, "")
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/(href|src)\s*=\s*("|')?\s*javascript:[^"'>\s]*("|')?/gi, "")
+    .trim();
+}
+
+function mapReviewAuthor(user, pictures) {
   const fullName = `${user?.firstName || ""} ${user?.lastName || ""}`.trim();
   return {
     id: user?.id || null,
@@ -23,7 +32,42 @@ function mapReviewAuthor(user) {
     firstName: user?.firstName || "",
     lastName: user?.lastName || "",
     fullName: fullName || user?.username || "Learner",
+    picture: (user?.id && pictures?.get(user.id)) || null,
   };
+}
+
+async function getProfilePicturePaths(userIds = []) {
+  const ids = [...new Set(userIds.filter(Boolean))];
+  const result = new Map();
+  if (!ids.length) return result;
+
+  const settings = await prisma.platformSetting.findMany({
+    where: { key: { in: ids.map((id) => `profile_picture::${id}`) } },
+    select: { key: true, value: true },
+  });
+  const mediaIdByUser = new Map();
+  for (const setting of settings) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(setting.value);
+    } catch (_error) {
+      parsed = null;
+    }
+    const mediaId = String(parsed?.mediaId || parsed?.id || setting.value || "").trim();
+    if (mediaId) mediaIdByUser.set(setting.key.slice("profile_picture::".length), mediaId);
+  }
+  if (!mediaIdByUser.size) return result;
+
+  const media = await prisma.media.findMany({
+    where: { id: { in: [...mediaIdByUser.values()] }, mediaType: "IMAGE" },
+    select: { id: true, storagePath: true },
+  });
+  const pathById = new Map(media.map((item) => [item.id, item.storagePath]));
+  for (const [userId, mediaId] of mediaIdByUser) {
+    const path = pathById.get(mediaId);
+    if (path) result.set(userId, path);
+  }
+  return result;
 }
 
 function isEnrollmentCompleted(enrollment) {
@@ -132,8 +176,23 @@ export async function createReview(userId, payload) {
 export async function listCourseReviews(courseId, query, viewerUserId = null) {
   const { page, limit, skip } = getPagination(query);
   const orderBy = normalizeReviewSort(query.sort);
-  const where = { courseId };
-  const [course, rows, total, aggregate, groupedRatings, canLikeCourseReviews] = await Promise.all([
+  const baseWhere = { courseId };
+  const ratingFilter = Number(query.rating || 0);
+  const searchTerm = String(query.q || query.search || "").trim().slice(0, 100);
+  const where = { ...baseWhere };
+  if (Number.isInteger(ratingFilter) && ratingFilter >= 1 && ratingFilter <= 5) {
+    where.rating = ratingFilter;
+  }
+  if (searchTerm) {
+    where.OR = [
+      { title: { contains: searchTerm, mode: "insensitive" } },
+      { comment: { contains: searchTerm, mode: "insensitive" } },
+      { user: { firstName: { contains: searchTerm, mode: "insensitive" } } },
+      { user: { lastName: { contains: searchTerm, mode: "insensitive" } } },
+      { user: { username: { contains: searchTerm, mode: "insensitive" } } },
+    ];
+  }
+  const [course, rows, filteredTotal, groupedRatings, canLikeCourseReviews] = await Promise.all([
     prisma.course.findFirst({
       where: {
         id: courseId,
@@ -183,18 +242,23 @@ export async function listCourseReviews(courseId, query, viewerUserId = null) {
       orderBy,
     }),
     prisma.review.count({ where }),
-    prisma.review.aggregate({
-      where,
-      _avg: { rating: true },
-    }),
     prisma.review.groupBy({
       by: ["rating"],
-      where,
+      where: baseWhere,
       _count: { rating: true },
     }),
     canUserLikeCourseReview(viewerUserId, courseId),
   ]);
   const canReply = Boolean(viewerUserId && course?.educatorId === viewerUserId);
+
+  const total = groupedRatings.reduce(
+    (sum, item) => sum + Number(item?._count?.rating || 0),
+    0,
+  );
+  const ratingSum = groupedRatings.reduce(
+    (sum, item) => sum + Number(item.rating) * Number(item?._count?.rating || 0),
+    0,
+  );
 
   const ratingDistribution = [5, 4, 3, 2, 1].map((ratingValue) => {
     const row = groupedRatings.find((item) => item.rating === ratingValue);
@@ -206,21 +270,26 @@ export async function listCourseReviews(courseId, query, viewerUserId = null) {
     };
   });
 
+  const pictures = await getProfilePicturePaths([
+    ...rows.map((row) => row.userId),
+    course?.educatorId,
+  ]);
+
   const mappedRows = rows.map((row) => ({
     ...row,
     likesCount: Number(row?._count?.reviewLikes || 0),
     likedByMe: Boolean(viewerUserId && Array.isArray(row.reviewLikes) && row.reviewLikes.length > 0),
     canLike: Boolean(viewerUserId && canLikeCourseReviews && row.userId !== viewerUserId),
     canReply,
-    author: mapReviewAuthor(row.user),
-    courseAuthor: mapReviewAuthor(row?.course?.educator),
+    author: mapReviewAuthor(row.user, pictures),
+    courseAuthor: mapReviewAuthor(row?.course?.educator, pictures),
   }));
 
   return {
-    ...toPagedResult(mappedRows, total, page, limit),
+    ...toPagedResult(mappedRows, filteredTotal, page, limit),
     summary: {
       totalReviews: total,
-      averageRating: Number(aggregate?._avg?.rating || 0),
+      averageRating: total > 0 ? ratingSum / total : 0,
       ratingDistribution,
     },
   };
@@ -317,8 +386,8 @@ export async function replyToReview(userId, reviewId, payload) {
     throw new ApiError(403, "Only the course author can reply to this review");
   }
 
-  const authorReply = String(payload?.authorReply || "").trim();
-  if (!authorReply) {
+  const authorReply = sanitizeReplyHtml(payload?.authorReply);
+  if (!authorReply.replace(/<[^>]*>|&nbsp;/g, "").trim()) {
     throw new ApiError(400, "Reply is required");
   }
 
@@ -368,11 +437,12 @@ export async function replyToReview(userId, reviewId, payload) {
     },
   });
 
+  const pictures = await getProfilePicturePaths([updated.userId, updated?.course?.educator?.id]);
   return {
     ...updated,
     likesCount: Number(updated?._count?.reviewLikes || 0),
-    author: mapReviewAuthor(updated.user),
-    courseAuthor: mapReviewAuthor(updated?.course?.educator),
+    author: mapReviewAuthor(updated.user, pictures),
+    courseAuthor: mapReviewAuthor(updated?.course?.educator, pictures),
   };
 }
 
@@ -532,9 +602,10 @@ export async function listInstructorReviews(userId, query = {}) {
     }),
   ]);
 
+  const pictures = await getProfilePicturePaths(rows.map((row) => row.userId));
   const mappedRows = rows.map((row) => ({
     ...row,
-    author: mapReviewAuthor(row.user),
+    author: mapReviewAuthor(row.user, pictures),
   }));
 
   return {

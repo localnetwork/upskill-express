@@ -51,6 +51,17 @@ async function getLatestUserPicturesMap(userIds = []) {
   const uniqueUserIds = Array.from(new Set((userIds || []).filter(Boolean)));
   if (!uniqueUserIds.length) return new Map();
 
+  const settings = await prisma.platformSetting.findMany({
+    where: { key: { in: uniqueUserIds.map((id) => `profile_picture::${id}`) } },
+    select: { key: true, value: true },
+  });
+  const selectedMediaIds = new Map();
+  for (const setting of settings) {
+    const parsed = safeParseJson(setting.value);
+    const mediaId = String(parsed?.mediaId || parsed?.id || setting.value || "").trim();
+    if (mediaId) selectedMediaIds.set(setting.key.slice("profile_picture::".length), mediaId);
+  }
+
   const mediaRows = await prisma.media.findMany({
     where: {
       userId: { in: uniqueUserIds },
@@ -67,6 +78,15 @@ async function getLatestUserPicturesMap(userIds = []) {
   });
 
   const map = new Map();
+  for (const row of mediaRows) {
+    if (selectedMediaIds.get(row.userId) === row.id) {
+      map.set(row.userId, {
+        id: row.id,
+        path: row.storagePath,
+        title: row.originalName || "",
+      });
+    }
+  }
   for (const row of mediaRows) {
     if (!map.has(row.userId)) {
       map.set(row.userId, {
@@ -2207,7 +2227,14 @@ export async function listCourses(query, user) {
         ? { in: resolvedCategoryIds }
         : query.categoryId || query.category_id || undefined,
     levelId: resolvedLevelId || undefined,
-    id: ratedCourseIds ? { in: ratedCourseIds } : undefined,
+    id: (() => {
+      const explicitIds = Array.isArray(query.ids) ? query.ids : null;
+      if (explicitIds && ratedCourseIds) {
+        return { in: explicitIds.filter((id) => ratedCourseIds.includes(id)) };
+      }
+      if (explicitIds) return { in: explicitIds };
+      return ratedCourseIds ? { in: ratedCourseIds } : undefined;
+    })(),
     priceTier:
       priceFilters.length === 1
         ? priceFilters[0] === "free"
@@ -2697,6 +2724,91 @@ export async function getCourseDiscoveryData(query = {}) {
       trending_courses: trendingCourses,
     },
   };
+}
+
+export async function listAlsoBoughtCourses(slug, user, limit = 12) {
+  const take = clampInteger(limit, 1, 20, 12);
+  const course = await prisma.course.findFirst({
+    where: { slug, deletedAt: null },
+    select: { id: true, categoryId: true, educatorId: true },
+  });
+  if (!course) throw new ApiError(404, "Course not found");
+
+  const publishedCourse = {
+    deletedAt: null,
+    isPublished: true,
+    workflowStatus: "PUBLISHED",
+  };
+  const popularity = [
+    { enrollments: { _count: "desc" } },
+    { createdAt: "desc" },
+  ];
+  const ids = [];
+  const fill = async (extraWhere) => {
+    const remaining = take - ids.length;
+    if (remaining <= 0) return;
+    const rows = await prisma.course.findMany({
+      where: {
+        ...publishedCourse,
+        ...extraWhere,
+        id: { notIn: [course.id, ...ids] },
+      },
+      orderBy: popularity,
+      take: remaining,
+      select: { id: true },
+    });
+    ids.push(...rows.map((row) => row.id));
+  };
+
+  // 1) other courses by the same author
+  if (course.educatorId) await fill({ educatorId: course.educatorId });
+
+  // 2) same topic, then same category
+  const lessons = await prisma.lesson.findMany({
+    where: { courseId: course.id },
+    select: { topicId: true, lessonTopics: { select: { topicId: true } } },
+  });
+  const topicIds = [
+    ...new Set(
+      lessons
+        .flatMap((l) => [l.topicId, ...l.lessonTopics.map((t) => t.topicId)])
+        .filter(Boolean),
+    ),
+  ];
+  if (topicIds.length) {
+    await fill({
+      lessons: {
+        some: {
+          OR: [
+            { topicId: { in: topicIds } },
+            { lessonTopics: { some: { topicId: { in: topicIds } } } },
+          ],
+        },
+      },
+    });
+  }
+  if (course.categoryId) await fill({ categoryId: course.categoryId });
+
+  // 3) learners of this course also enrolled in
+  if (ids.length < take) {
+    const coEnrolled = await prisma.enrollment.groupBy({
+      by: ["courseId"],
+      where: {
+        courseId: { notIn: [course.id, ...ids] },
+        course: publishedCourse,
+        user: { enrollments: { some: { courseId: course.id } } },
+      },
+      _count: { courseId: true },
+      orderBy: { _count: { courseId: "desc" } },
+      take: take - ids.length,
+    });
+    ids.push(...coEnrolled.map((row) => row.courseId));
+  }
+  if (!ids.length) return [];
+
+  const result = await listCourses({ ids, limit: ids.length, page: 1 }, user);
+  const order = new Map(ids.map((id, index) => [id, index]));
+  return [...result.data].sort((a, b) => order.get(a.id) - order.get(b.id));
 }
 
 export async function getCourseBySlug(slug) {
@@ -3518,7 +3630,7 @@ export async function getCourseRoute(slug, actor = null) {
       deletedAt: null,
     },
     include: {
-      educator: { select: { id: true, username: true, firstName: true, lastName: true } },
+      educator: { select: { id: true, username: true, firstName: true, lastName: true, headline: true, biography: true } },
       category: true,
       level: true,
       priceTier: true,
@@ -3631,6 +3743,26 @@ export async function getCourseRoute(slug, actor = null) {
     },
   });
   const totalReviews = course.reviews.length;
+  const [educatorPictures, educatorPublishedCourses, educatorReviewAgg, educatorLearners] =
+    await Promise.all([
+      getLatestUserPicturesMap([course.educator.id]),
+      prisma.course.count({
+        where: { educatorId: course.educator.id, deletedAt: null, workflowStatus: "PUBLISHED" },
+      }),
+      prisma.review.aggregate({
+        where: {
+          course: { educatorId: course.educator.id, deletedAt: null, workflowStatus: "PUBLISHED" },
+        },
+        _avg: { rating: true },
+        _count: { rating: true },
+      }),
+      prisma.enrollment.count({
+        where: {
+          status: { in: ["ACTIVE", "COMPLETED"] },
+          course: { educatorId: course.educator.id, deletedAt: null, workflowStatus: "PUBLISHED" },
+        },
+      }),
+    ]);
   const averageRating = totalReviews
     ? Number(
         (
@@ -3744,7 +3876,15 @@ export async function getCourseRoute(slug, actor = null) {
         username: course.educator.username,
         firstname: course.educator.firstName || "",
         lastname: course.educator.lastName || "",
-        user_picture: null,
+        headline: course.educator.headline || "",
+        biography: course.educator.biography || "",
+        user_picture: educatorPictures.get(course.educator.id) || null,
+        stats: {
+          average_rating: Number(Number(educatorReviewAgg?._avg?.rating || 0).toFixed(1)),
+          total_reviews: Number(educatorReviewAgg?._count?.rating || 0),
+          published_courses: educatorPublishedCourses,
+          total_learners: educatorLearners,
+        },
       },
     },
     instructional_level: course.level
