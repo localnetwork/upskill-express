@@ -7,7 +7,10 @@ import { randomUUID } from "crypto";
 import { Router } from "express";
 import { prisma } from "../../shared/database/prisma.js";
 import { env } from "../../shared/config/env.js";
-import { authenticate } from "../../shared/middleware/auth.middleware.js";
+import {
+  authenticate,
+  authenticateOptional,
+} from "../../shared/middleware/auth.middleware.js";
 import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { upload } from "../../shared/middleware/upload.middleware.js";
@@ -2112,7 +2115,7 @@ router.get("/user/:slug", async (req, res, next) => {
   }
 });
 
-router.get("/instructor/courses/:userId", async (req, res, next) => {
+router.get("/instructor/courses/:userId", authenticateOptional, async (req, res, next) => {
   try {
     const courses = await prisma.course.findMany({
       where: {
@@ -2179,6 +2182,18 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
       }
     }
     const courseIds = courses.map((course) => course.id);
+    const enrolledCourseIds = new Set();
+    if (req.user?.id && courseIds.length) {
+      const enrollments = await prisma.enrollment.findMany({
+        where: {
+          userId: req.user.id,
+          courseId: { in: courseIds },
+          ...activeEnrollmentFilter(),
+        },
+        select: { courseId: true },
+      });
+      enrollments.forEach((row) => enrolledCourseIds.add(row.courseId));
+    }
     const ratingsByCourseId = new Map();
 
     if (courseIds.length) {
@@ -2196,6 +2211,7 @@ router.get("/instructor/courses/:userId", async (req, res, next) => {
     const data = courses.map((course) => ({
       ...course,
       uuid: course.id,
+      is_enrolled: enrolledCourseIds.has(course.id),
       cover_image: mapLegacyMedia(
         pickLatestMediaByTypes(course.media, ["COVER_IMAGE", "IMAGE"]),
       ),

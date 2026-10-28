@@ -30,7 +30,7 @@ function isDisposableEmail(email) {
   return Boolean(domain && DISPOSABLE_DOMAINS.has(domain));
 }
 
-// Starts the free trial for a verified, plain learner. Never throws: signup must not fail because of it.
+// Starts the free trial for a plain learner at signup. Never throws: signup must not fail because of it.
 export async function startTrialIfEligible(userId, { ipAddress } = {}) {
   try {
     const settings = await getPlatformCommerceSettings();
@@ -46,7 +46,7 @@ export async function startTrialIfEligible(userId, { ipAddress } = {}) {
         roles: { select: { role: { select: { name: true } } } },
       },
     });
-    if (!user || user.trialStartedAt || !user.emailVerifiedAt) return null;
+    if (!user || user.trialStartedAt) return null;
 
     const roleNames = user.roles.map((entry) => entry.role.name);
     if (roleNames.length !== 1 || roleNames[0] !== "LEARNER") return null;

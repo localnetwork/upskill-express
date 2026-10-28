@@ -77,8 +77,13 @@ model User {
   watchSessionsAsLearner WatchSession[]   @relation("WatchSessionLearner")
   watchSessionsAsEducator WatchSession[]  @relation("WatchSessionEducator")
   educatorEarnings      EducatorEarning[]
+  occupationId          String?
+  occupationCustom      String?
+  occupation            Occupation?       @relation(fields: [occupationId], references: [id], onDelete: SetNull)
+  interests             UserInterest[]
 
   @@index([deletedAt])
+  @@index([occupationId])
   @@map("users")
 }
 
@@ -195,7 +200,7 @@ model Category {
   children    Category[] @relation("CategoryHierarchy")
   courses     Course[]
   topics      Topic[]
-
+  occupations Occupation[]
   @@unique([name, parentId])
   @@index([deletedAt])
   @@map("categories")
@@ -214,7 +219,7 @@ model Topic {
   category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   lessons     Lesson[]
   lessonTopics LessonTopic[]
-
+  userInterests UserInterest[]
   @@unique([name, categoryId])
   @@index([categoryId])
   @@index([deletedAt])

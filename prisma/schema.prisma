@@ -263,8 +263,13 @@ model User {
   watchSessionsAsLearner WatchSession[]   @relation("WatchSessionLearner")
   watchSessionsAsEducator WatchSession[]  @relation("WatchSessionEducator")
   educatorEarnings      EducatorEarning[]
+  occupationId          String?
+  occupationCustom      String?
+  occupation            Occupation?       @relation(fields: [occupationId], references: [id], onDelete: SetNull)
+  interests             UserInterest[]
 
   @@index([deletedAt])
+  @@index([occupationId])
   @@map("users")
 }
 
@@ -381,7 +386,7 @@ model Category {
   children    Category[] @relation("CategoryHierarchy")
   courses     Course[]
   topics      Topic[]
-
+  occupations Occupation[]
   @@unique([name, parentId])
   @@index([deletedAt])
   @@map("categories")
@@ -400,7 +405,7 @@ model Topic {
   category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   lessons     Lesson[]
   lessonTopics LessonTopic[]
-
+  userInterests UserInterest[]
   @@unique([name, categoryId])
   @@index([categoryId])
   @@index([deletedAt])
@@ -1501,4 +1506,36 @@ model CommunityReport {
 
   @@index([communityId, status, createdAt])
   @@map("community_reports")
+}
+
+model Occupation {
+  id         String    @id @default(cuid())
+  categoryId String
+  name       String
+  slug       String    @unique
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  category   Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  users      User[]
+
+  @@unique([name, categoryId])
+  @@index([categoryId])
+  @@index([deletedAt])
+  @@map("occupations")
+}
+
+model UserInterest {
+  id        String   @id @default(cuid())
+  userId    String
+  topicId   String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic     Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topicId])
+  @@index([topicId])
+  @@map("user_interests")
 }

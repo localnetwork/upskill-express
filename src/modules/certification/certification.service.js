@@ -165,7 +165,6 @@ export async function generateCourseCertificate(userId, courseSlug) {
     where: {
       userId,
       ...activeEnrollmentFilter(),
-      accessSource: { not: "TRIAL" },
       course: {
         slug: String(courseSlug || "").trim(),
         deletedAt: null,

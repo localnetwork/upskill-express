@@ -15,6 +15,26 @@ import {
   softDeleteUser,
   updateCurrentUser,
 } from "./user.service.js";
+import {
+  getMyPreferences,
+  getPreferenceOptions,
+  saveMyPreferences,
+} from "./user-preferences.service.js";
+
+export async function preferenceOptionsController(_req, res) {
+  const data = await getPreferenceOptions();
+  return res.json({ message: "Preference options fetched", data });
+}
+
+export async function myPreferencesController(req, res) {
+  const data = await getMyPreferences(req.user.id);
+  return res.json({ message: "Preferences fetched", data });
+}
+
+export async function updateMyPreferencesController(req, res) {
+  const data = await saveMyPreferences(req.user.id, req.body);
+  return res.json({ message: "Preferences updated", data });
+}
 
 export async function meController(req, res) {
   const data = await getCurrentUser(req.user.id);

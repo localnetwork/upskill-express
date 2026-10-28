@@ -6,6 +6,7 @@ import {
   createCourseCoupon,
   deleteDraftCourse,
   getCourseDiscoveryData,
+  getLearnerRecommendations,
   getCourseForManagement,
   getCourseStatisticsForManagement,
   getCourseForLearner,
@@ -179,6 +180,26 @@ export async function listAlsoBoughtCoursesController(req, res) {
   return res.json({
     message: "Courses fetched",
     data: data.map(toLegacyCourseSummary),
+  });
+}
+
+export async function learnerRecommendationsController(req, res) {
+  const data = await getLearnerRecommendations(req.user, req.query);
+  const mapList = (list) => (list || []).map(toLegacyCourseSummary);
+  return res.json({
+    message: "Recommendations fetched",
+    data: {
+      learn_next: mapList(data.learn_next),
+      because_viewed: data.because_viewed
+        ? { ...data.because_viewed, courses: mapList(data.because_viewed.courses) }
+        : null,
+      occupation: data.occupation
+        ? { ...data.occupation, courses: mapList(data.occupation.courses) }
+        : null,
+      trending: mapList(data.trending),
+      top_rated: mapList(data.top_rated),
+      topic_next: data.topic_next.map((tab) => ({ ...tab, courses: mapList(tab.courses) })),
+    },
   });
 }
 

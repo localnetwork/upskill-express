@@ -118,7 +118,6 @@ export async function getCourseAccessOptions(userId, courseId) {
       !hasLiveAccess &&
       !summary.hasSubscription &&
       summary.trial.active &&
-      course.trialEligible &&
       summary.trial.coursesUsed < summary.trial.coursesMax,
     courseInSubscription: course.subscriptionEligible,
     courseInTrialPool: course.trialEligible,
@@ -166,7 +165,7 @@ export async function grantCourseAccess(userId, courseId) {
   if (summary.hasSubscription && course.subscriptionEligible) {
     source = "SUBSCRIPTION";
     accessEndsAt = summary.subscription.currentPeriodEnd;
-  } else if (summary.trial.active && course.trialEligible) {
+  } else if (summary.trial.active) {
     if (summary.trial.coursesUsed >= settings.trialMaxCoursesPerLearner) {
       throw new ApiError(
         403,

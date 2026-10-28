@@ -9,7 +9,7 @@ import {
 } from "./auth.service.js";
 
 export async function registerController(req, res) {
-  const result = await register(req.body);
+  const result = await register(req.body, { req });
   return res.status(201).json({
     message: "User registered",
     data: result,

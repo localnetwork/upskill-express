@@ -29,6 +29,7 @@ import {
   listCourseCouponsForManagementController,
   listCoursesController,
   listAlsoBoughtCoursesController,
+  learnerRecommendationsController,
   listCoursesByAuthorController,
   publishCourseController,
   submitCourseController,
@@ -74,6 +75,11 @@ router.get(
     tags: ["courses"],
   }),
   asyncHandler(listAuthoredCoursesController),
+);
+router.get(
+  "/recommendations",
+  authenticate,
+  asyncHandler(learnerRecommendationsController),
 );
 router.get(
   "/route/:slug",

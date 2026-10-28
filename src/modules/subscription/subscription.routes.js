@@ -11,7 +11,7 @@ import {
 } from "../access/access.service.js";
 import { verifyXenditCallbackToken } from "../checkout/xendit.service.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
-import { extendUserTrial, getTrialFunnel } from "../access/trial.service.js";
+import { extendUserTrial, getTrialFunnel, startTrialIfEligible } from "../access/trial.service.js";
 import {
   cancelMySubscription,
   confirmSubscription,
@@ -81,6 +81,7 @@ router.get(
   "/me",
   authenticate,
   asyncHandler(async (req, res) => {
+    await startTrialIfEligible(req.user.id, { ipAddress: req.ip });
     res.json({ data: await getAccessSummary(req.user.id) });
   }),
 );
@@ -89,7 +90,30 @@ router.get(
   "/mine",
   authenticate,
   asyncHandler(async (req, res) => {
-    res.json({ data: await listMySubscriptions(req.user.id) });
+    await startTrialIfEligible(req.user.id, { ipAddress: req.ip });
+    const [subscriptions, { trial }] = await Promise.all([
+      listMySubscriptions(req.user.id),
+      getAccessSummary(req.user.id),
+    ]);
+    const rows = trial.used
+      ? [
+          {
+            id: "free-trial",
+            isTrial: true,
+            planName: "Free Trial",
+            status: trial.active ? "TRIALING" : "EXPIRED",
+            price: 0,
+            currency: "PHP",
+            interval: `${trial.days}-day`,
+            cancelAtPeriodEnd: false,
+            createdAt: trial.startedAt,
+            currentPeriodStart: trial.startedAt,
+            currentPeriodEnd: trial.endsAt,
+          },
+          ...subscriptions,
+        ]
+      : subscriptions;
+    res.json({ data: rows });
   }),
 );
 

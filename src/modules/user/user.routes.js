@@ -12,8 +12,12 @@ import {
   updateUserValidator,
   adminUpdateUserValidator,
   adminSuspendUserValidator,
+  updatePreferencesValidator,
 } from "./user.validator.js";
 import {
+  myPreferencesController,
+  preferenceOptionsController,
+  updateMyPreferencesController,
   cancelFriendRequestController,
   changePasswordController,
   deleteUserController,
@@ -45,6 +49,14 @@ router.get(
   asyncHandler(meController),
 );
 router.patch("/me", authenticate, validate(updateUserValidator), asyncHandler(updateMeController));
+router.get("/me/preferences", authenticate, asyncHandler(myPreferencesController));
+router.put(
+  "/me/preferences",
+  authenticate,
+  validate(updatePreferencesValidator),
+  asyncHandler(updateMyPreferencesController),
+);
+router.get("/preferences/options", asyncHandler(preferenceOptionsController));
 router.get(
   "/me/activity",
   authenticate,

@@ -1,0 +1,64 @@
+{
+  "Development": [
+    "Android Developer", "Back End Web Developer", "Data Engineer", "DevOps Engineer",
+    "Front End Web Developer", "Full Stack Web Developer", "Game Developer", "iOS Developer",
+    "Java Developer", "JavaScript Developer", "Machine Learning Engineer",
+    "Mobile Application Developer", ".NET Developer", "PHP Developer", "Python Developer",
+    "Software Architect", "Software Developer", "Software Quality Assurance Engineer",
+    "Software Tester", "Web Developer", "WordPress Developer"
+  ],
+  "Business": [
+    "Business Analyst", "Business Development Manager", "Entrepreneur", "Operations Manager",
+    "Product Manager", "Project Manager", "Program Manager", "Management Consultant",
+    "Human Resources Specialist", "Customer Success Manager", "Sales Representative",
+    "Executive Assistant", "Business Owner"
+  ],
+  "Finance & Accounting": [
+    "Accountant", "Bookkeeper", "Financial Analyst", "Auditor", "Tax Specialist",
+    "Investment Analyst", "Financial Planner", "Controller", "Payroll Specialist",
+    "Credit Analyst", "Compliance Officer"
+  ],
+  "IT & Software": [
+    "Cloud Engineer", "Cybersecurity Analyst", "IT Support Specialist", "Network Administrator",
+    "System Administrator", "Database Administrator", "IT Project Manager", "Site Reliability Engineer",
+    "Solutions Architect", "Security Engineer", "Help Desk Technician"
+  ],
+  "Office Productivity": [
+    "Administrative Assistant", "Office Manager", "Data Entry Clerk", "Executive Assistant",
+    "Virtual Assistant", "Operations Coordinator", "Project Coordinator", "Secretary"
+  ],
+  "Personal Development": [
+    "Life Coach", "Career Coach", "Team Leader", "Manager", "Student", "Job Seeker",
+    "Freelancer", "Public Speaker", "Mentor"
+  ],
+  "Design": [
+    "Graphic Designer", "UX Designer", "UI Designer", "Product Designer", "Web Designer",
+    "Motion Designer", "Illustrator", "3D Artist", "Interior Designer", "Fashion Designer",
+    "Game Artist"
+  ],
+  "Marketing": [
+    "Digital Marketer", "SEO Specialist", "Content Marketer", "Social Media Manager",
+    "Brand Manager", "Marketing Manager", "Email Marketer", "Performance Marketer",
+    "Copywriter", "Growth Marketer", "Community Manager"
+  ],
+  "Lifestyle": [
+    "Hobbyist", "Content Creator", "Blogger", "Event Planner", "Travel Planner",
+    "Home Cook", "Gamer", "Craft Maker"
+  ],
+  "Photography & Video": [
+    "Photographer", "Videographer", "Video Editor", "Cinematographer", "Content Creator",
+    "Photo Editor", "Motion Graphics Artist", "Drone Operator"
+  ],
+  "Health & Fitness": [
+    "Fitness Coach", "Personal Trainer", "Nutritionist", "Yoga Instructor", "Nurse",
+    "Wellness Coach", "Physical Therapist", "Mental Health Professional", "Caregiver"
+  ],
+  "Music": [
+    "Musician", "Music Producer", "Vocalist", "Guitarist", "Pianist", "Songwriter",
+    "DJ", "Sound Engineer", "Music Teacher"
+  ],
+  "Teaching & Academics": [
+    "Teacher", "Professor", "Tutor", "Trainer", "Instructional Designer", "Curriculum Developer",
+    "Academic Researcher", "Education Administrator", "Student", "Language Teacher"
+  ]
+}

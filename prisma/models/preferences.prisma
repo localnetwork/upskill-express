@@ -1,0 +1,31 @@
+model Occupation {
+  id         String    @id @default(cuid())
+  categoryId String
+  name       String
+  slug       String    @unique
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  category   Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  users      User[]
+
+  @@unique([name, categoryId])
+  @@index([categoryId])
+  @@index([deletedAt])
+  @@map("occupations")
+}
+
+model UserInterest {
+  id        String   @id @default(cuid())
+  userId    String
+  topicId   String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic     Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topicId])
+  @@index([topicId])
+  @@map("user_interests")
+}

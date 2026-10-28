@@ -122,6 +122,34 @@ async function getUserProfilePicture(userId) {
   };
 }
 
+// Links the Google avatar as the profile picture for a newly registered account. Never throws.
+async function setGoogleProfilePicture(userId, pictureUrl) {
+  if (!pictureUrl) return null;
+  try {
+    const media = await prisma.media.create({
+      data: {
+        userId,
+        storagePath: pictureUrl,
+        originalName: "google-profile-picture",
+        mimeType: "image/jpeg",
+        mediaType: "IMAGE",
+        sizeInBytes: 0,
+      },
+    });
+    const value = JSON.stringify({ mediaId: media.id });
+    const key = getUserPictureSettingKey(userId);
+    await prisma.platformSetting.upsert({
+      where: { key },
+      create: { key, value, description: `Profile picture for user ${userId}` },
+      update: { value },
+    });
+    return { id: media.id, path: media.storagePath, title: media.originalName };
+  } catch (error) {
+    console.error("[auth] failed to set Google profile picture", error);
+    return null;
+  }
+}
+
 async function ensureDefaultRole(roleName) {
   const role = await prisma.role.findUnique({ where: { name: roleName } });
   if (!role) {
@@ -156,6 +184,9 @@ function normalizeGoogleProfile(data) {
     emailVerified: String(data?.email_verified || "").toLowerCase() === "true",
     givenName: data?.given_name ? String(data.given_name).trim() : "",
     familyName: data?.family_name ? String(data.family_name).trim() : "",
+    picture: /^https:\/\//i.test(String(data?.picture || ""))
+      ? String(data.picture).trim()
+      : "",
     subject: data?.sub ? String(data.sub) : "",
     audience: data?.aud ? String(data.aud) : "",
   };
@@ -219,7 +250,7 @@ async function generateUniqueUsername(email) {
   throw new ApiError(500, "Unable to generate a unique username");
 }
 
-export async function register(payload) {
+export async function register(payload, context = {}) {
   const [existingEmail, existingUsername] = await Promise.all([
     findUserByEmail(payload.email),
     findUserByUsername(payload.username),
@@ -272,6 +303,10 @@ export async function register(payload) {
     token: verificationToken,
   });
   void sendEmail({ to: user.email, ...verificationEmail });
+
+  await startTrialIfEligible(user.id, {
+    ipAddress: context.req ? getRequestIpAddress(context.req) : null,
+  });
 
   return {
     accessToken,
@@ -516,6 +551,8 @@ export async function googleAuth(payload, context = {}) {
     dedupeWindowSeconds: 5,
   });
 
+  const userPicture = await setGoogleProfilePicture(user.id, profile.picture);
+
   await startTrialIfEligible(user.id, {
     ipAddress: getRequestIpAddress(context.req),
   });
@@ -523,7 +560,7 @@ export async function googleAuth(payload, context = {}) {
   return {
     accessToken,
     refreshToken,
-    user: mapAuthUser(user, [roleName]),
+    user: mapAuthUser(user, [roleName], userPicture),
   };
 }
 

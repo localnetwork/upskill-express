@@ -2811,6 +2811,172 @@ export async function listAlsoBoughtCourses(slug, user, limit = 12) {
   return [...result.data].sort((a, b) => order.get(a.id) - order.get(b.id));
 }
 
+export async function getLearnerRecommendations(user, query = {}) {
+  const take = clampInteger(query.limit, 4, 20, 12);
+  const published = { deletedAt: null, isPublished: true, workflowStatus: "PUBLISHED" };
+  const popularity = [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }];
+
+  const [enrolledRows, interestRows, userRow, viewRows] = await Promise.all([
+    prisma.enrollment.findMany({
+      where: { userId: user.id, ...activeEnrollmentFilter() },
+      select: { courseId: true },
+    }),
+    prisma.userInterest.findMany({
+      where: { userId: user.id, topic: { deletedAt: null } },
+      select: {
+        topicId: true,
+        topic: { select: { id: true, name: true, slug: true, categoryId: true } },
+      },
+    }),
+    prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        occupationCustom: true,
+        occupation: { select: { id: true, name: true, categoryId: true } },
+      },
+    }),
+    prisma.activityEvent.findMany({
+      where: { userId: user.id, eventType: "COURSE_PAGE_VIEW", courseId: { not: null } },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      select: { courseId: true },
+    }),
+  ]);
+
+  const enrolledIds = enrolledRows.map((row) => row.courseId);
+  const interestTopics = interestRows.map((row) => row.topic);
+  const interestTopicIds = interestTopics.map((topic) => topic.id);
+  const interestCategoryIds = [...new Set(interestTopics.map((topic) => topic.categoryId))];
+
+  const fetchCourses = async (extraWhere, orderBy = popularity, exclude = []) => {
+    const rows = await prisma.course.findMany({
+      where: {
+        ...published,
+        ...extraWhere,
+        id: { notIn: [...enrolledIds, ...exclude] },
+      },
+      orderBy,
+      take,
+      select: { id: true },
+    });
+    const ids = rows.map((row) => row.id);
+    if (!ids.length) return [];
+    const result = await listCourses({ ids, limit: ids.length, page: 1 }, user);
+    const order = new Map(ids.map((id, index) => [id, index]));
+    return [...result.data].sort((a, b) => order.get(a.id) - order.get(b.id));
+  };
+  const topicWhere = (topicIds) => ({
+    lessons: {
+      some: {
+        OR: [
+          { topicId: { in: topicIds } },
+          { lessonTopics: { some: { topicId: { in: topicIds } } } },
+        ],
+      },
+    },
+  });
+
+  const learnNext = interestTopicIds.length
+    ? await fetchCourses({
+        OR: [topicWhere(interestTopicIds), { categoryId: { in: interestCategoryIds } }],
+      })
+    : await fetchCourses({});
+
+  // Most recent viewed course that still exists
+  let becauseViewed = null;
+  const viewedIds = [...new Set(viewRows.map((row) => row.courseId))];
+  if (viewedIds.length) {
+    const rows = await prisma.course.findMany({
+      where: { ...published, id: { in: viewedIds } },
+      select: { id: true, title: true, slug: true, categoryId: true },
+    });
+    const anchor = viewedIds.map((id) => rows.find((row) => row.id === id)).find(Boolean);
+    if (anchor) {
+      const similar = await fetchCourses({ categoryId: anchor.categoryId }, popularity, [anchor.id]);
+      if (similar.length) {
+        becauseViewed = {
+          course: { id: anchor.id, title: anchor.title, slug: anchor.slug },
+          courses: similar,
+        };
+      }
+    }
+  }
+
+  let occupation = null;
+  if (userRow?.occupation) {
+    const children = await prisma.category.findMany({
+      where: { parentId: userRow.occupation.categoryId, deletedAt: null },
+      select: { id: true },
+    });
+    const courses = await fetchCourses({
+      categoryId: { in: [userRow.occupation.categoryId, ...children.map((row) => row.id)] },
+    });
+    occupation = { id: userRow.occupation.id, name: userRow.occupation.name, courses };
+  }
+
+  const trendingRows = await prisma.enrollment.groupBy({
+    by: ["courseId"],
+    where: {
+      createdAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+      courseId: { notIn: enrolledIds },
+      course: published,
+    },
+    _count: { courseId: true },
+    orderBy: { _count: { courseId: "desc" } },
+    take,
+  });
+  const trending = trendingRows.length
+    ? await (async () => {
+        const ids = trendingRows.map((row) => row.courseId);
+        const result = await listCourses({ ids, limit: ids.length, page: 1 }, user);
+        const order = new Map(ids.map((id, index) => [id, index]));
+        return [...result.data].sort((a, b) => order.get(a.id) - order.get(b.id));
+      })()
+    : await fetchCourses({});
+
+  const ratingRows = await prisma.review.groupBy({
+    by: ["courseId"],
+    where: { course: { ...published, id: { notIn: enrolledIds } } },
+    _avg: { rating: true },
+    _count: { rating: true },
+    orderBy: [{ _avg: { rating: "desc" } }, { _count: { rating: "desc" } }],
+    take,
+  });
+  const topRated = ratingRows.length
+    ? await fetchCourses({ id: { in: ratingRows.map((row) => row.courseId) } }, [
+        { createdAt: "desc" },
+      ]).then((rows) => {
+        const order = new Map(ratingRows.map((row, index) => [row.courseId, index]));
+        return rows.sort((a, b) => order.get(a.id) - order.get(b.id));
+      })
+    : [];
+
+  const tabTopics = interestTopics.length
+    ? interestTopics.slice(0, 6)
+    : await prisma.topic.findMany({
+        where: { deletedAt: null, lessons: { some: {} } },
+        take: 5,
+        select: { id: true, name: true, slug: true, categoryId: true },
+      });
+  const topicNext = await Promise.all(
+    tabTopics.map(async (topic) => ({
+      id: topic.id,
+      name: topic.name,
+      slug: topic.slug,
+      courses: await fetchCourses(topicWhere([topic.id])),
+    })),
+  );
+
+  return {
+    learn_next: learnNext,
+    because_viewed: becauseViewed,
+    occupation,
+    trending,
+    top_rated: topRated,
+    topic_next: topicNext.filter((tab) => tab.courses.length),
+  };
+}
+
 export async function listCoursesByAuthor(slug, limit = 10) {
   const take = clampInteger(limit, 1, 30, 10);
   const course = await prisma.course.findFirst({
@@ -4543,13 +4709,20 @@ function extractQuotedText(value) {
 
 function detectLearnerAssistantIntent(message) {
   const text = String(message || "").toLowerCase();
-  if (/^\s*(hi|hello|hey|yo|good (morning|afternoon|evening))\b/i.test(text)) {
+  if (/^\s*(hi|hello|hey|yo|good (morning|afternoon|evening))\b[\s!.?]*$/i.test(text)) {
     return "greeting";
+  }
+  if (
+    /(looking for|find|search|who is|know|see).{0,20}\b(user|person|someone|people|member|student|learner|profile)\b/i.test(
+      text,
+    )
+  ) {
+    return "people_lookup";
   }
   if (/(remove|delete).*(enrolled|enrollment|owned course|owned courses)/i.test(text)) {
     return "enrollment_removal";
   }
-  if (/(compare|vs\.?|versus|difference between)/i.test(text)) {
+  if (/(\bcompare\b|\bvs\.?(?=\s)|\bversus\b|difference between)/i.test(text)) {
     return "compare";
   }
   if (/(similar|like this|more like|related course)/i.test(text)) {
@@ -5408,6 +5581,97 @@ async function buildLearnerRecommendations(userId, limit = 6) {
     .map((course) => toAssistantCourseCard(course, inCartSet, enrolledSet));
 }
 
+async function findPeopleForAssistant(text) {
+  const query = String(text || "").trim();
+  if (!query) return [];
+  const merged = new Map();
+  const add = (list) => list.forEach((item) => merged.set(item.id, item));
+  add(await searchInstructorsForLearner(query, 5));
+  if (!merged.size) {
+    const tokens = tokenizeScopeText(query)
+      .filter((token) => token.length >= 3)
+      .slice(0, 4);
+    for (const token of tokens) {
+      add(await searchInstructorsForLearner(token, 3));
+    }
+  }
+  return Array.from(merged.values()).slice(0, 5);
+}
+
+const LEARNER_ASSISTANT_PERSONA =
+  "You are Upskill Assistant, a warm, friendly and concise helper for a LEARNER on the Upskill learning platform. " +
+  "Chat naturally (greetings, thanks, small talk, general learning/career/study advice are all fine). " +
+  "Always try to be useful: answer what you can, then suggest a helpful next step. Never reply with a bare refusal. " +
+  "PERMISSIONS for this user (role LEARNER): they can browse published courses, view PUBLIC educator profiles (name, headline, bio, published courses), " +
+  "manage their own cart, and see their own enrollments/progress. " +
+  "They CANNOT see other learners' accounts, anyone's email/phone/address/private data, admin/educator dashboards, earnings, or other users' orders. " +
+  "If asked for something outside these permissions, kindly explain the limit in one sentence and offer what you CAN do instead (e.g. search public educators or courses). " +
+  "Use ONLY the provided platform_data for facts about courses, people and the user's account; never invent courses, prices or people. " +
+  "If platform_data has matches, mention them by name; if it has none, say so kindly and suggest how to rephrase. " +
+  "Use short markdown (brief paragraphs or bullets). Do not output JSON.";
+
+async function generateFriendlyAssistantReply({ message, historyRows, platformData }) {
+  if (!env.aiKey) return "";
+  const history = (historyRows || [])
+    .slice(-8)
+    .map((row) => ({
+      role: row.role === "assistant" ? "assistant" : "user",
+      content: clipText(row.content, 800),
+    }))
+    .filter((row) => row.content);
+  try {
+    const response = await axios.post(
+      `${env.deepseekBaseUrl.replace(/\/+$/g, "")}/chat/completions`,
+      {
+        model: env.deepseekModel,
+        temperature: 0.6,
+        messages: [
+          { role: "system", content: LEARNER_ASSISTANT_PERSONA },
+          {
+            role: "system",
+            content: `platform_data: ${JSON.stringify(platformData)}`,
+          },
+          ...history,
+          { role: "user", content: clipText(message, 1500) },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${env.aiKey}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 30000,
+      },
+    );
+    return clipMarkdown(response?.data?.choices?.[0]?.message?.content, 4000);
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function buildAssistantPlatformData(userId, message, stateSets) {
+  const searchText = extractCourseSearchText(message) || message;
+  const [courses, people] = await Promise.all([
+    searchPublishedCoursesForLearner(userId, searchText, 5).catch(() => []),
+    findPeopleForAssistant(searchText).catch(() => []),
+  ]);
+  return {
+    courses,
+    educators: people.map((person) => ({
+      display_name: person.display_name,
+      username: person.username,
+      headline: person.headline,
+      bio: person.biography,
+      published_courses: person.published_courses_count,
+      top_courses: person.top_courses.map((course) => course.title),
+    })),
+    account: { cart_count: stateSets?.cartCount || 0 },
+    people_search_note:
+      "Only public educator profiles are searchable. Learner accounts and private contact details are not available to this user.",
+    _people: people,
+  };
+}
+
 export async function askLearnerAssistant(userId, payload = {}) {
   const message = clipText(payload?.message, 3000);
   if (message.length < 2) {
@@ -5527,11 +5791,24 @@ export async function askLearnerAssistant(userId, payload = {}) {
           },
         );
       }
+      const friendlyMissing = person
+        ? await generateFriendlyAssistantReply({
+            message,
+            historyRows,
+            platformData: {
+              courses: [],
+              educators: [],
+              note: `No public educator matched "${person}". Learner accounts are not searchable.`,
+            },
+          })
+        : "";
       return finalizeReply({
         intent,
-        reply: person
-          ? `I couldn’t find an instructor matching "${person}". Try their username or full name, or ask for courses by topic.`
-          : "Tell me the instructor name and I’ll fetch their profile and published courses.",
+        reply:
+          friendlyMissing ||
+          (person
+            ? `I couldn’t find an instructor matching "${person}". Try their username or full name, or ask for courses by topic.`
+            : "Tell me the instructor name and I’ll fetch their profile and published courses."),
         courses: [],
         instructors: [],
       });
@@ -5561,10 +5838,24 @@ export async function askLearnerAssistant(userId, payload = {}) {
     const queryText = extractCourseSearchText(message);
     const courses = await searchPublishedCoursesForLearner(userId, queryText, 8);
     if (!courses.length) {
-      const instructors = await searchInstructorsForLearner(queryText, 3);
+      const instructors = await findPeopleForAssistant(queryText);
+      const friendlyEmpty = await generateFriendlyAssistantReply({
+        message,
+        historyRows,
+        platformData: {
+          courses: [],
+          educators: instructors.map((person) => ({
+            display_name: person.display_name,
+            headline: person.headline,
+          })),
+          note: "No published courses matched this search.",
+        },
+      });
       return finalizeReply({
         intent,
-        reply: `I couldn’t find published courses matching "${queryText || "your query"}". Try a topic (e.g. "web development") or author query like "courses by instructor john".`,
+        reply:
+          friendlyEmpty ||
+          `I couldn’t find published courses matching "${queryText || "your query"}". Try a topic (e.g. "web development") or author query like "courses by instructor john".`,
         courses: [],
         instructors,
       });
@@ -5685,7 +5976,8 @@ export async function askLearnerAssistant(userId, payload = {}) {
       });
     }
 
-    const { inCartSet, enrolledSet } = await getLearnerCourseStateSets(userId);
+    const { inCartSet, enrolledSet, cartCount } =
+      await getLearnerCourseStateSets(userId);
     const inCart = inCartSet.has(course.id);
     const enrolled = enrolledSet.has(course.id);
 
@@ -5779,6 +6071,213 @@ export async function askLearnerAssistant(userId, payload = {}) {
         current_category_id: course?.categoryId || null,
         current_instructor_id: course?.educatorId || null,
       },
+    );
+  }
+
+  const stateSets = await getLearnerCourseStateSets(userId);
+  const courseStatePatch = (courses) => ({
+    current_course_id: courses[0]?.id || null,
+    current_category_id: courses[0]?.category?.id || null,
+    current_instructor_id: courses[0]?.educator_id || null,
+    recent_course_results: courses.map((course) => ({
+      id: course.id,
+      category_id: course?.category?.id || null,
+      instructor_id: course?.educator_id || null,
+    })),
+  });
+
+  if (intent === "my_courses" || intent === "continue_course") {
+    const enrollments = await resolveAssistantEnrollmentsWithProgress(userId, 8);
+    if (!enrollments.length) {
+      return finalizeReply({
+        intent,
+        reply:
+          "You’re not enrolled in any course yet. Tell me a topic and I’ll find one for you.",
+        courses: [],
+      });
+    }
+    let list = enrollments;
+    if (intent === "continue_course") {
+      const unfinished = enrollments.filter(
+        (item) => !item.courseProgress?.completedAt,
+      );
+      list = (unfinished.length ? unfinished : enrollments).slice(0, 3);
+    }
+    const cards = list.map((item) =>
+      toAssistantEnrollmentCard(item, stateSets.inCartSet, stateSets.enrolledSet),
+    );
+    return finalizeReply(
+      {
+        intent,
+        reply:
+          intent === "continue_course"
+            ? `Pick up where you left off with "${cards[0].title}" (${Math.round(cards[0].progress_pct)}% done).`
+            : `You have ${cards.length} course${cards.length > 1 ? "s" : ""} in your library.`,
+        courses: cards,
+      },
+      courseStatePatch(cards),
+    );
+  }
+
+  if (intent === "compare") {
+    let titles = splitComparisonTitles(message);
+    let resolved = [];
+    if (isBareComparisonReference(message) || titles.length < 2) {
+      const recent = (conversationState.recent_course_results || [])
+        .slice(0, 2)
+        .map((item) => item.id);
+      resolved = (
+        await Promise.all(recent.map((id) => getPublishedCourseById(id)))
+      ).filter(Boolean);
+    } else {
+      resolved = (
+        await Promise.all(
+          titles.slice(0, 2).map((title) => resolveCourseForTitleText(userId, title)),
+        )
+      ).filter(Boolean);
+    }
+    if (resolved.length < 2) {
+      return finalizeReply({
+        intent,
+        reply:
+          'I need two courses to compare. Try "compare <title A> vs <title B>" or search first and say "compare them".',
+        courses: [],
+      });
+    }
+    const cards = resolved.map((course) =>
+      toAssistantCourseCard(course, stateSets.inCartSet, stateSets.enrolledSet),
+    );
+    const summary = cards
+      .map(
+        (card) =>
+          `• ${card.title} — ${card.level?.title || "all levels"}, ${card.price > 0 ? `$${card.price}` : "free"}${card.educator?.display_name ? `, by ${card.educator.display_name}` : ""}`,
+      )
+      .join("\n");
+    return finalizeReply(
+      { intent, reply: `Here’s a quick comparison:\n${summary}`, courses: cards },
+      courseStatePatch(cards),
+    );
+  }
+
+  if (intent === "course_info" || intent === "similar") {
+    const course = await resolveCourseForLearnerAssistant(
+      userId,
+      payload,
+      message,
+      conversationState,
+      historyRows,
+    );
+    if (!course) {
+      return finalizeReply({
+        intent,
+        reply:
+          "I couldn’t tell which course you mean. Say the title, or search first and then ask about “the first one”.",
+        courses: [],
+      });
+    }
+    const card = toAssistantCourseCard(
+      course,
+      stateSets.inCartSet,
+      stateSets.enrolledSet,
+    );
+    if (intent === "course_info") {
+      const blurb = String(course.subtitle || course.description || "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 300);
+      return finalizeReply(
+        {
+          intent,
+          reply: `"${card.title}"${card.level?.title ? ` (${card.level.title})` : ""} — ${card.price > 0 ? `$${card.price}` : "free"}.${blurb ? ` ${blurb}` : ""}`,
+          courses: [card],
+        },
+        courseStatePatch([card]),
+      );
+    }
+    const related = (
+      await searchPublishedCoursesForLearner(
+        userId,
+        card.category?.title || card.title,
+        7,
+      )
+    )
+      .filter((item) => item.id !== card.id)
+      .slice(0, 6);
+    return finalizeReply(
+      {
+        intent,
+        reply: related.length
+          ? `Courses similar to "${card.title}":`
+          : `I couldn’t find courses similar to "${card.title}" yet.`,
+        courses: related,
+      },
+      related.length ? courseStatePatch(related) : { current_course_id: card.id },
+    );
+  }
+
+  if (intent === "learning_path") {
+    const topic = extractCourseSearchText(message) || message;
+    const found = await searchPublishedCoursesForLearner(userId, topic, 8);
+    const rank = (card) => {
+      const title = String(card.level?.title || "").toLowerCase();
+      if (/begin|intro|basic/.test(title)) return 0;
+      if (/inter/.test(title)) return 1;
+      if (/adv|expert/.test(title)) return 2;
+      return 1;
+    };
+    const ordered = [...found].sort((a, b) => rank(a) - rank(b)).slice(0, 5);
+    return finalizeReply(
+      {
+        intent,
+        reply: ordered.length
+          ? `Suggested path for "${topic}", from beginner to advanced:`
+          : `I couldn’t find courses to build a path for "${topic}". Try a broader topic.`,
+        courses: ordered,
+      },
+      ordered.length ? courseStatePatch(ordered) : {},
+    );
+  }
+
+  // Unrecognized phrasing: ground the question in platform data and answer conversationally.
+  const { _people: people, ...platformData } = await buildAssistantPlatformData(
+    userId,
+    message,
+    stateSets,
+  );
+  const friendly = await generateFriendlyAssistantReply({
+    message,
+    historyRows,
+    platformData,
+  });
+  const fallbackCourses = platformData.courses;
+  if (friendly) {
+    return finalizeReply(
+      {
+        intent: fallbackCourses.length ? "search" : people.length ? "instructor_lookup" : "chat",
+        reply: friendly,
+        courses: fallbackCourses,
+        instructors: people,
+      },
+      fallbackCourses.length ? courseStatePatch(fallbackCourses) : {},
+    );
+  }
+  if (people.length) {
+    return finalizeReply({
+      intent: "instructor_lookup",
+      reply: `I found ${people.length} educator${people.length > 1 ? "s" : ""} that may match what you're looking for.`,
+      courses: fallbackCourses,
+      instructors: people,
+    });
+  }
+  if (fallbackCourses.length) {
+    return finalizeReply(
+      {
+        intent: "search",
+        reply: `Here’s what I found for "${message}":`,
+        courses: fallbackCourses,
+      },
+      courseStatePatch(fallbackCourses),
     );
   }
 

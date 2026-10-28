@@ -64,3 +64,9 @@ export const adminUpdateUserValidator = z.object({
 });
 
 export const adminSuspendUserValidator = z.object({ suspended: z.boolean() });
+
+export const updatePreferencesValidator = z.object({
+  occupationId: z.string().min(1).nullable().optional(),
+  occupationCustom: z.string().max(100).nullable().optional(),
+  topicIds: z.array(z.string().min(1)).max(50).default([]),
+});
