@@ -305,6 +305,10 @@ function getInvalidationTagsFromRequest(req) {
     push("courses", "reviews", "enrollments", "progress", "certifications");
   }
 
+  if (path.includes("/discussions")) {
+    push("communication", "courses");
+  }
+
   if (path.startsWith("/api/categories")) {
     push("categories", "courses");
   }

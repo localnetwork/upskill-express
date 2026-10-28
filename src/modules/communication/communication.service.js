@@ -7,7 +7,6 @@ import { mapWithConcurrency } from "../../shared/utils/concurrency.js";
 
 const ANNOUNCEMENT_DRAFT_KEY_PREFIX = "communication:announcement-draft:";
 const ANNOUNCEMENT_HISTORY_KEY_PREFIX = "communication:announcement-history:";
-const IMPORTANT_KEYWORDS = ["urgent", "issue", "problem", "stuck", "help", "error"];
 
 function toSafeNumber(value, fallback = 0) {
   const next = Number(value);
@@ -19,6 +18,23 @@ function toBoolean(value, fallback = false) {
   if (typeof value === "boolean") return value;
   const normalized = String(value).trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+// Announcement bodies come from a rich-text editor; notifications and history are plain text.
+function htmlToPlainText(value) {
+  return String(value || "")
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/\s*(p|div|h[1-6]|li|tr)\s*>/gi, "\n")
+    .replace(/<\s*li[^>]*>/gi, "- ")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function getAnnouncementDraftKey(userId) {
@@ -71,6 +87,7 @@ export async function listInstructorQa(educatorId, query = {}) {
   const { page, limit, skip } = getPagination(query);
   const onlyUnanswered = toBoolean(query.onlyUnanswered, false);
   const courseId = String(query.courseId || "").trim();
+  const status = String(query.status || "all").trim().toLowerCase();
 
   const where = {
     course: {
@@ -78,20 +95,18 @@ export async function listInstructorQa(educatorId, query = {}) {
       deletedAt: null,
       ...(courseId && courseId !== "all" ? { id: courseId } : {}),
     },
-    OR: [
-      { title: { contains: "?", mode: "insensitive" } },
-      { comment: { contains: "?", mode: "insensitive" } },
-    ],
-    ...(onlyUnanswered ? { authorReplyAt: null } : {}),
+    ...(onlyUnanswered ? { replies: { none: { authorId: educatorId } } } : {}),
+    ...(status === "open" ? { isResolved: false } : {}),
+    ...(status === "resolved" ? { isResolved: true } : {}),
   };
 
   const [rows, total] = await Promise.all([
-    prisma.review.findMany({
+    prisma.discussionThread.findMany({
       where,
       skip,
       take: limit,
       include: {
-        user: {
+        author: {
           select: {
             id: true,
             username: true,
@@ -106,25 +121,35 @@ export async function listInstructorQa(educatorId, query = {}) {
             slug: true,
           },
         },
+        replies: {
+          where: { authorId: educatorId },
+          orderBy: { createdAt: "asc" },
+          take: 1,
+          select: { createdAt: true },
+        },
+        _count: { select: { replies: true } },
       },
       orderBy: { createdAt: "desc" },
     }),
-    prisma.review.count({ where }),
+    prisma.discussionThread.count({ where }),
   ]);
 
   const data = rows.map((row) => ({
     id: row.id,
-    question: row.title || row.comment || "Learner question",
-    details: row.comment || row.title || "",
+    question: row.title || row.body || "Learner question",
+    details: row.body || row.title || "",
+    imagePath: row.imagePath || null,
     createdAt: row.createdAt,
-    answered: Boolean(row.authorReplyAt),
-    answeredAt: row.authorReplyAt,
+    answered: row.replies.length > 0,
+    answeredAt: row.replies[0]?.createdAt || null,
+    isResolved: Boolean(row.isResolved),
+    repliesCount: row._count?.replies || 0,
     learner: {
-      id: row.user?.id || null,
-      username: row.user?.username || "",
+      id: row.author?.id || null,
+      username: row.author?.username || "",
       fullName:
-        `${row.user?.firstName || ""} ${row.user?.lastName || ""}`.trim() ||
-        row.user?.username ||
+        `${row.author?.firstName || ""} ${row.author?.lastName || ""}`.trim() ||
+        row.author?.username ||
         "Learner",
     },
     course: row.course,
@@ -214,130 +239,129 @@ export async function getInstructorAiInsights(educatorId) {
   };
 }
 
+// Instructor inbox: direct chats with learners enrolled in the instructor's courses.
 export async function listInstructorMessages(educatorId, query = {}) {
   const { page, limit, skip } = getPagination(query);
-  const unread = toBoolean(query.unread, false);
-  const important = toBoolean(query.important, false);
-  const notAnswered = toBoolean(query.notAnswered, false);
-  const showAutomated = toBoolean(query.showAutomated, true);
+  const unreadOnly = toBoolean(query.unread, false);
+  const needsReplyOnly = toBoolean(query.notAnswered, false);
+  const courseId = String(query.courseId || "").trim();
+  const search = String(query.q || "").trim().toLowerCase();
   const sort = String(query.sort || "recent").toLowerCase() === "oldest" ? "oldest" : "recent";
 
-  const [reviews, notifications] = await Promise.all([
-    prisma.review.findMany({
-      where: {
-        course: {
-          educatorId,
-          deletedAt: null,
-        },
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-          },
-        },
-        course: {
-          select: {
-            id: true,
-            slug: true,
-            title: true,
-          },
-        },
-      },
-      orderBy: { createdAt: "desc" },
-      take: 250,
-    }),
-    prisma.notification.findMany({
-      where: {
-        userId: educatorId,
-        OR: [
-          { type: "SYSTEM" },
-          {
-            metadata: {
-              path: ["notificationKind"],
-              equals: "AUTOMATED_MESSAGE",
-            },
-          },
-        ],
-      },
-      orderBy: { createdAt: "desc" },
-      take: 150,
-    }),
-  ]);
-
-  const reviewMessages = reviews.map((row) => {
-    const title = String(row.title || "").trim();
-    const comment = String(row.comment || "").trim();
-    const combinedText = `${title} ${comment}`.toLowerCase();
-    const isImportant =
-      row.rating <= 2 || IMPORTANT_KEYWORDS.some((keyword) => combinedText.includes(keyword));
-
-    return {
-      id: `review:${row.id}`,
-      sourceType: "STUDENT_REVIEW",
-      sender: {
-        id: row.user?.id || null,
-        name:
-          `${row.user?.firstName || ""} ${row.user?.lastName || ""}`.trim() ||
-          row.user?.username ||
-          "Learner",
-      },
-      course: row.course,
-      subject: title || "Learner course feedback",
-      preview: comment || title || "No message preview",
-      unread: !row.authorReplyAt,
-      important: isImportant,
-      answered: Boolean(row.authorReplyAt),
-      automated: false,
-      createdAt: row.createdAt,
-      relatedReviewId: row.id,
-    };
-  });
-
-  const automatedMessages = notifications.map((row) => ({
-    id: `notification:${row.id}`,
-    sourceType: "SYSTEM_NOTIFICATION",
-    sender: {
-      id: null,
-      name: "System",
+  const enrollments = await prisma.enrollment.findMany({
+    where: {
+      status: { in: ["ACTIVE", "COMPLETED"] },
+      course: { educatorId, deletedAt: null },
     },
-    course: null,
-    subject: row.title,
-    preview: row.message,
-    unread: !row.readAt,
-    important: false,
-    answered: true,
-    automated: true,
-    createdAt: row.createdAt,
-    relatedNotificationId: row.id,
-  }));
+    select: { userId: true, course: { select: { id: true, title: true, slug: true } } },
+  });
+  const coursesByLearner = new Map();
+  for (const row of enrollments) {
+    const list = coursesByLearner.get(row.userId) || [];
+    list.push(row.course);
+    coursesByLearner.set(row.userId, list);
+  }
+  const learnerIds = [...coursesByLearner.keys()];
 
-  let merged = [...reviewMessages, ...automatedMessages];
+  const emptySummary = { totalMessages: 0, unreadMessages: 0, unansweredMessages: 0 };
+  if (learnerIds.length === 0) {
+    return { ...toPagedResult([], 0, page, limit), summary: emptySummary };
+  }
 
-  if (unread) merged = merged.filter((item) => item.unread);
-  if (important) merged = merged.filter((item) => item.important);
-  if (notAnswered) merged = merged.filter((item) => !item.answered);
-  if (!showAutomated) merged = merged.filter((item) => !item.automated);
-
-  merged.sort((a, b) => {
-    const aTime = new Date(a.createdAt).getTime();
-    const bTime = new Date(b.createdAt).getTime();
-    return sort === "oldest" ? aTime - bTime : bTime - aTime;
+  const conversations = await prisma.chatConversation.findMany({
+    where: {
+      isGroup: false,
+      AND: [
+        { participants: { some: { userId: educatorId } } },
+        { participants: { some: { userId: { in: learnerIds } } } },
+      ],
+    },
+    orderBy: { lastMessageAt: "desc" },
+    take: 300,
+    include: {
+      participants: {
+        include: {
+          user: {
+            select: { id: true, username: true, firstName: true, lastName: true },
+          },
+        },
+      },
+      messages: {
+        take: 1,
+        orderBy: { createdAt: "desc" },
+        where: { messageType: "USER", deletedForEveryoneAt: null },
+        select: { id: true, body: true, mediaType: true, senderId: true, createdAt: true },
+      },
+    },
   });
 
-  const total = merged.length;
-  const paged = merged.slice(skip, skip + limit);
+  const unreadCounts = await mapWithConcurrency(conversations, (conversation) => {
+    const me = conversation.participants.find((item) => item.userId === educatorId);
+    return prisma.chatMessage.count({
+      where: {
+        conversationId: conversation.id,
+        senderId: { not: educatorId },
+        messageType: "USER",
+        deletedForEveryoneAt: null,
+        ...(me?.lastReadAt ? { createdAt: { gt: me.lastReadAt } } : {}),
+      },
+    });
+  });
+
+  let items = [];
+  conversations.forEach((conversation, index) => {
+    const learnerParticipant = conversation.participants.find(
+      (item) => item.userId !== educatorId && coursesByLearner.has(item.userId),
+    );
+    const last = conversation.messages[0];
+    if (!learnerParticipant || !last) return;
+
+    const learner = learnerParticipant.user;
+    const learnerName =
+      `${learner?.firstName || ""} ${learner?.lastName || ""}`.trim() ||
+      learner?.username ||
+      "Learner";
+    items.push({
+      id: conversation.id,
+      learner: { id: learner.id, username: learner.username || "", name: learnerName },
+      courses: coursesByLearner.get(learner.id),
+      preview: last.body || (last.mediaType ? `[${last.mediaType.toLowerCase()}]` : ""),
+      lastMessageAt: last.createdAt,
+      lastFromLearner: last.senderId !== educatorId,
+      unreadCount: unreadCounts[index] || 0,
+      unread: (unreadCounts[index] || 0) > 0,
+      needsReply: last.senderId !== educatorId,
+    });
+  });
+
+  const summary = {
+    totalMessages: items.length,
+    unreadMessages: items.filter((item) => item.unread).length,
+    unansweredMessages: items.filter((item) => item.needsReply).length,
+  };
+
+  if (courseId && courseId !== "all") {
+    items = items.filter((item) => item.courses.some((course) => course.id === courseId));
+  }
+  if (search) {
+    items = items.filter(
+      (item) =>
+        item.learner.name.toLowerCase().includes(search) ||
+        item.learner.username.toLowerCase().includes(search) ||
+        item.preview.toLowerCase().includes(search),
+    );
+  }
+  if (unreadOnly) items = items.filter((item) => item.unread);
+  if (needsReplyOnly) items = items.filter((item) => item.needsReply);
+
+  items.sort((a, b) => {
+    const diff = new Date(a.lastMessageAt).getTime() - new Date(b.lastMessageAt).getTime();
+    return sort === "oldest" ? diff : -diff;
+  });
 
   return {
-    ...toPagedResult(paged, total, page, limit),
-    summary: {
-      totalMessages: total,
-      unreadMessages: merged.filter((item) => item.unread).length,
-      unansweredMessages: merged.filter((item) => !item.answered).length,
-    },
+    ...toPagedResult(items.slice(skip, skip + limit), items.length, page, limit),
+    summary,
   };
 }
 
@@ -634,16 +658,38 @@ export async function sendAnnouncement(educatorId, payload) {
 
   const uniqueUserIds = Array.from(new Set(enrollments.map((row) => row.userId)));
 
+  const [sender, announcementCourse] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: educatorId },
+      select: { id: true, username: true, firstName: true, lastName: true },
+    }),
+    payload.courseId && payload.courseId !== "all"
+      ? prisma.course.findUnique({
+          where: { id: String(payload.courseId) },
+          select: { id: true, title: true, slug: true },
+        })
+      : null,
+  ]);
+
   await mapWithConcurrency(uniqueUserIds, (userId) =>
       createNotification({
         userId,
         type: "SYSTEM",
         title: String(payload.subject).trim(),
-        message: String(payload.body).trim(),
+        message: htmlToPlainText(payload.body),
         metadata: {
           notificationKind: "INSTRUCTOR_ANNOUNCEMENT",
           educatorId,
+          sender: {
+            id: sender?.id || educatorId,
+            username: sender?.username || "",
+            firstName: sender?.firstName || "",
+            lastName: sender?.lastName || "",
+          },
           courseId: payload.courseId,
+          courseTitle: announcementCourse?.title || null,
+          courseSlug: announcementCourse?.slug || null,
+          link: announcementCourse ? `/courses/${announcementCourse.slug}` : null,
           filters: {
             useEnrollmentDate: toBoolean(payload.useEnrollmentDate, false),
             useCourseProgress: toBoolean(payload.useCourseProgress, false),
@@ -663,7 +709,7 @@ export async function sendAnnouncement(educatorId, payload) {
     id: `${sentAt.getTime()}-${Math.random().toString(36).slice(2, 10)}`,
     courseId: payload.courseId,
     subject: String(payload.subject).trim(),
-    body: String(payload.body).trim(),
+    body: htmlToPlainText(payload.body),
     recipientsCount: uniqueUserIds.length,
     filters: {
       useEnrollmentDate: toBoolean(payload.useEnrollmentDate, false),

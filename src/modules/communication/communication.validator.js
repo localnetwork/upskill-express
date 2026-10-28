@@ -21,9 +21,9 @@ export const listInstructorMessagesValidator = z.object({
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   unread: booleanish.optional(),
-  important: booleanish.optional(),
   notAnswered: booleanish.optional(),
-  showAutomated: booleanish.optional(),
+  courseId: z.string().trim().optional(),
+  q: z.string().trim().max(100).optional(),
   sort: z.enum(["recent", "oldest"]).optional(),
 });
 
@@ -32,6 +32,7 @@ export const listInstructorQaValidator = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
   onlyUnanswered: booleanish.optional(),
   courseId: z.string().trim().optional(),
+  status: z.enum(["all", "open", "resolved"]).optional(),
 });
 
 const announcementBaseSchema = z.object({
@@ -49,12 +50,12 @@ const announcementBaseSchema = z.object({
 
 export const saveAnnouncementDraftValidator = announcementBaseSchema.extend({
   subject: z.string().trim().max(180).optional(),
-  body: z.string().trim().max(5000).optional(),
+  body: z.string().trim().max(20000).optional(),
 });
 
 export const sendAnnouncementValidator = announcementBaseSchema.extend({
   subject: z.string().trim().min(1).max(180),
-  body: z.string().trim().min(1).max(5000),
+  body: z.string().trim().min(1).max(20000),
 });
 
 export const upsertNudgeRuleValidator = z.object({

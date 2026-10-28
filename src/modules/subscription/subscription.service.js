@@ -226,6 +226,28 @@ export async function confirmSubscription(userId, subscriptionId) {
   return updated;
 }
 
+// Activates PENDING Xendit subscriptions whose payment already went through, for learners who never
+// hit the return URL and when the webhook could not reach us (e.g. local dev).
+export async function reconcilePendingSubscriptions(userId) {
+  const pending = await prisma.subscription.findMany({
+    where: { userId, provider: "XENDIT", status: "PENDING", xenditSessionId: { not: null } },
+    include: { plan: true },
+    orderBy: { createdAt: "desc" },
+    take: 3,
+  });
+  for (const subscription of pending) {
+    try {
+      const session = await getXenditSession(subscription.xenditSessionId);
+      if (session?.payment_token_id) {
+        await activateXenditSubscription(subscription, session.payment_token_id);
+        break;
+      }
+    } catch {
+      // Best effort; the webhook or a later call will retry.
+    }
+  }
+}
+
 export async function listMySubscriptions(userId) {
   const rows = await prisma.subscription.findMany({
     where: { userId },

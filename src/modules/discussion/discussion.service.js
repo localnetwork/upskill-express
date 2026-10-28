@@ -17,11 +17,12 @@ function normalizeDiscussionCategory(value) {
     return DISCUSSION_CATEGORY.SOMETHING_ELSE;
   }
 
-  function normalizeDiscussionImagePath(value) {
-    const normalized = String(value || "").trim();
-    return normalized || null;
-  }
   return DISCUSSION_CATEGORY.COURSE_CONTENT;
+}
+
+function normalizeDiscussionImagePath(value) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
 }
 
 function normalizeListFilters(query = {}) {

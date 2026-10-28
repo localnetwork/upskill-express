@@ -70,12 +70,6 @@ router.get(
 router.get(
   "/instructor/messages",
   validate(listInstructorMessagesValidator, "query"),
-  cacheGetResponse({
-    prefix: "communication:messages",
-    ttlSeconds: 30,
-    varyByUser: true,
-    tags: ["communication", "reviews", "notifications", "courses"],
-  }),
   asyncHandler(listInstructorMessagesController),
 );
 

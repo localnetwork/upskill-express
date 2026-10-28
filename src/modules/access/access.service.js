@@ -8,7 +8,7 @@ const PUBLISHED_COURSE = {
   OR: [{ workflowStatus: "PUBLISHED" }, { isPublished: true }],
 };
 
-// Learner access: ACTIVE/COMPLETED, not past its end date, and (for subscription access) a live subscription. Spread into a where clause.
+// Learner access: ACTIVE/COMPLETED, not past its end date, and (for subscription/trial access) a live subscription or, for trials, an unexpired trial. Spread into a where clause.
 export function activeEnrollmentFilter(now = new Date()) {
   return {
     status: { in: ["ACTIVE", "COMPLETED"] },
@@ -16,8 +16,12 @@ export function activeEnrollmentFilter(now = new Date()) {
       { OR: [{ accessEndsAt: null }, { accessEndsAt: { gt: now } }] },
       {
         OR: [
-          { accessSource: { not: "SUBSCRIPTION" } },
+          { accessSource: { notIn: ["SUBSCRIPTION", "TRIAL"] } },
           { user: { subscriptions: { some: liveSubscriptionWhere(now) } } },
+          {
+            accessSource: "TRIAL",
+            user: { trialEndsAt: { gt: now } },
+          },
         ],
       },
     ],

@@ -173,6 +173,48 @@ export async function getAdminActivityAnalytics(query = {}) {
   return getAdminActivityReport(query);
 }
 
+// Month-to-date vs the same elapsed window of the previous month, so early-month figures stay comparable.
+export async function getOverviewTrends() {
+  const now = new Date();
+  const currentStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const previousStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const previousEnd = new Date(
+    Math.min(
+      previousStart.getTime() + (now.getTime() - currentStart.getTime()),
+      currentStart.getTime(),
+    ),
+  );
+
+  const windows = {
+    current: { gte: currentStart, lt: now },
+    previous: { gte: previousStart, lt: previousEnd },
+  };
+
+  const measure = async (period) => {
+    const range = windows[period];
+    const [users, courses, paidOrders, revenue, payoutRequests] = await Promise.all([
+      prisma.user.count({ where: { deletedAt: null, createdAt: range } }),
+      prisma.course.count({ where: { deletedAt: null, createdAt: range } }),
+      prisma.order.count({ where: { status: "PAID", createdAt: range } }),
+      prisma.order.aggregate({
+        _sum: { totalAmount: true },
+        where: { status: "PAID", createdAt: range },
+      }),
+      prisma.payoutRequest.count({ where: { requestedAt: range } }),
+    ]);
+    return {
+      users,
+      courses,
+      paidOrders,
+      revenue: Number(revenue._sum.totalAmount || 0),
+      payoutRequests,
+    };
+  };
+
+  const [current, previous] = await Promise.all([measure("current"), measure("previous")]);
+  return { current, previous };
+}
+
 export async function listAdminCourses(query = {}) {
   const { page, limit, skip } = getPagination(query);
   const search = normalizeQueryString(query.search);
@@ -263,6 +305,48 @@ export async function listAdminCourses(query = {}) {
   }));
 
   return toPagedResult(mappedRows, total, page, limit);
+}
+
+const ORDER_STATUSES = ["CREATED", "PAID", "FAILED", "REFUNDED", "CANCELLED"];
+
+export async function listAdminOrders(query = {}) {
+  const { page, limit, skip } = getPagination(query);
+  const search = normalizeQueryString(query.search);
+  const rawStatus = String(query.status || "").trim().toUpperCase();
+  const status = ORDER_STATUSES.includes(rawStatus) ? rawStatus : undefined;
+
+  const where = {
+    status,
+    OR: search
+      ? [
+          { id: { contains: search, mode: "insensitive" } },
+          { user: { username: { contains: search, mode: "insensitive" } } },
+          { user: { email: { contains: search, mode: "insensitive" } } },
+          { user: { firstName: { contains: search, mode: "insensitive" } } },
+          { user: { lastName: { contains: search, mode: "insensitive" } } },
+          { items: { some: { course: { title: { contains: search, mode: "insensitive" } } } } },
+        ]
+      : undefined,
+  };
+
+  const [rows, total] = await Promise.all([
+    prisma.order.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: { createdAt: "desc" },
+      include: {
+        user: {
+          select: { id: true, username: true, email: true, firstName: true, lastName: true },
+        },
+        payment: { select: { provider: true, status: true } },
+        items: { select: { id: true, course: { select: { id: true, title: true } } } },
+      },
+    }),
+    prisma.order.count({ where }),
+  ]);
+
+  return toPagedResult(rows, total, page, limit);
 }
 
 export async function getAdminPlatformSettings() {

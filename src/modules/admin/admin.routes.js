@@ -11,6 +11,8 @@ import {
   deleteRoleController,
   getPlatformSettingsController,
   listAdminCoursesController,
+  listAdminOrdersController,
+  overviewTrendsController,
   listPermissionsController,
   listRolesController,
   rejectCourseController,
@@ -65,6 +67,17 @@ router.get(
   }),
   asyncHandler(listAdminCoursesController),
 );
+router.get(
+  "/orders",
+  authorizePermission("reports.revenue"),
+  cacheGetResponse({
+    prefix: "admin:orders",
+    ttlSeconds: 30,
+    varyByUser: true,
+    tags: ["admin-revenue", "orders"],
+  }),
+  asyncHandler(listAdminOrdersController),
+);
 router.post("/courses/:courseId/approve", authorizePermission("courses.approve"), validate(reviewCourseValidator), asyncHandler(approveCourseController));
 router.post("/courses/:courseId/reject", authorizePermission("courses.reject"), validate(reviewCourseValidator), asyncHandler(rejectCourseController));
 router.get(
@@ -77,6 +90,17 @@ router.get(
     tags: ["admin-revenue", "activity", "courses"],
   }),
   asyncHandler(activityReportController),
+);
+router.get(
+  "/reports/overview-trends",
+  authorizePermission("reports.view", "reports.revenue"),
+  cacheGetResponse({
+    prefix: "admin:overview-trends",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["admin-revenue", "orders", "courses", "payouts"],
+  }),
+  asyncHandler(overviewTrendsController),
 );
 router.get(
   "/reports/revenue",

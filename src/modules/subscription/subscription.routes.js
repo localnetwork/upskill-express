@@ -15,6 +15,7 @@ import { extendUserTrial, getTrialFunnel, startTrialIfEligible } from "../access
 import {
   cancelMySubscription,
   confirmSubscription,
+  reconcilePendingSubscriptions,
   createPlan,
   handleSubscriptionWebhook,
   handleXenditSubscriptionWebhook,
@@ -81,6 +82,7 @@ router.get(
   "/me",
   authenticate,
   asyncHandler(async (req, res) => {
+    await reconcilePendingSubscriptions(req.user.id);
     await startTrialIfEligible(req.user.id, { ipAddress: req.ip });
     res.json({ data: await getAccessSummary(req.user.id) });
   }),
@@ -90,6 +92,7 @@ router.get(
   "/mine",
   authenticate,
   asyncHandler(async (req, res) => {
+    await reconcilePendingSubscriptions(req.user.id);
     await startTrialIfEligible(req.user.id, { ipAddress: req.ip });
     const [subscriptions, { trial }] = await Promise.all([
       listMySubscriptions(req.user.id),

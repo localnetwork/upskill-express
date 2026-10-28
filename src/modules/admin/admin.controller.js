@@ -12,7 +12,9 @@ import {
   getAdminPlatformSettings,
   getAdminActivityAnalytics,
   getRevenueReport,
+  getOverviewTrends,
   listAdminCourses,
+  listAdminOrders,
   rejectCourse,
   updateAdminPlatformSettings,
 } from "./admin.service.js";
@@ -67,9 +69,19 @@ export async function revenueReportController(_req, res) {
   return res.json({ message: "Revenue report fetched", data });
 }
 
+export async function overviewTrendsController(_req, res) {
+  const data = await getOverviewTrends();
+  return res.json({ message: "Overview trends fetched", data });
+}
+
 export async function activityReportController(req, res) {
   const data = await getAdminActivityAnalytics(req.query);
   return res.json({ message: "Activity report fetched", data });
+}
+
+export async function listAdminOrdersController(req, res) {
+  const data = await listAdminOrders(req.query);
+  return res.json({ message: "Admin orders fetched", ...data });
 }
 
 export async function listAdminCoursesController(req, res) {
