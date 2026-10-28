@@ -714,8 +714,9 @@ export async function resolveReport(slug, userId, reportId, action) {
 
 export function uploadCommunityImage(file) {
   if (!file) throw new ApiError(400, "File is required");
-  if (!String(file.mimetype || "").startsWith("image/")) {
-    throw new ApiError(400, "Only image uploads are allowed");
+  const mimetype = String(file.mimetype || "");
+  if (!mimetype.startsWith("image/") && !mimetype.startsWith("video/")) {
+    throw new ApiError(400, "Only image or video uploads are allowed");
   }
   const path =
     file.path && /^https?:\/\//i.test(file.path)

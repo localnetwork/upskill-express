@@ -206,9 +206,9 @@ export function cacheGetResponse(options = {}) {
       String(req.query?.nocache || "") === "true" ||
       cacheControl.includes("no-cache");
 
-    // if (req.method !== "GET") {
-    //   return next();
-    // }
+    if (req.method !== "GET") {
+      return next();
+    }
 
     // if (shouldBypassCache) {
     //   return next();

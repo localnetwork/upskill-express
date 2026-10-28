@@ -29,6 +29,7 @@ import {
   listCourseCouponsForManagementController,
   listCoursesController,
   listAlsoBoughtCoursesController,
+  listCoursesByAuthorController,
   publishCourseController,
   submitCourseController,
   unpublishCourseController,
@@ -95,6 +96,15 @@ router.get(
     tags: ["courses", "enrollments"],
   }),
   asyncHandler(listAlsoBoughtCoursesController),
+);
+router.get(
+  "/:slug/more-by-author",
+  cacheGetResponse({
+    prefix: "courses:more-by-author",
+    ttlSeconds: 120,
+    tags: ["courses", "enrollments"],
+  }),
+  asyncHandler(listCoursesByAuthorController),
 );
 router.get(
   "/:slug/learn",

@@ -2811,6 +2811,66 @@ export async function listAlsoBoughtCourses(slug, user, limit = 12) {
   return [...result.data].sort((a, b) => order.get(a.id) - order.get(b.id));
 }
 
+export async function listCoursesByAuthor(slug, limit = 10) {
+  const take = clampInteger(limit, 1, 30, 10);
+  const course = await prisma.course.findFirst({
+    where: { slug, deletedAt: null },
+    select: { id: true, educatorId: true },
+  });
+  if (!course) throw new ApiError(404, "Course not found");
+  if (!course.educatorId) return [];
+
+  const rows = await prisma.course.findMany({
+    where: {
+      educatorId: course.educatorId,
+      id: { not: course.id },
+      deletedAt: null,
+      isPublished: true,
+      workflowStatus: "PUBLISHED",
+    },
+    orderBy: [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }],
+    take,
+    select: {
+      id: true,
+      slug: true,
+      title: true,
+      updatedAt: true,
+      priceTier: true,
+      media: {
+        where: { mediaType: { in: COVER_MEDIA_TYPES } },
+        orderBy: { createdAt: "desc" },
+      },
+      _count: { select: { enrollments: true } },
+    },
+  });
+  if (!rows.length) return [];
+
+  const ids = rows.map((row) => row.id);
+  const [ratings, durations] = await Promise.all([
+    prisma.review.groupBy({
+      by: ["courseId"],
+      where: { courseId: { in: ids } },
+      _avg: { rating: true },
+      _count: { rating: true },
+    }),
+    prisma.lesson.groupBy({
+      by: ["courseId"],
+      where: { courseId: { in: ids } },
+      _sum: { durationInSeconds: true },
+    }),
+  ]);
+  const ratingMap = new Map(ratings.map((row) => [row.courseId, row]));
+  const durationMap = new Map(durations.map((row) => [row.courseId, row]));
+
+  return rows.map((row) => ({
+    ...row,
+    average_rating: Number(ratingMap.get(row.id)?._avg?.rating || 0),
+    total_reviews: Number(ratingMap.get(row.id)?._count?.rating || 0),
+    total_learners: row._count.enrollments,
+    total_duration_seconds: Number(durationMap.get(row.id)?._sum?.durationInSeconds || 0),
+  }));
+}
+
 export async function getCourseBySlug(slug) {
   const course = await prisma.course.findFirst({
     where: {

@@ -21,6 +21,7 @@ import {
   listCourseCouponsForManagement,
   listCourses,
   listAlsoBoughtCourses,
+  listCoursesByAuthor,
   publishCourse,
   submitCourseForApproval,
   unpublishCourse,
@@ -178,6 +179,19 @@ export async function listAlsoBoughtCoursesController(req, res) {
   return res.json({
     message: "Courses fetched",
     data: data.map(toLegacyCourseSummary),
+  });
+}
+
+export async function listCoursesByAuthorController(req, res) {
+  const rows = await listCoursesByAuthor(req.params.slug, req.query.limit);
+  return res.json({
+    message: "Courses fetched",
+    data: rows.map(({ media, priceTier, _count, ...course }) => ({
+      ...course,
+      cover_image: mapLegacyMedia(pickLatestMediaByTypes(media, ["COVER_IMAGE", "IMAGE"])),
+      price_tier: priceTier ? { id: priceTier.id, price: String(priceTier.price) } : null,
+      updated_at: course.updatedAt,
+    })),
   });
 }
 
