@@ -8,6 +8,13 @@ import { getPlatformCommerceSettings } from "../platform-settings/platform-setti
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { mapWithConcurrency } from "../../shared/utils/concurrency.js";
 import { getAvailableEducatorEarnings } from "../earnings/earnings.service.js";
+import { comparePassword } from "../../shared/utils/security.js";
+import { verifyTotpToken } from "../auth/two-factor.service.js";
+import {
+  createXenditPayout,
+  getXenditPayout,
+  verifyXenditCallbackToken,
+} from "../checkout/xendit.service.js";
 
 const MIN_PAYOUT_AMOUNT_PHP = 500;
 const PAYOUT_REVIEW_ESTIMATE_DAYS = 3;
@@ -361,14 +368,14 @@ function buildPayoutEstimate({
       earliestRequestAt: currentMonthRequest?.requestedAt || now,
       estimatedPayoutAt: currentMonthRequest?.executedAt || now,
       processingDays: 0,
-      message: "Payout was already released to PayPal.",
+      message: "Payout was already released to Xendit.",
     };
   }
 
   if (requestStatus === "APPROVED") {
     const estimatedPayoutAt = addDays(now, PAYOUT_APPROVED_ESTIMATE_DAYS);
     return {
-      waitingOn: "PAYPAL_PROCESSING",
+      waitingOn: "XENDIT_PROCESSING",
       earliestRequestAt: currentMonthRequest?.requestedAt || now,
       estimatedPayoutAt,
       processingDays: PAYOUT_APPROVED_ESTIMATE_DAYS,
@@ -464,225 +471,55 @@ function isSkippableAutoPayoutError(error) {
   );
 }
 
-let paypalPayoutAccessToken = null;
-let paypalPayoutAccessTokenExpiry = 0;
+const XENDIT_PAYOUT_PROCESSING_STATUSES = new Set([
+  "ACCEPTED",
+  "REQUESTED",
+  "LOCKED",
+  "PROCESSING",
+]);
+const XENDIT_PAYOUT_FAILED_STATUSES = new Set([
+  "FAILED",
+  "CANCELLED",
+  "REVERSED",
+]);
 
-async function getPayPalPayoutAccessToken() {
-  if (paypalPayoutAccessToken && Date.now() < paypalPayoutAccessTokenExpiry) {
-    return paypalPayoutAccessToken;
-  }
-
-  if (!env.paypalClientId || !env.paypalClientSecret) {
-    throw new ApiError(500, "PayPal payout credentials are missing");
-  }
-
-  const auth = Buffer.from(
-    `${env.paypalClientId}:${env.paypalClientSecret}`,
-  ).toString("base64");
-
-  const response = await axios.post(
-    `${env.paypalBaseUrl}/v1/oauth2/token`,
-    "grant_type=client_credentials",
-    {
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-    },
-  );
-
-  paypalPayoutAccessToken = response?.data?.access_token || null;
-  paypalPayoutAccessTokenExpiry =
-    Date.now() +
-    Math.max(Number(response?.data?.expires_in || 0) - 60, 60) * 1000;
-
-  if (!paypalPayoutAccessToken) {
-    throw new ApiError(500, "Failed to obtain PayPal payout access token");
-  }
-
-  return paypalPayoutAccessToken;
-}
-
-function getPayPalErrorMessage(error) {
+function getXenditErrorMessage(error) {
   const details = error?.response?.data;
   if (details?.message) {
     return String(details.message);
   }
-  if (details?.name && details?.details?.[0]?.issue) {
-    return `${details.name}: ${details.details[0].issue}`;
-  }
-  return error instanceof Error ? error.message : "Unknown PayPal error";
+  return error instanceof Error ? error.message : "Unknown Xendit error";
 }
 
-async function createPayPalPayoutBatch({
-  payoutRequestId,
-  amount,
-  currency,
-  receiverEmail,
-  note,
-  retryToken = "",
-}) {
-  const accessToken = await getPayPalPayoutAccessToken();
+function mapXenditPayoutStatusToMutation(rawStatus, failureCode) {
+  const status = String(rawStatus || "").toUpperCase();
 
-  // PayPal rejects reused sender_batch_id values, so retries need a fresh one.
-  const senderBatchId = retryToken
-    ? `${String(payoutRequestId).slice(0, 20)}-${retryToken}`.slice(0, 30)
-    : String(payoutRequestId).slice(0, 30);
-  const senderItemId = retryToken
-    ? `${payoutRequestId}-${retryToken}`.slice(0, 127)
-    : String(payoutRequestId).slice(0, 127);
-  const response = await axios.post(
-    `${env.paypalBaseUrl}/v1/payments/payouts`,
-    {
-      sender_batch_header: {
-        sender_batch_id: senderBatchId,
-        email_subject: "You have received a payout",
-        email_message: "Your instructor payout has been sent.",
-      },
-      items: [
-        {
-          recipient_type: "EMAIL",
-          amount: {
-            value: Number(amount).toFixed(2),
-            currency: String(currency || "PHP"),
-          },
-          receiver: receiverEmail,
-          note: note || "Instructor payout",
-          sender_item_id: senderItemId,
-        },
-      ],
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        "PayPal-Request-Id": retryToken
-          ? `${payoutRequestId}-${retryToken}`
-          : String(payoutRequestId),
-      },
-    },
-  );
-
-  return response?.data || {};
-}
-
-async function verifyPayPalWebhookSignature(headers, webhookEvent) {
-  if (!env.paypalWebhookId) {
-    throw new ApiError(500, "PAYPAL_WEBHOOK_ID is not configured");
-  }
-
-  const transmissionId = headers?.["paypal-transmission-id"];
-  const transmissionTime = headers?.["paypal-transmission-time"];
-  const certUrl = headers?.["paypal-cert-url"];
-  const authAlgo = headers?.["paypal-auth-algo"];
-  const transmissionSig = headers?.["paypal-transmission-sig"];
-
-  if (
-    !transmissionId ||
-    !transmissionTime ||
-    !certUrl ||
-    !authAlgo ||
-    !transmissionSig
-  ) {
-    throw new ApiError(400, "Missing PayPal webhook signature headers");
-  }
-
-  const accessToken = await getPayPalPayoutAccessToken();
-  const response = await axios.post(
-    `${env.paypalBaseUrl}/v1/notifications/verify-webhook-signature`,
-    {
-      transmission_id: transmissionId,
-      transmission_time: transmissionTime,
-      cert_url: certUrl,
-      auth_algo: authAlgo,
-      transmission_sig: transmissionSig,
-      webhook_id: env.paypalWebhookId,
-      webhook_event: webhookEvent,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-    },
-  );
-
-  const verificationStatus = String(response?.data?.verification_status || "").toUpperCase();
-  if (verificationStatus !== "SUCCESS") {
-    throw new ApiError(401, "Invalid PayPal webhook signature");
-  }
-}
-
-function normalizePayoutWebhookEventType(eventType) {
-  return String(eventType || "")
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, ".")
-    .replace(/-/g, "-");
-}
-
-function extractWebhookPayoutIdentifiers(resource = {}) {
-  const senderItemId =
-    resource?.payout_item?.sender_item_id ||
-    resource?.sender_item_id ||
-    resource?.payout_item_id ||
-    null;
-  const payoutBatchId =
-    resource?.payout_batch_id ||
-    resource?.payout_item_fee?.payout_batch_id ||
-    resource?.payout_item?.payout_batch_id ||
-    resource?.payout_batch_header?.payout_batch_id ||
-    null;
-  return { senderItemId, payoutBatchId };
-}
-
-function mapWebhookEventToMutation(eventType, resource = {}) {
-  const normalized = normalizePayoutWebhookEventType(eventType);
-  const itemStatus = String(resource?.transaction_status || "").toUpperCase();
-  const explicitStatus = String(resource?.batch_status || "").toUpperCase();
-  const inferredStatus = itemStatus || explicitStatus || normalized.split(".").pop() || "UNKNOWN";
-
-  const paidEvents = new Set([
-    "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
-    "PAYMENT.PAYOUTSBATCH.SUCCESS",
-  ]);
-  const processingEvents = new Set([
-    "PAYMENT.PAYOUTS-ITEM.HELD",
-    "PAYMENT.PAYOUTSBATCH.PROCESSING",
-  ]);
-  const failedEvents = new Set([
-    "PAYMENT.PAYOUTS-ITEM.BLOCKED",
-    "PAYMENT.PAYOUTS-ITEM.CANCELED",
-    "PAYMENT.PAYOUTS-ITEM.FAILED",
-    "PAYMENT.PAYOUTS-ITEM.REFUNDED",
-    "PAYMENT.PAYOUTS-ITEM.RETURNED",
-    "PAYMENT.PAYOUTS-ITEM.UNCLAIMED",
-    "PAYMENT.PAYOUTSBATCH.DENIED",
-  ]);
-
-  if (paidEvents.has(normalized)) {
+  if (status === "SUCCEEDED") {
     return {
       status: "EXECUTED",
       reviewNote: null,
-      webhookStatus: inferredStatus,
+      eventType: "PAYMENT.PAYOUTSBATCH.SUCCESS",
+      webhookStatus: status,
       shouldNotifyPaid: true,
     };
   }
 
-  if (processingEvents.has(normalized)) {
+  if (XENDIT_PAYOUT_PROCESSING_STATUSES.has(status)) {
     return {
       status: "EXECUTED",
-      reviewNote: `PayPal batch status: ${inferredStatus}`,
-      webhookStatus: inferredStatus,
+      reviewNote: `Xendit payout status: ${status}`,
+      eventType: "PAYMENT.PAYOUTSBATCH.PROCESSING",
+      webhookStatus: status,
       shouldNotifyPaid: false,
     };
   }
 
-  if (failedEvents.has(normalized)) {
+  if (XENDIT_PAYOUT_FAILED_STATUSES.has(status)) {
     return {
       status: "FAILED",
-      reviewNote: `PayPal payout status: ${inferredStatus}`,
-      webhookStatus: inferredStatus,
+      reviewNote: `Xendit payout status: ${status}${failureCode ? ` (${failureCode})` : ""}`,
+      eventType: "PAYMENT.PAYOUTS-ITEM.FAILED",
+      webhookStatus: status,
       shouldNotifyPaid: false,
     };
   }
@@ -690,29 +527,36 @@ function mapWebhookEventToMutation(eventType, resource = {}) {
   return null;
 }
 
-export async function handlePayPalPayoutWebhook(event, headers = {}) {
-  await verifyPayPalWebhookSignature(headers, event);
+export async function handleXenditPayoutWebhook(event, headers = {}) {
+  if (!verifyXenditCallbackToken(headers?.["x-callback-token"])) {
+    throw new ApiError(401, "Invalid Xendit callback token");
+  }
 
-  const normalizedEventType = normalizePayoutWebhookEventType(event?.event_type);
-  const mutation = mapWebhookEventToMutation(normalizedEventType, event?.resource);
+  const data = event?.data || {};
+  if (!String(event?.event || "").startsWith("payout.")) {
+    return { accepted: true, ignored: true };
+  }
+
+  const mutation = mapXenditPayoutStatusToMutation(
+    data.status,
+    data.failure_code,
+  );
   if (!mutation) {
     return { accepted: true, ignored: true };
   }
 
-  const { senderItemId, payoutBatchId } = extractWebhookPayoutIdentifiers(
-    event?.resource || {},
-  );
-
+  const xenditPayoutId = data.id ? String(data.id) : null;
   let payout = null;
-  if (senderItemId) {
-    payout = await prisma.payoutRequest.findUnique({
-      where: { id: String(senderItemId) },
+  if (xenditPayoutId) {
+    payout = await prisma.payoutRequest.findFirst({
+      where: { xenditPayoutId },
+      orderBy: { createdAt: "desc" },
     });
   }
-  if (!payout && payoutBatchId) {
-    payout = await prisma.payoutRequest.findFirst({
-      where: { paypalBatchId: String(payoutBatchId) },
-      orderBy: { createdAt: "desc" },
+  if (!payout && data.reference_id) {
+    // Retries append a suffix to the payout request id.
+    payout = await prisma.payoutRequest.findUnique({
+      where: { id: String(data.reference_id).split(":")[0] },
     });
   }
 
@@ -724,29 +568,34 @@ export async function handlePayPalPayoutWebhook(event, headers = {}) {
     };
   }
 
-  const occurredAt = event?.create_time ? new Date(event.create_time) : new Date();
-  const updatePayload = {
-    status: mutation.status,
-    reviewNote: mutation.reviewNote,
-    paypalBatchId: payout.paypalBatchId || payoutBatchId || null,
-    executedAt:
-      mutation.status === "EXECUTED" && !mutation.reviewNote
-        ? payout.executedAt || new Date()
-        : payout.executedAt,
-  };
-
+  const occurredAt = event?.created ? new Date(event.created) : new Date();
   const updated = await prisma.payoutRequest.update({
     where: { id: payout.id },
-    data: updatePayload,
+    data: {
+      status: mutation.status,
+      reviewNote: mutation.reviewNote,
+      xenditPayoutId: payout.xenditPayoutId || xenditPayoutId,
+      executedAt:
+        mutation.status === "EXECUTED" && !mutation.reviewNote
+          ? payout.executedAt || new Date()
+          : payout.executedAt,
+    },
   });
+  if (mutation.shouldNotifyPaid) {
+    await prisma.educatorEarning.updateMany({
+      where: { payoutRequestId: updated.id },
+      data: { status: "PAID" },
+    });
+  }
   await appendPayoutEvent(
     updated.id,
-    normalizedEventType,
+    mutation.eventType,
     {
-      eventId: event?.id || null,
+      webhookEvent: event?.event || null,
       webhookStatus: mutation.webhookStatus,
-      payoutBatchId: payoutBatchId || null,
-      resource: event?.resource || null,
+      failureCode: data.failure_code || null,
+      xenditPayoutId,
+      source: "webhook",
     },
     Number.isNaN(occurredAt.getTime()) ? new Date() : occurredAt,
   );
@@ -759,7 +608,7 @@ export async function handlePayPalPayoutWebhook(event, headers = {}) {
       message: `Your payout request ${updated.id} has been paid.`,
       metadata: {
         payoutRequestId: updated.id,
-        paypalBatchId: updated.paypalBatchId,
+        xenditPayoutId: updated.xenditPayoutId,
         webhookStatus: mutation.webhookStatus,
       },
     });
@@ -773,7 +622,7 @@ export async function handlePayPalPayoutWebhook(event, headers = {}) {
       message: `Your payout request ${updated.id} could not be completed.`,
       metadata: {
         payoutRequestId: updated.id,
-        paypalBatchId: updated.paypalBatchId,
+        xenditPayoutId: updated.xenditPayoutId,
         webhookStatus: mutation.webhookStatus,
       },
     });
@@ -782,63 +631,30 @@ export async function handlePayPalPayoutWebhook(event, headers = {}) {
   return { accepted: true, payoutRequestId: updated.id, status: updated.status };
 }
 
-async function getPayPalPayoutBatch(batchId) {
-  const accessToken = await getPayPalPayoutAccessToken();
-  const response = await axios.get(
-    `${env.paypalBaseUrl}/v1/payments/payouts/${batchId}?fields=items`,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    },
-  );
-  return response?.data || {};
-}
-
-function isBatchSettledAsPaid(batchPayload) {
-  const batchStatus = String(
-    batchPayload?.batch_header?.batch_status || "",
-  ).toUpperCase();
-  if (batchStatus === "SUCCESS") {
-    return true;
-  }
-
-  const items = Array.isArray(batchPayload?.items) ? batchPayload.items : [];
-  if (!items.length) {
-    return false;
-  }
-
-  return items.every(
-    (item) =>
-      String(item?.transaction_status || "").toUpperCase() === "SUCCESS",
-  );
-}
-
 async function refreshExecutedPayoutStatus(payout) {
   if (String(payout?.status || "").toUpperCase() !== "EXECUTED") {
     return payout;
   }
-  if (!payout?.paypalBatchId) {
+  if (!payout?.xenditPayoutId) {
     return payout;
   }
 
   try {
-    const batchPayload = await getPayPalPayoutBatch(payout.paypalBatchId);
-    const batchStatus = String(
-      batchPayload?.batch_header?.batch_status || "",
-    ).toUpperCase();
-    const settledAsPaid = isBatchSettledAsPaid(batchPayload);
-    const nextReviewNote =
-      settledAsPaid || !batchStatus ? null : `PayPal batch status: ${batchStatus}`;
-
-    if (payout.reviewNote === nextReviewNote) {
+    const remote = await getXenditPayout(payout.xenditPayoutId);
+    const mutation = mapXenditPayoutStatusToMutation(
+      remote?.status,
+      remote?.failure_code,
+    );
+    if (!mutation) return payout;
+    if (mutation.status === "EXECUTED" && payout.reviewNote === mutation.reviewNote) {
       return payout;
     }
 
     const updated = await prisma.payoutRequest.update({
       where: { id: payout.id },
       data: {
-        reviewNote: nextReviewNote,
+        status: mutation.status,
+        reviewNote: mutation.reviewNote,
       },
       include: {
         ...payoutRequestItemsInclude,
@@ -847,42 +663,77 @@ async function refreshExecutedPayoutStatus(payout) {
         },
       },
     });
-    if (settledAsPaid) {
-      await appendPayoutEvent(updated.id, "PAYMENT.PAYOUTSBATCH.SUCCESS", {
-        batchStatus,
-        source: "polling",
-      });
-    } else if (batchStatus) {
-      await appendPayoutEvent(updated.id, "PAYMENT.PAYOUTSBATCH.PROCESSING", {
-        batchStatus,
-        source: "polling",
-      });
-    }
+    await appendPayoutEvent(updated.id, mutation.eventType, {
+      xenditStatus: mutation.webhookStatus,
+      failureCode: remote?.failure_code || null,
+      source: "polling",
+    });
     return updated;
   } catch (error) {
     console.error("[payout-status-refresh] failed", {
       payoutRequestId: payout.id,
-      paypalBatchId: payout.paypalBatchId,
+      xenditPayoutId: payout.xenditPayoutId,
       message: error instanceof Error ? error.message : "Unknown error",
     });
     return payout;
   }
 }
 
+function resolveVerificationMethod(user) {
+  if (user.twoFactorEnabled && user.twoFactorSecret) return "authenticator";
+  return user.passwordSet ? "password" : "none";
+}
+
+const VERIFY_USER_SELECT = {
+  passwordHash: true,
+  passwordSet: true,
+  twoFactorEnabled: true,
+  twoFactorSecret: true,
+};
+
+export async function getAccountVerificationMethod(userId) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: VERIFY_USER_SELECT,
+  });
+  if (!user) throw new ApiError(404, "User not found");
+  return { method: resolveVerificationMethod(user) };
+}
+
+export async function verifyAccountOwnership(userId, { password, code } = {}) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: VERIFY_USER_SELECT,
+  });
+  if (!user) throw new ApiError(404, "User not found");
+  const method = resolveVerificationMethod(user);
+  if (method === "authenticator") {
+    if (!/^\d{6}$/.test(String(code || "")) || !verifyTotpToken(user.twoFactorSecret, String(code))) {
+      throw new ApiError(401, "Invalid authenticator code");
+    }
+  } else if (method === "password") {
+    const valid = await comparePassword(String(password || ""), user.passwordHash);
+    if (!valid) throw new ApiError(401, "Incorrect password");
+  }
+  return { verified: true, method };
+}
+
 export async function connectPayoutAccount(userId, payload) {
+  const existing = await prisma.payoutAccount.findUnique({
+    where: { userId },
+    select: { id: true },
+  });
+  if (existing) await verifyAccountOwnership(userId, payload);
+  const data = {
+    channelCode: payload.channelCode,
+    accountNumber: payload.accountNumber,
+    accountHolderName: payload.accountHolderName,
+    isVerified: true,
+  };
   return prisma.payoutAccount.upsert({
     where: { userId },
-    update: {
-      paypalEmail: payload.paypalEmail,
-      paypalMerchantId: payload.paypalMerchantId || null,
-      isVerified: true,
-    },
-    create: {
-      userId,
-      paypalEmail: payload.paypalEmail,
-      paypalMerchantId: payload.paypalMerchantId || null,
-      isVerified: true,
-    },
+    update: data,
+    create: { userId, ...data },
   });
 }
 
@@ -920,6 +771,7 @@ async function getAvailableEarningItems(educatorId) {
   return rows.map((row) => ({
     id: row.id,
     kind: "EARNING",
+    earningType: row.type,
     unitPrice: Number(row.amount),
     discountAmount: 0,
     payoutPlatformFeeAmount: 0,
@@ -1008,6 +860,14 @@ export async function getMyPayoutSummary(educatorId) {
   ]);
 
   const earningItems = await getAvailableEarningItems(educatorId);
+  const sumEarnings = (type) =>
+    Number(
+      earningItems
+        .filter((item) => item.earningType === type)
+        .reduce((sum, item) => sum + item.payoutEducatorAmount, 0)
+        .toFixed(2),
+    );
+  const subscriptionPoolBalance = sumEarnings("SUBSCRIPTION_POOL");
   const earningsBalance = Number(
     earningItems.reduce((sum, item) => sum + item.payoutEducatorAmount, 0).toFixed(2),
   );
@@ -1043,7 +903,7 @@ export async function getMyPayoutSummary(educatorId) {
 
   let cannotRequestReason = "";
   if (!hasVerifiedPayoutAccount) {
-    cannotRequestReason = "Connect and verify a PayPal payout account first.";
+    cannotRequestReason = "Connect and verify a Xendit payout account first.";
   } else if (periodStart && currentMonthRequest) {
     cannotRequestReason = `You already have a payout request for this ${cycleWindow.payoutCycle.toLowerCase()} cycle.`;
   } else if (availableBalance < MIN_PAYOUT_AMOUNT_PHP) {
@@ -1053,19 +913,20 @@ export async function getMyPayoutSummary(educatorId) {
   return {
     minimumPayoutAmount: MIN_PAYOUT_AMOUNT_PHP,
     withdrawalFeeRate: PAYOUT_WITHDRAWAL_FEE_RATE,
-    currency: env.paypalPayoutCurrency,
+    currency: env.xenditPayoutCurrency,
     payoutCycle: cycleWindow.payoutCycle,
     availableBalance: Number(availableBalance.toFixed(2)),
     salesBalance: Number(salesBalance.toFixed(2)),
-    subscriptionEarningsBalance: earningsBalance,
+    subscriptionEarningsBalance: subscriptionPoolBalance,
     thisMonthEarnings: Number(thisMonthEarnings.toFixed(2)),
     hasVerifiedPayoutAccount,
     canRequestPayout: cannotRequestReason.length === 0,
     cannotRequestReason,
     payoutAccount: payoutAccount
       ? {
-          paypalEmail: payoutAccount.paypalEmail,
-          paypalMerchantId: payoutAccount.paypalMerchantId,
+          channelCode: payoutAccount.channelCode,
+          accountNumber: payoutAccount.accountNumber,
+          accountHolderName: payoutAccount.accountHolderName,
           isVerified: payoutAccount.isVerified,
           updatedAt: payoutAccount.updatedAt,
         }
@@ -1087,7 +948,7 @@ export async function requestPayout(educatorId, payload) {
   });
 
   if (!payoutAccount || !payoutAccount.isVerified) {
-    throw new ApiError(400, "Connect and verify PayPal payout account first");
+    throw new ApiError(400, "Connect and verify Xendit payout account first");
   }
 
   const existingMonthRequest = await prisma.payoutRequest.findFirst({
@@ -1146,6 +1007,13 @@ export async function requestPayout(educatorId, payload) {
   }
 
   const grossPayoutAmount = Number(running.toFixed(2));
+  const sumSelected = (predicate) =>
+    Number(
+      selected
+        .filter(predicate)
+        .reduce((sum, item) => sum + Number(item?.payoutEducatorAmount || 0), 0)
+        .toFixed(2),
+    );
   if (grossPayoutAmount <= 0) {
     throw new ApiError(400, "No eligible earnings for requested amount");
   }
@@ -1171,7 +1039,7 @@ export async function requestPayout(educatorId, payload) {
       data: {
         educatorId,
         amount: payoutAmount,
-        currency: env.paypalPayoutCurrency,
+        currency: env.xenditPayoutCurrency,
         status: "APPROVED",
         reviewedAt: now,
         reviewNote: "Auto-approved payout request",
@@ -1196,6 +1064,10 @@ export async function requestPayout(educatorId, payload) {
             0,
           ),
           educatorEarnings: grossPayoutAmount,
+          breakdown: {
+            sales: sumSelected((item) => item.kind !== "EARNING"),
+            subscriptionPool: sumSelected((item) => item.earningType === "SUBSCRIPTION_POOL"),
+          },
           grossPayoutAmount,
           withdrawalFeeRate: PAYOUT_WITHDRAWAL_FEE_RATE,
           withdrawalFeeAmount,
@@ -1537,7 +1409,9 @@ export async function executePayout(payoutRequestId, options = {}) {
           id: true,
           payoutAccount: {
             select: {
-              paypalEmail: true,
+              channelCode: true,
+              accountNumber: true,
+              accountHolderName: true,
               isVerified: true,
             },
           },
@@ -1551,28 +1425,31 @@ export async function executePayout(payoutRequestId, options = {}) {
   if (!["APPROVED", "FAILED"].includes(String(payout.status))) {
     throw new ApiError(400, "Only approved or failed payouts can be executed");
   }
-  if (
-    !payout.educator?.payoutAccount?.isVerified ||
-    !payout.educator?.payoutAccount?.paypalEmail
-  ) {
+  const account = payout.educator?.payoutAccount;
+  if (!account?.isVerified || !account?.accountNumber || !account?.channelCode) {
     throw new ApiError(
       400,
       "Educator payout account is not connected or verified",
     );
   }
 
+  const retryToken = options.retryToken || "";
+  const referenceId = retryToken ? `${payout.id}:${retryToken}` : payout.id;
+
   let payoutResult;
   try {
-    payoutResult = await createPayPalPayoutBatch({
-      payoutRequestId: payout.id,
+    payoutResult = await createXenditPayout({
+      referenceId,
+      idempotencyKey: referenceId,
+      channelCode: account.channelCode,
+      accountNumber: account.accountNumber,
+      accountHolderName: account.accountHolderName,
       amount: payout.amount,
-      currency: env.paypalPayoutCurrency,
-      receiverEmail: payout.educator.payoutAccount.paypalEmail,
-      note: payout.note || undefined,
-      retryToken: options.retryToken || "",
+      currency: env.xenditPayoutCurrency,
+      description: payout.note || undefined,
     });
   } catch (error) {
-    const providerMessage = getPayPalErrorMessage(error);
+    const providerMessage = getXenditErrorMessage(error);
     const failed = await prisma.payoutRequest.update({
       where: { id: payoutRequestId },
       data: {
@@ -1582,22 +1459,21 @@ export async function executePayout(payoutRequestId, options = {}) {
     });
     await appendPayoutEvent(failed.id, "PAYMENT.PAYOUTS-ITEM.FAILED", {
       providerMessage: providerMessage.slice(0, 500),
-      stage: "create-payout-batch",
+      stage: "create-payout",
     });
-    throw new ApiError(502, `PayPal payout failed: ${providerMessage}`);
+    throw new ApiError(502, `Xendit payout failed: ${providerMessage}`);
   }
 
-  const batchHeader = payoutResult?.batch_header || {};
-  const providerBatchId = batchHeader?.payout_batch_id || null;
-  const batchStatus = String(batchHeader?.batch_status || "").toUpperCase();
-  const terminalFailureStatuses = new Set(["DENIED", "CANCELED", "FAILED"]);
+  const providerPayoutId = payoutResult?.id || null;
+  const mutation = mapXenditPayoutStatusToMutation(
+    payoutResult?.status,
+    payoutResult?.failure_code,
+  );
 
-  if (!providerBatchId || terminalFailureStatuses.has(batchStatus)) {
+  if (!providerPayoutId || !mutation || mutation.status === "FAILED") {
     const providerMessage =
-      batchHeader?.errors?.name ||
-      payoutResult?.name ||
-      payoutResult?.message ||
-      `PayPal payout batch was not accepted (${batchStatus || "UNKNOWN"})`;
+      mutation?.reviewNote ||
+      `Xendit payout was not accepted (${payoutResult?.status || "UNKNOWN"})`;
     const failed = await prisma.payoutRequest.update({
       where: { id: payoutRequestId },
       data: {
@@ -1605,43 +1481,32 @@ export async function executePayout(payoutRequestId, options = {}) {
         reviewNote: String(providerMessage).slice(0, 500),
       },
     });
-    const failedEventType =
-      batchStatus === "DENIED"
-        ? "PAYMENT.PAYOUTSBATCH.DENIED"
-        : "PAYMENT.PAYOUTS-ITEM.FAILED";
-    await appendPayoutEvent(failed.id, failedEventType, {
-      batchStatus: batchStatus || "UNKNOWN",
+    await appendPayoutEvent(failed.id, "PAYMENT.PAYOUTS-ITEM.FAILED", {
+      xenditStatus: payoutResult?.status || "UNKNOWN",
       providerMessage: String(providerMessage).slice(0, 500),
-      stage: "batch-accepted-check",
-      payoutBatchId: providerBatchId,
+      stage: "payout-accepted-check",
+      xenditPayoutId: providerPayoutId,
     });
-    throw new ApiError(502, `PayPal payout failed: ${providerMessage}`);
+    throw new ApiError(502, `Xendit payout failed: ${providerMessage}`);
   }
 
   const updated = await prisma.payoutRequest.update({
     where: { id: payoutRequestId },
     data: {
       status: "EXECUTED",
-      currency: env.paypalPayoutCurrency,
+      currency: env.xenditPayoutCurrency,
       executedAt: new Date(),
-      paypalBatchId: providerBatchId,
-      reviewNote:
-        batchStatus && batchStatus !== "SUCCESS"
-          ? `PayPal batch status: ${batchStatus}`
-          : payout.reviewNote,
+      xenditPayoutId: providerPayoutId,
+      reviewNote: mutation.reviewNote ?? payout.reviewNote,
     },
   });
   await prisma.educatorEarning.updateMany({
     where: { payoutRequestId: updated.id },
     data: { status: "PAID" },
   });
-  const executionEventType =
-    batchStatus && batchStatus !== "SUCCESS"
-      ? "PAYMENT.PAYOUTSBATCH.PROCESSING"
-      : "PAYMENT.PAYOUTSBATCH.SUCCESS";
-  await appendPayoutEvent(updated.id, executionEventType, {
-    batchStatus: batchStatus || "UNKNOWN",
-    payoutBatchId: providerBatchId,
+  await appendPayoutEvent(updated.id, mutation.eventType, {
+    xenditStatus: mutation.webhookStatus,
+    xenditPayoutId: providerPayoutId,
     stage: "execute-payout",
   });
 
@@ -1649,8 +1514,8 @@ export async function executePayout(payoutRequestId, options = {}) {
     userId: updated.educatorId,
     type: "PAYOUT",
     title: "Payout executed",
-    message: `Your payout request ${updated.id} has been submitted to PayPal.`,
-    metadata: { payoutRequestId: updated.id, paypalBatchId: providerBatchId },
+    message: `Your payout request ${updated.id} has been submitted to Xendit.`,
+    metadata: { payoutRequestId: updated.id, xenditPayoutId: providerPayoutId },
   });
 
   return updated;

@@ -15,16 +15,23 @@ function getTransporter() {
   if (!env.emailUser || !env.emailPassword) return null;
 
   const auth = { user: env.emailUser, pass: env.emailPassword };
+  // Opt-in escape hatch for dev machines whose antivirus/proxy re-signs TLS traffic.
+  const tls =
+    process.env.EMAIL_TLS_REJECT_UNAUTHORIZED === "false"
+      ? { rejectUnauthorized: false }
+      : undefined;
   transporter = env.emailHost
     ? nodemailer.createTransport({
         host: env.emailHost,
         port: env.emailPort,
         secure: env.emailPort === 465,
         auth,
+        tls,
       })
     : nodemailer.createTransport({
         service: env.emailService || "gmail",
         auth,
+        tls,
       });
   return transporter;
 }

@@ -382,11 +382,31 @@ async function mapPosts(posts, userId, ctx) {
       })
     : [];
   const likedSet = new Set(liked.map((l) => l.postId));
+  const pollIds = posts.filter((p) => p.isPoll).map((p) => p.id);
+  const myVotes = pollIds.length
+    ? await prisma.communityPollVote.findMany({
+        where: { userId, postId: { in: pollIds } },
+        select: { postId: true, optionId: true },
+      })
+    : [];
+  const myVoteMap = new Map(myVotes.map((v) => [v.postId, v.optionId]));
   return posts.map((p) => {
     const m = memberMap.get(p.authorId);
+    let poll = null;
+    if (p.isPoll) {
+      const options = (p.pollOptions || []).map((o) => ({ id: o.id, text: o.text, votes: o._count.votes }));
+      poll = {
+        options,
+        totalVotes: options.reduce((s, o) => s + o.votes, 0),
+        myVoteId: myVoteMap.get(p.id) || null,
+        endsAt: p.pollEndsAt,
+        closed: Boolean(p.pollEndsAt && p.pollEndsAt <= new Date()),
+      };
+    }
     return {
       id: p.id,
       body: p.body,
+      poll,
       imageUrl: postImages(p)[0] || null,
       imageUrls: postImages(p),
       pinned: p.pinned,
@@ -402,6 +422,10 @@ async function mapPosts(posts, userId, ctx) {
 
 const postInclude = {
   author: { select: userSelect },
+  pollOptions: {
+    orderBy: { position: "asc" },
+    select: { id: true, text: true, _count: { select: { votes: true } } },
+  },
   _count: { select: { reactions: true, comments: { where: { deletedAt: null } } } },
 };
 
@@ -428,6 +452,7 @@ export async function createPost(slug, userId, body) {
   const ctx = await getContext(slug, userId);
   assertJoined(ctx);
   const images = normalizeImages(body);
+  const poll = body.poll;
   const post = await prisma.communityPost.create({
     data: {
       communityId: ctx.community.id,
@@ -435,10 +460,44 @@ export async function createPost(slug, userId, body) {
       body: body.body,
       imageUrl: images[0] || null,
       imageUrls: images,
+      ...(poll
+        ? {
+            isPoll: true,
+            pollEndsAt: poll.endsInDays ? new Date(Date.now() + poll.endsInDays * 86400000) : null,
+            pollOptions: { create: poll.options.map((text, position) => ({ text, position })) },
+          }
+        : {}),
     },
     include: postInclude,
   });
   const [item] = await mapPosts([post], userId, ctx);
+  return item;
+}
+
+export async function votePoll(postId, userId, optionId) {
+  const { post, ctx } = await getPostContext(postId, userId);
+  if (!post.isPoll) throw new ApiError(400, "This post is not a poll");
+  if (post.pollEndsAt && post.pollEndsAt <= new Date()) throw new ApiError(400, "This poll has ended");
+  const option = await prisma.communityPollOption.findFirst({ where: { id: optionId, postId } });
+  if (!option) throw new ApiError(404, "Option not found");
+  await prisma.communityPollVote.upsert({
+    where: { postId_userId: { postId, userId } },
+    create: { postId, userId, optionId },
+    update: { optionId },
+  });
+  return getPostWithContext(postId, userId, ctx);
+}
+
+export async function removePollVote(postId, userId) {
+  const { post, ctx } = await getPostContext(postId, userId);
+  if (post.pollEndsAt && post.pollEndsAt <= new Date()) throw new ApiError(400, "This poll has ended");
+  await prisma.communityPollVote.deleteMany({ where: { postId, userId } });
+  return getPostWithContext(postId, userId, ctx);
+}
+
+async function getPostWithContext(postId, userId, ctx) {
+  const full = await prisma.communityPost.findUnique({ where: { id: postId }, include: postInclude });
+  const [item] = await mapPosts([full], userId, ctx);
   return item;
 }
 

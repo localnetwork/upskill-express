@@ -4,8 +4,7 @@ import { env } from "../../src/shared/config/env.js";
 
 const prisma = new PrismaClient();
 
-const COURSE_SLUG =
-  process.env.REVIEW_SEED_COURSE_SLUG || "html-css-and-javascript-fundamentals";
+const COURSE_SLUG = process.env.REVIEW_SEED_COURSE_SLUG || "";
 const TARGET_REVIEWS = Math.max(
   15,
   Number(process.env.REVIEW_SEED_COUNT || 20) || 20,
@@ -23,22 +22,22 @@ const RATING_WEIGHTS = [
 
 const FALLBACK_REVIEWS = {
   5: [
-    ["Perfect for beginners", "Clear explanations and hands-on exercises. I built my first responsive page by the end of the first section."],
-    ["Exactly what I needed", "The JavaScript section finally made the DOM click for me. Great pacing and practical examples."],
-    ["Highly recommended", "Well structured from HTML basics to JavaScript fundamentals. The instructor explains every concept patiently."],
-    ["Worth every minute", "I had tried other tutorials before, but this course connected HTML, CSS and JavaScript in a way that made sense."],
+    ["Perfect for beginners", "Clear explanations and hands-on exercises. I was applying what I learned by the end of the first section."],
+    ["Exactly what I needed", "The practical examples made the tougher topics finally click for me. Great pacing throughout."],
+    ["Highly recommended", "Well structured from the basics to more advanced material. The instructor explains every concept patiently."],
+    ["Worth every minute", "I had tried other tutorials before, but this course connected the ideas in a way that made sense."],
   ],
   4: [
-    ["Solid fundamentals", "Great overview of the core web technologies. I would have liked a few more advanced projects, but overall very good."],
-    ["Good course", "Easy to follow and well organized. The CSS layout lessons were the highlight for me."],
+    ["Solid fundamentals", "Great overview of the core topics. I would have liked a few more advanced projects, but overall very good."],
+    ["Good course", "Easy to follow and well organized. The hands-on lessons were the highlight for me."],
     ["Very helpful", "Covers the essentials nicely. Some videos could be a bit shorter, but the content is accurate and useful."],
   ],
   3: [
-    ["Decent but basic", "Good for absolute beginners, though if you already know some HTML you may find the first sections slow."],
-    ["Okay overall", "The content is fine, but I wanted more practice exercises in the JavaScript part."],
+    ["Decent but basic", "Good for absolute beginners, though if you already know the basics you may find the first sections slow."],
+    ["Okay overall", "The content is fine, but I wanted more practice exercises in the later sections."],
   ],
   2: [
-    ["Needs more depth", "Some topics felt rushed, especially functions and events. I had to look elsewhere to fully understand them."],
+    ["Needs more depth", "Some topics felt rushed. I had to look elsewhere to fully understand them."],
   ],
   1: [
     ["Not what I expected", "Too introductory for my level and the examples felt outdated in a few places."],
@@ -85,7 +84,7 @@ async function generateReviewsWithAI(course, ratings) {
     `Course: "${course.title}"${course.subtitle ? ` — ${course.subtitle}` : ""}\n` +
     `Write ${ratings.length} distinct, realistic learner reviews for this course, one per rating in this exact order: ${JSON.stringify(ratings)}.\n` +
     "Rules: the tone must match the star rating (5 = enthusiastic, 3 = mixed, 1-2 = constructive criticism). " +
-    "Vary length (1-4 sentences), voice and focus (HTML, CSS, JavaScript, pacing, projects, instructor). " +
+    "Vary length (1-4 sentences), voice and focus (course topics, pacing, projects, instructor). " +
     "Mention specific course topics sometimes. No emojis, no hashtags, no names. Never repeat phrasing between reviews. " +
     'Return only a JSON array of objects: [{"title": string (max 60 chars), "comment": string}] with the same length and order as the ratings.';
 
@@ -139,19 +138,31 @@ export default class ReviewSeeder {
   }
 
   async run() {
-    const course = await prisma.course.findFirst({
-      where: { slug: COURSE_SLUG, deletedAt: null },
-      select: { id: true, title: true, subtitle: true, educatorId: true },
+    const courses = await prisma.course.findMany({
+      where: { deletedAt: null, ...(COURSE_SLUG ? { slug: COURSE_SLUG } : {}) },
+      select: { id: true, slug: true, title: true, subtitle: true, educatorId: true },
+      orderBy: { createdAt: "asc" },
     });
-    if (!course) {
-      console.log(`⚠️ Course "${COURSE_SLUG}" not found. Skipping review seeding.`);
+    if (courses.length === 0) {
+      console.log(
+        COURSE_SLUG
+          ? `⚠️ Course "${COURSE_SLUG}" not found. Skipping review seeding.`
+          : "⚠️ No courses found. Skipping review seeding.",
+      );
       return;
     }
 
+    for (const course of courses) {
+      await this.seedCourse(course);
+    }
+  }
+
+  async seedCourse(course) {
+    const courseSlug = course.slug;
     const existingCount = await prisma.review.count({ where: { courseId: course.id } });
     const needed = TARGET_REVIEWS - existingCount;
     if (needed <= 0) {
-      console.log(`✅ Reviews: "${COURSE_SLUG}" already has ${existingCount} reviews.`);
+      console.log(`✅ Reviews: "${courseSlug}" already has ${existingCount} reviews.`);
       return;
     }
 
@@ -241,7 +252,7 @@ export default class ReviewSeeder {
     }
 
     console.log(
-      `✅ Reviews: ${created} created for "${COURSE_SLUG}" ` +
+      `✅ Reviews: ${created} created for "${courseSlug}" ` +
         `(${aiTexts ? "AI-generated" : "template"} text, total now ${existingCount + created})`,
     );
   }

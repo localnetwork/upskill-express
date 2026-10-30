@@ -1,7 +1,6 @@
 import { prisma } from "../../shared/database/prisma.js";
 
 import { upgradeEnrollmentToPurchase } from "../access/access.service.js";
-import { recordTrialConversionEarning } from "../earnings/earnings.service.js";
 import { Prisma } from "@prisma/client";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { env } from "../../shared/config/env.js";
@@ -160,11 +159,6 @@ async function createEnrollmentWithWelcomeNotification(db, payload) {
   if (existingEnrollment) {
     if (existingEnrollment.accessSource !== "PURCHASE") {
       const upgraded = await upgradeEnrollmentToPurchase(db, payload);
-      await recordTrialConversionEarning(db, {
-        userId: payload.userId,
-        courseId: payload.courseId,
-        previousSource: existingEnrollment.accessSource,
-      });
       return upgraded;
     }
     return existingEnrollment;

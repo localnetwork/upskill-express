@@ -6,6 +6,8 @@ import jwt from "jsonwebtoken";
 import { randomUUID } from "crypto";
 import { Router } from "express";
 import { prisma } from "../../shared/database/prisma.js";
+import { sendEmail } from "../../shared/mail/mailer.js";
+import { buildBackupCodesEmail } from "../../shared/mail/templates.js";
 import { env } from "../../shared/config/env.js";
 import {
   authenticate,
@@ -4023,34 +4025,6 @@ router.delete(
   },
 );
 
-router.post(
-  "/payout-accounts/paypal",
-  authenticate,
-  authorize("EDUCATOR"),
-  async (req, res, next) => {
-    try {
-      const account = await prisma.payoutAccount.upsert({
-        where: { userId: req.user.id },
-        update: {
-          paypalEmail: req.body.email,
-          paypalMerchantId: req.body.accountId || null,
-          isVerified: true,
-        },
-        create: {
-          userId: req.user.id,
-          paypalEmail: req.body.email,
-          paypalMerchantId: req.body.accountId || null,
-          isVerified: true,
-        },
-      });
-
-      return res.status(201).json({ data: account });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
 router.get(
   "/payout-accounts",
   authenticate,
@@ -4063,9 +4037,10 @@ router.get(
       const data = account
         ? [
             {
-              provider: "paypal",
-              provider_email: account.paypalEmail,
-              provider_account_id: account.paypalMerchantId,
+              provider: "xendit",
+              channel_code: account.channelCode,
+              account_holder_name: account.accountHolderName,
+              account_number: account.accountNumber,
               is_default: "1",
             },
           ]
@@ -4155,6 +4130,8 @@ router.post("/confirm-2fa", authenticate, async (req, res, next) => {
         id: true,
         twoFactorEnabled: true,
         twoFactorTempSecret: true,
+        email: true,
+        firstName: true,
       },
     });
 
@@ -4183,6 +4160,11 @@ router.post("/confirm-2fa", authenticate, async (req, res, next) => {
         twoFactorBackupHashes: hashedCodes,
       },
     });
+
+    void sendEmail({
+      to: user.email,
+      ...buildBackupCodesEmail({ firstName: user.firstName, codes: rawCodes }),
+    }).catch(() => {});
 
     return res.json({
       message: "Two-factor authentication enabled",
@@ -4470,6 +4452,8 @@ router.post(
           id: true,
           twoFactorEnabled: true,
           twoFactorSecret: true,
+          email: true,
+          firstName: true,
         },
       });
 
@@ -4492,6 +4476,15 @@ router.post(
           twoFactorBackupHashes: hashedCodes,
         },
       });
+
+      void sendEmail({
+        to: user.email,
+        ...buildBackupCodesEmail({
+          firstName: user.firstName,
+          codes: rawCodes,
+          regenerated: true,
+        }),
+      }).catch(() => {});
 
       return res.json({
         message: "Backup codes regenerated",

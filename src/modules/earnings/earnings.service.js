@@ -96,43 +96,6 @@ export async function recordWatchHeartbeat(userId, lessonId) {
   return { counted };
 }
 
-export async function recordTrialConversionEarning(db, { userId, courseId, previousSource }) {
-  if (previousSource !== "TRIAL") return null;
-  const settings = await getPlatformCommerceSettings();
-  if (settings.trialConversionBonus <= 0) return null;
-
-  const accessEvent = await db.trialEvent.findFirst({
-    where: { userId, courseId, type: "COURSE_ACCESSED" },
-    orderBy: { createdAt: "asc" },
-    select: { createdAt: true },
-  });
-  if (!accessEvent) return null;
-  const windowEnd =
-    accessEvent.createdAt.getTime() + settings.trialConversionWindowDays * 24 * 60 * 60 * 1000;
-  if (Date.now() > windowEnd) return null;
-
-  const course = await db.course.findUnique({
-    where: { id: courseId },
-    select: { educatorId: true },
-  });
-  if (!course) return null;
-
-  const dedupeKey = `trial:${userId}:${courseId}`;
-  const existing = await db.educatorEarning.findUnique({ where: { dedupeKey } });
-  if (existing) return existing;
-
-  return db.educatorEarning.create({
-    data: {
-      educatorId: course.educatorId,
-      courseId,
-      type: "TRIAL_CONVERSION",
-      status: "AVAILABLE",
-      amount: settings.trialConversionBonus,
-      dedupeKey,
-    },
-  });
-}
-
 export async function calculateEarningsCycle(month) {
   const { start, end } = monthRange(month);
   const settings = await getPlatformCommerceSettings();
@@ -288,11 +251,11 @@ export async function getEducatorEarningsSummary(educatorId) {
         _sum: { amount: true },
       }),
       prisma.educatorEarning.aggregate({
-        where: { educatorId, status: "PENDING" },
+        where: { educatorId, type: "SUBSCRIPTION_POOL", status: "PENDING" },
         _sum: { amount: true },
       }),
       prisma.educatorEarning.findMany({
-        where: { educatorId },
+        where: { educatorId, type: "SUBSCRIPTION_POOL" },
         orderBy: { createdAt: "desc" },
         take: 20,
         include: {
@@ -315,11 +278,11 @@ export async function getEducatorEarningsSummary(educatorId) {
       }),
     ]);
 
-  const totals = { subscriptionPool: 0, trialConversion: 0, available: 0, paid: 0 };
+  const totals = { subscriptionPool: 0, available: 0, paid: 0 };
   for (const row of byType) {
+    if (row.type !== "SUBSCRIPTION_POOL") continue;
     const amount = round2(row._sum.amount || 0);
-    if (row.type === "SUBSCRIPTION_POOL") totals.subscriptionPool += amount;
-    else totals.trialConversion += amount;
+    totals.subscriptionPool += amount;
     if (row.status === "AVAILABLE") totals.available += amount;
     if (row.status === "PAID") totals.paid += amount;
   }
@@ -328,7 +291,6 @@ export async function getEducatorEarningsSummary(educatorId) {
   return {
     totals: {
       subscriptionPool: round2(totals.subscriptionPool),
-      trialConversion: round2(totals.trialConversion),
       available: round2(totals.available),
       paid: round2(totals.paid),
       pending: round2(pendingRow._sum.amount || 0),
@@ -357,7 +319,12 @@ export async function getEducatorEarningsSummary(educatorId) {
 
 export async function getAvailableEducatorEarnings(db, educatorId) {
   return db.educatorEarning.findMany({
-    where: { educatorId, status: "AVAILABLE", payoutRequestId: null },
+    where: {
+      educatorId,
+      type: "SUBSCRIPTION_POOL",
+      status: "AVAILABLE",
+      payoutRequestId: null,
+    },
     orderBy: { createdAt: "asc" },
   });
 }

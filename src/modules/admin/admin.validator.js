@@ -43,8 +43,6 @@ export const updatePlatformSettingsValidator = z
     trialDays: z.number().int().min(1).max(60).optional(),
     trialMaxCoursesPerLearner: z.number().int().min(1).max(50).optional(),
     trialPoolMaxPercent: z.number().min(0).max(100).optional(),
-    trialConversionBonus: z.number().min(0).max(100000).optional(),
-    trialConversionWindowDays: z.number().int().min(1).max(365).optional(),
     subscriptionPoolPercent: z.number().min(0).max(100).optional(),
   })
   .refine((payload) => Object.values(payload).some((v) => v !== undefined), {

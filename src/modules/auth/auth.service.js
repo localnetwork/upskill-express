@@ -32,6 +32,11 @@ import { createNotification } from "../notification/notification.service.js";
 import { env } from "../../shared/config/env.js";
 import axios from "axios";
 import {
+  buildUploadsObjectKey,
+  isR2Enabled,
+  uploadBufferToR2,
+} from "../../shared/storage/r2.js";
+import {
   buildDeviceName,
   getRequestIpAddress,
   getRequestUserAgent,
@@ -122,18 +127,57 @@ async function getUserProfilePicture(userId) {
   };
 }
 
+const AVATAR_EXTENSIONS = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
+
+// Copies the Google avatar into R2; falls back to the remote URL if R2 is off or the copy fails.
+async function copyAvatarToR2(userId, pictureUrl) {
+  const fallback = { storagePath: pictureUrl, mimeType: "image/jpeg", size: 0 };
+  if (!isR2Enabled()) return fallback;
+  try {
+    const response = await axios.get(pictureUrl, {
+      responseType: "arraybuffer",
+      timeout: 8000,
+      maxContentLength: 5 * 1024 * 1024,
+    });
+    const mimeType = String(response.headers["content-type"] || "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    const ext = AVATAR_EXTENSIONS[mimeType];
+    if (!ext) return fallback;
+    const buffer = Buffer.from(response.data);
+    const uploaded = await uploadBufferToR2({
+      buffer,
+      objectKey: buildUploadsObjectKey(
+        `avatars/${userId}-${Date.now()}.${ext}`,
+      ),
+      contentType: mimeType,
+    });
+    return { storagePath: uploaded.url, mimeType, size: buffer.length };
+  } catch (error) {
+    console.error("[auth] failed to copy Google avatar to R2", error.message);
+    return fallback;
+  }
+}
+
 // Links the Google avatar as the profile picture for a newly registered account. Never throws.
 async function setGoogleProfilePicture(userId, pictureUrl) {
   if (!pictureUrl) return null;
   try {
+    const stored = await copyAvatarToR2(userId, pictureUrl);
     const media = await prisma.media.create({
       data: {
         userId,
-        storagePath: pictureUrl,
+        storagePath: stored.storagePath,
         originalName: "google-profile-picture",
-        mimeType: "image/jpeg",
+        mimeType: stored.mimeType,
         mediaType: "IMAGE",
-        sizeInBytes: 0,
+        sizeInBytes: stored.size,
       },
     });
     const value = JSON.stringify({ mediaId: media.id });
@@ -527,6 +571,7 @@ export async function googleAuth(payload, context = {}) {
     firstName: profile.givenName || null,
     lastName: profile.familyName || null,
     passwordHash,
+    passwordSet: false,
     verificationToken: null,
     emailVerifiedAt: new Date(),
     roles: {
@@ -621,6 +666,7 @@ export async function resetPassword(token, password) {
 
   await updateUser(user.id, {
     passwordHash: await hashPassword(password),
+    passwordSet: true,
     resetPasswordToken: null,
     resetPasswordTokenExp: null,
   });

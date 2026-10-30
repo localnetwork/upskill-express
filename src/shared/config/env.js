@@ -46,6 +46,9 @@ export const env = {
   xenditBaseUrl: process.env.XENDIT_BASE_URL || "https://api.xendit.co",
   xenditSecretKey: process.env.XENDIT_SECRET_KEY || "",
   xenditCallbackToken: process.env.XENDIT_CALLBACK_TOKEN || "",
+  xenditPayoutCurrency: (process.env.XENDIT_PAYOUT_CURRENCY || "PHP")
+    .trim()
+    .toUpperCase(),
   xenditInvoiceDurationSeconds:
     Number(process.env.XENDIT_INVOICE_DURATION_SECONDS) || 3600,
   xenditReturnBaseUrl: (

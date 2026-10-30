@@ -373,6 +373,10 @@ function getInvalidationTagsFromRequest(req) {
     );
   }
 
+  if (path.startsWith("/api/subscription")) {
+    push("courses", "enrollments", "progress", "notifications", "users", "user-profile");
+  }
+
   if (path.startsWith("/api/payouts")) {
     push("payouts", "notifications", "admin-revenue");
   }

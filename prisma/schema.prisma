@@ -201,6 +201,7 @@ model User {
   link_youtube          String?
   link_github           String?
   passwordHash          String
+  passwordSet           Boolean   @default(true)
   isActive              Boolean   @default(true)
   emailVerifiedAt       DateTime?
   verificationToken     String?
@@ -1070,15 +1071,16 @@ model ActivityEvent {
 model PayoutAccount {
   id                   String    @id @default(cuid())
   userId               String    @unique
-  paypalEmail          String
-  paypalMerchantId     String?
+  accountNumber        String
+  channelCode          String
+  accountHolderName    String
   isVerified           Boolean   @default(false)
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
   user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([paypalEmail])
+  @@index([channelCode])
   @@map("payout_accounts")
 }
 
@@ -1091,7 +1093,7 @@ model PayoutRequest {
   status              PayoutStatus @default(REQUESTED)
   note                String?
   reviewNote          String?
-  paypalBatchId       String?
+  xenditPayoutId      String?
   requestedAt         DateTime     @default(now())
   reviewedAt          DateTime?
   executedAt          DateTime?
@@ -1443,6 +1445,8 @@ model CommunityPost {
   imageUrl    String?
   imageUrls   String[]  @default([])
   pinned      Boolean   @default(false)
+  isPoll      Boolean   @default(false)
+  pollEndsAt  DateTime?
   deletedAt   DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -1451,9 +1455,39 @@ model CommunityPost {
   author      User               @relation(fields: [authorId], references: [id], onDelete: Cascade)
   comments    CommunityComment[]
   reactions   CommunityReaction[]
+  pollOptions CommunityPollOption[]
+  pollVotes   CommunityPollVote[]
 
   @@index([communityId, pinned, createdAt])
   @@map("community_posts")
+}
+
+model CommunityPollOption {
+  id       String @id @default(cuid())
+  postId   String
+  text     String
+  position Int    @default(0)
+
+  post     CommunityPost       @relation(fields: [postId], references: [id], onDelete: Cascade)
+  votes    CommunityPollVote[]
+
+  @@index([postId, position])
+  @@map("community_poll_options")
+}
+
+model CommunityPollVote {
+  id        String   @id @default(cuid())
+  postId    String
+  optionId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  post      CommunityPost       @relation(fields: [postId], references: [id], onDelete: Cascade)
+  option    CommunityPollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([optionId])
+  @@map("community_poll_votes")
 }
 
 model CommunityComment {

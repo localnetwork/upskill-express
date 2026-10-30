@@ -43,16 +43,6 @@ const SETTINGS = {
     defaultValue: 20,
     description: "Max share of published courses that can be in the Trial Pool",
   },
-  trialConversionBonus: {
-    key: "TRIAL_CONVERSION_BONUS",
-    defaultValue: 50,
-    description: "Bonus paid to an educator when a trial learner buys their course",
-  },
-  trialConversionWindowDays: {
-    key: "TRIAL_CONVERSION_WINDOW_DAYS",
-    defaultValue: 30,
-    description: "Days after trial access in which a purchase counts as a conversion",
-  },
   subscriptionPoolPercent: {
     key: "SUBSCRIPTION_POOL_PERCENT",
     defaultValue: 45,
@@ -64,8 +54,6 @@ const NUMERIC_SETTING_KEYS = {
   trialDays: { min: 1, max: 60, integer: true },
   trialMaxCoursesPerLearner: { min: 1, max: 50, integer: true },
   trialPoolMaxPercent: { min: 0, max: 100 },
-  trialConversionBonus: { min: 0, max: 100000 },
-  trialConversionWindowDays: { min: 1, max: 365, integer: true },
   subscriptionPoolPercent: { min: 0, max: 100 },
 };
 

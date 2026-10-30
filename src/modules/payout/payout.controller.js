@@ -3,15 +3,27 @@ import {
   connectPayoutAccount,
   executePayout,
   getMyPayoutSummary,
-  handlePayPalPayoutWebhook,
+  handleXenditPayoutWebhook,
   listAllPayouts,
   listMyPayouts,
   rejectPayout,
   requestPayout,
   retryMyFailedPayout,
   returnMyFailedPayout,
+  getAccountVerificationMethod,
+  verifyAccountOwnership,
 } from "./payout.service.js";
 import { runAutoPayoutNow } from "./payout.scheduler.js";
+
+export async function verifyAccountPasswordController(req, res) {
+  const data = await verifyAccountOwnership(req.user.id, req.body);
+  return res.json({ message: "Verified", data });
+}
+
+export async function accountVerificationMethodController(req, res) {
+  const data = await getAccountVerificationMethod(req.user.id);
+  return res.json({ message: "Verification method", data });
+}
 
 export async function connectPayoutAccountController(req, res) {
   const data = await connectPayoutAccount(req.user.id, req.body);
@@ -50,7 +62,7 @@ export async function listAllPayoutsController(req, res) {
 
 export async function approvePayoutController(req, res) {
   const data = await approvePayout(req.user.id, req.params.payoutId, req.body.reviewNote);
-  return res.json({ message: "Payout approved and submitted to PayPal", data });
+  return res.json({ message: "Payout approved and submitted to Xendit", data });
 }
 
 export async function rejectPayoutController(req, res) {
@@ -69,6 +81,6 @@ export async function runAutoPayoutController(_req, res) {
 }
 
 export async function payoutWebhookController(req, res) {
-  const data = await handlePayPalPayoutWebhook(req.body, req.headers);
+  const data = await handleXenditPayoutWebhook(req.body, req.headers);
   return res.status(202).json({ message: "Payout webhook accepted", data });
 }

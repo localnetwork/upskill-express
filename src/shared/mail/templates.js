@@ -125,6 +125,45 @@ export function buildPasswordResetEmail({ firstName, token }) {
   };
 }
 
+export function buildBackupCodesEmail({ firstName, codes, regenerated }) {
+  const name = firstName || "there";
+  const list = codes.map((c) => escapeHtml(c));
+  const grid = `<table role="presentation" width="100%" cellpadding="0" cellspacing="8" style="margin:0 0 16px;">${list
+    .reduce((rows, c, i) => {
+      if (i % 2 === 0) rows.push([]);
+      rows[rows.length - 1].push(c);
+      return rows;
+    }, [])
+    .map(
+      (row) =>
+        `<tr>${row
+          .map(
+            (c) =>
+              `<td style="background:#F6F8FC;border:1px solid ${LINE};border-radius:8px;padding:10px;text-align:center;font-family:Consolas,Menlo,monospace;font-size:15px;letter-spacing:1px;color:${INK};">${c}</td>`,
+          )
+          .join("")}</tr>`,
+    )
+    .join("")}</table>`;
+  return {
+    subject: regenerated
+      ? "Your new backup codes"
+      : "Your two-factor backup codes",
+    text: `Hi ${name},\n\n${regenerated ? "Your backup codes were regenerated; older codes no longer work." : "Two-factor authentication is now enabled."} Keep these single-use backup codes somewhere safe:\n\n${codes.join("\n")}\n\nIf this wasn't you, secure your account immediately.`,
+    html: layout({
+      preheader: "Store these backup codes somewhere safe.",
+      eyebrow: "Account security",
+      title: regenerated
+        ? "Your new backup codes"
+        : "Two-factor authentication enabled",
+      bodyHtml: `${paragraph(`Hi ${escapeHtml(name)}, here are your single-use backup codes. Each one can be used once if you lose access to your authenticator app.`)}
+        ${grid}
+        ${callout(`<strong style="color:${INK};">Keep these private.</strong> Delete this email after saving them somewhere safe. If this wasn't you, change your password right away.`)}`,
+      footerNote:
+        "You're receiving this because two-factor settings changed on your account.",
+    }),
+  };
+}
+
 export function buildCoursePublishedEmail({
   firstName,
   courseTitle,

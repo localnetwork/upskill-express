@@ -47,7 +47,15 @@ export const postBody = z.object({
   body: z.string().trim().min(1).max(5000),
   imageUrl: url.nullable().optional(),
   imageUrls: z.array(url).max(10).optional(),
+  poll: z
+    .object({
+      options: z.array(z.string().trim().min(1).max(120)).min(2).max(10),
+      endsInDays: z.number().int().min(1).max(30).nullable().optional(),
+    })
+    .optional(),
 });
+
+export const voteBody = z.object({ optionId: z.string().min(1) });
 
 export const commentBody = z.object({
   body: z.string().trim().min(1).max(2000),

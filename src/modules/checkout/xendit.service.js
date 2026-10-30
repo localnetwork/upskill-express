@@ -214,6 +214,51 @@ export async function expireXenditInvoice(invoiceId) {
   return normalizeXenditInvoice(invoice);
 }
 
+export const XENDIT_PAYOUT_CHANNELS = {
+  PH_GCASH: { label: "GCash", type: "EWALLET" },
+  PH_PAYMAYA: { label: "Maya", type: "EWALLET" },
+  PH_BDO: { label: "BDO Unibank", type: "BANK" },
+  PH_BPI: { label: "Bank of the Philippine Islands (BPI)", type: "BANK" },
+  PH_UNIONBANK: { label: "UnionBank", type: "BANK" },
+  PH_METROBANK: { label: "Metrobank", type: "BANK" },
+};
+
+export function isSupportedXenditPayoutChannel(channelCode) {
+  return Object.hasOwn(XENDIT_PAYOUT_CHANNELS, channelCode);
+}
+
+export async function createXenditPayout({
+  referenceId,
+  idempotencyKey,
+  channelCode,
+  accountNumber,
+  accountHolderName,
+  amount,
+  currency,
+  description,
+}) {
+  return xenditRequest(
+    "POST",
+    "/v2/payouts",
+    {
+      reference_id: referenceId,
+      channel_code: channelCode,
+      channel_properties: {
+        account_holder_name: accountHolderName,
+        account_number: accountNumber,
+      },
+      amount: Number(Number(amount).toFixed(2)),
+      currency,
+      description: description || "Instructor payout",
+    },
+    { "Idempotency-key": idempotencyKey || referenceId },
+  );
+}
+
+export async function getXenditPayout(payoutId) {
+  return xenditRequest("GET", `/v2/payouts/${encodeURIComponent(payoutId)}`);
+}
+
 export function verifyXenditCallbackToken(token) {
   const expected = env.xenditCallbackToken;
   if (!expected || !token) return false;

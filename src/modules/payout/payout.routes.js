@@ -17,16 +17,33 @@ import {
   retryMyPayoutController,
   returnMyPayoutController,
   runAutoPayoutController,
+  verifyAccountPasswordController,
+  accountVerificationMethodController,
 } from "./payout.controller.js";
 import {
   connectPayoutAccountValidator,
   requestPayoutValidator,
   reviewPayoutValidator,
+  verifyPasswordValidator,
 } from "./payout.validator.js";
 
 const router = Router();
 
-router.post("/webhook/paypal", asyncHandler(payoutWebhookController));
+router.post("/webhook/xendit", asyncHandler(payoutWebhookController));
+
+router.get(
+  "/account/verification-method",
+  authenticate,
+  authorize("EDUCATOR"),
+  asyncHandler(accountVerificationMethodController),
+);
+router.post(
+  "/account/verify-password",
+  authenticate,
+  authorize("EDUCATOR"),
+  validate(verifyPasswordValidator),
+  asyncHandler(verifyAccountPasswordController),
+);
 
 router.post(
   "/account",

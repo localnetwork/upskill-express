@@ -1474,6 +1474,7 @@ async function generateCourseDraftViaAI(prompt, options = {}) {
     "Schema: { title, slug, subtitle, description, welcome_message, congratulations_message, language, instructional_level, category, cover_image_query, what_you_will_learn[], requirements[], who_should_attend[], sections:[{ title, description, lessons:[{ title, description, type, estimated_minutes }] }] }. " +
     "slug is a short, lowercase, hyphenated URL slug (3-6 words, a-z 0-9 and hyphens only) that is specific to this course's topic and distinct from a generic title slug (e.g. 'html-css-responsive-websites-bootcamp'). " +
     "cover_image_query is 2-4 concrete English keywords describing a photo that visually fits the course topic (e.g. 'python programming laptop'). " +
+    "description must be exactly about 250 words (between 245 and 255), written as 3-4 HTML <p> paragraphs covering what the course is, who it is for, and what learners will achieve. " +
     "Constraints: title <= 60 chars, subtitle <= 180 chars, 4-8 sections, 3-8 lessons each section, lesson type one of VIDEO|RESOURCE|ASSIGNMENT|QUIZ|CODING_EXERCISE, estimated_minutes is number. " +
     "Section and lesson titles must be descriptive and specific; never use generic placeholders like 'Section 1' or 'Lesson 1'.";
 
@@ -1512,7 +1513,67 @@ async function generateCourseDraftViaAI(prompt, options = {}) {
   if (!parsed) {
     throw new ApiError(502, "AI returned an invalid response format");
   }
-  return normalizeAIDraftPayload(parsed, prompt);
+  const normalized = normalizeAIDraftPayload(parsed, prompt);
+  normalized.description = await ensureDescriptionWordCount(
+    normalized.description,
+    normalized.title,
+    prompt,
+  );
+  return normalized;
+}
+
+const DESCRIPTION_TARGET_WORDS = 250;
+
+// AI often misses word targets, so rewrite until within tolerance; last resort is trimming.
+async function ensureDescriptionWordCount(description, title, prompt) {
+  const min = DESCRIPTION_TARGET_WORDS - 10;
+  const max = DESCRIPTION_TARGET_WORDS + 10;
+  let current = description || "";
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const words = countWords(current);
+    if (words >= min && words <= max) return current;
+    try {
+      const response = await axios.post(
+        `${env.deepseekBaseUrl.replace(/\/+$/g, "")}/chat/completions`,
+        {
+          model: env.deepseekModel,
+          temperature: 0.4,
+          messages: [
+            {
+              role: "system",
+              content:
+                `You write course descriptions. Return only HTML made of 3-4 <p> paragraphs, no markdown fences, no headings. The result must be exactly ${DESCRIPTION_TARGET_WORDS} words (acceptable range ${min}-${max}).`,
+            },
+            {
+              role: "user",
+              content: `Course title: ${title}\nBrief: ${prompt}\n\nCurrent description (${words} words):\n${current || "(none)"}\n\nRewrite it to be ${DESCRIPTION_TARGET_WORDS} words.`,
+            },
+          ],
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${env.aiKey}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 60000,
+        },
+      );
+      const text = String(response?.data?.choices?.[0]?.message?.content || "")
+        .replace(/^```(?:html)?\s*|\s*```$/gi, "")
+        .trim();
+      if (text) current = text;
+    } catch (_error) {
+      break;
+    }
+  }
+
+  if (countWords(current) > max) {
+    const plain = stripHtml(current).split(" ").filter(Boolean);
+    const trimmed = plain.slice(0, DESCRIPTION_TARGET_WORDS).join(" ");
+    return `<p>${trimmed.replace(/[,;:\s]+$/, "")}${/[.!?]$/.test(trimmed) ? "" : "."}</p>`;
+  }
+  return current;
 }
 
 export async function createCourseAIDraft(userId, payload, options = {}) {

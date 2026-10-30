@@ -39,6 +39,8 @@ router.patch("/posts/:postId", validate(v.postParams, "params"), validate(v.post
 router.delete("/posts/:postId", validate(v.postParams, "params"), ok("Post deleted")((req) => svc.deletePost(req.params.postId, req.user.id)));
 router.post("/posts/:postId/pin", validate(v.postParams, "params"), validate(v.pinBody), ok("Post pin updated")((req) => svc.pinPost(req.params.postId, req.user.id, req.body.pinned)));
 router.post("/posts/:postId/like", validate(v.postParams, "params"), ok("Like toggled")((req) => svc.toggleLike(req.params.postId, req.user.id)));
+router.post("/posts/:postId/vote", validate(v.postParams, "params"), validate(v.voteBody), ok("Vote recorded")((req) => svc.votePoll(req.params.postId, req.user.id, req.body.optionId)));
+router.delete("/posts/:postId/vote", validate(v.postParams, "params"), ok("Vote removed")((req) => svc.removePollVote(req.params.postId, req.user.id)));
 
 router.get("/posts/:postId/comments", validate(v.postParams, "params"), ok("Comments fetched")((req) => svc.listComments(req.params.postId, req.user.id, req.query)));
 router.post("/posts/:postId/comments", validate(v.postParams, "params"), validate(v.commentBody), ok("Comment created", 201)((req) => svc.createComment(req.params.postId, req.user.id, req.body)));
