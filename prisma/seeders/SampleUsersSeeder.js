@@ -1,5 +1,4 @@
 import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcrypt";
 import {
   buildUploadsObjectKey,
   isR2Enabled,
@@ -10,7 +9,6 @@ const prisma = new PrismaClient();
 
 const LEARNER_COUNT = 50;
 const EDUCATOR_COUNT = 30;
-const SEED_PASSWORD = "Password@12345";
 const EMAIL_DOMAIN = "seed.upskill.local";
 const PICTURE_KEY_PREFIX = "profile_picture::";
 
@@ -136,8 +134,7 @@ function buildLearner(person, index) {
   return {
     username: `learner.${handle}`,
     email: `learner.${handle}@${EMAIL_DOMAIN}`,
-    firstName: person.first,
-    lastName: person.last,
+    fullName: `${person.first} ${person.last}`,
     headline: `${pick(LEARNER_HEADLINES, index)} • ${interestA}`,
     biography:
       `Hi, I'm ${person.first}! I'm currently exploring ${interestA} and ${interestB} ` +
@@ -158,8 +155,7 @@ function buildEducator(person, index) {
   return {
     username: `educator.${handle}`,
     email: `educator.${handle}@${EMAIL_DOMAIN}`,
-    firstName: person.first,
-    lastName: person.last,
+    fullName: `${person.first} ${person.last}`,
     headline: `${subject} ${pick(EDUCATOR_TITLES, index)}`,
     biography:
       `I'm ${person.first} ${person.last}, a ${subject} instructor with ${years}+ years ` +
@@ -260,8 +256,6 @@ export default class SampleUsersSeeder {
     if (usernames.size !== accounts.length || emails.size !== accounts.length) {
       throw new Error("Generated sample users are not unique");
     }
-
-    const passwordHash = await bcrypt.hash(SEED_PASSWORD, 10);
     let created = 0;
     let skipped = 0;
 
@@ -282,7 +276,6 @@ export default class SampleUsersSeeder {
       const user = await prisma.user.create({
         data: {
           ...data,
-          passwordHash,
           isActive: true,
           emailVerifiedAt: new Date(),
         },
@@ -296,7 +289,7 @@ export default class SampleUsersSeeder {
 
     console.log(
       `✅ Sample users: ${created} created, ${skipped} already existed ` +
-        `(${LEARNER_COUNT} learners, ${EDUCATOR_COUNT} educators; password: ${SEED_PASSWORD})`,
+        `(${LEARNER_COUNT} learners, ${EDUCATOR_COUNT} educators)`,
     );
   }
 }

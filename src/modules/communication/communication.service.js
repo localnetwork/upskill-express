@@ -110,8 +110,7 @@ export async function listInstructorQa(educatorId, query = {}) {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
         course: {
@@ -148,7 +147,7 @@ export async function listInstructorQa(educatorId, query = {}) {
       id: row.author?.id || null,
       username: row.author?.username || "",
       fullName:
-        `${row.author?.firstName || ""} ${row.author?.lastName || ""}`.trim() ||
+        row.author?.fullName ||
         row.author?.username ||
         "Learner",
     },
@@ -282,7 +281,7 @@ export async function listInstructorMessages(educatorId, query = {}) {
       participants: {
         include: {
           user: {
-            select: { id: true, username: true, firstName: true, lastName: true },
+            select: { id: true, username: true, fullName: true },
           },
         },
       },
@@ -318,7 +317,7 @@ export async function listInstructorMessages(educatorId, query = {}) {
 
     const learner = learnerParticipant.user;
     const learnerName =
-      `${learner?.firstName || ""} ${learner?.lastName || ""}`.trim() ||
+      learner?.fullName ||
       learner?.username ||
       "Learner";
     items.push({
@@ -661,7 +660,7 @@ export async function sendAnnouncement(educatorId, payload) {
   const [sender, announcementCourse] = await Promise.all([
     prisma.user.findUnique({
       where: { id: educatorId },
-      select: { id: true, username: true, firstName: true, lastName: true },
+      select: { id: true, username: true, fullName: true },
     }),
     payload.courseId && payload.courseId !== "all"
       ? prisma.course.findUnique({
@@ -682,9 +681,8 @@ export async function sendAnnouncement(educatorId, payload) {
           educatorId,
           sender: {
             id: sender?.id || educatorId,
-            username: sender?.username || "",
-            firstName: sender?.firstName || "",
-            lastName: sender?.lastName || "",
+            username: sender?.username || "",
+            fullName: sender?.fullName || "",
           },
           courseId: payload.courseId,
           courseTitle: announcementCourse?.title || null,
@@ -813,7 +811,7 @@ function mapLearnerHealthItem(enrollment, thresholds) {
     enrollmentId: enrollment.id,
     learnerId: enrollment.userId,
     learnerName:
-      `${enrollment.user?.firstName || ""} ${enrollment.user?.lastName || ""}`.trim() ||
+      enrollment.user?.fullName ||
       enrollment.user?.username ||
       "Learner",
     learnerEmail: enrollment.user?.email || "",
@@ -900,8 +898,7 @@ export async function getLearnerHealth(educatorId, courseId) {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
           email: true,
         },
       },

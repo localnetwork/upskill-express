@@ -530,8 +530,7 @@ export async function getCategoryBySlugOrId(slugOrId) {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
           headline: true,
         },
       },
@@ -579,9 +578,8 @@ export async function getCategoryBySlugOrId(slugOrId) {
     if (!educatorMap.has(course.educator.id)) {
       educatorMap.set(course.educator.id, {
         id: course.educator.id,
-        username: course.educator.username || "",
-        first_name: course.educator.firstName || "",
-        last_name: course.educator.lastName || "",
+        username: course.educator.username || "",
+        full_name: course.educator.fullName || "",
         headline: course.educator.headline || "",
         courses_count: 0,
         total_enrollees: 0,
@@ -602,7 +600,7 @@ export async function getCategoryBySlugOrId(slugOrId) {
 
   const popularEducators = Array.from(educatorMap.values())
     .map((row) => {
-      const displayName = `${row.first_name} ${row.last_name}`.trim() || row.username || "Educator";
+      const displayName = row.full_name || row.username || "Educator";
       const averageRating = row.total_reviews
         ? Number((row.weighted_rating_sum / row.total_reviews).toFixed(2))
         : 0;

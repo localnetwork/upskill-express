@@ -38,9 +38,8 @@ function mapUserLite(user) {
   if (!user) return null;
   return {
     id: user.id,
-    username: user.username || "",
-    firstName: user.firstName || "",
-    lastName: user.lastName || "",
+    username: user.username || "",
+    fullName: user.fullName || "",
     email: user.email || "",
   };
 }
@@ -171,8 +170,7 @@ export function initSocket(server) {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
               email: true,
             },
           },
@@ -351,8 +349,7 @@ export function initSocket(server) {
               select: {
                 id: true,
                 username: true,
-                firstName: true,
-                lastName: true,
+                fullName: true,
                 email: true,
               },
             },
@@ -443,8 +440,7 @@ export function initSocket(server) {
               select: {
                 id: true,
                 username: true,
-                firstName: true,
-                lastName: true,
+                fullName: true,
                 email: true,
               },
             },

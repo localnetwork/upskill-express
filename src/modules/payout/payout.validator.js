@@ -13,7 +13,6 @@ export const connectPayoutAccountValidator = z
       .string()
       .trim()
       .regex(/^\d{8,20}$/, "Account number must be 8-20 digits"),
-    password: z.string().min(1).max(200).optional(),
     code: z.string().regex(/^\d{6}$/).optional(),
   })
   .refine(
@@ -27,7 +26,6 @@ export const connectPayoutAccountValidator = z
   );
 
 export const verifyPasswordValidator = z.object({
-  password: z.string().max(200).optional(),
   code: z.string().max(10).optional(),
 });
 

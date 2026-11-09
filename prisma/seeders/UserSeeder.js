@@ -1,5 +1,4 @@
 import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcrypt";
 const prisma = new PrismaClient();
 
 export default class UserSeeder {
@@ -11,58 +10,37 @@ export default class UserSeeder {
     const users = [
       {
         username: "admin",
-        email: "admin@upskill.local",
-        firstName: "Platform",
-        lastName: "Admin",
-        password: "Admin@12345",
+        email: "admin@upskill.local",        fullName: "Platform Admin",
         role: "ADMIN",
       },
       {
         username: "learner",
-        email: "learner@upskill.local",
-        firstName: "Default",
-        lastName: "Learner",
-        password: "Learner@12345",
+        email: "learner@upskill.local",        fullName: "Default Learner",
         role: "LEARNER",
       },
       {
         username: "educator",
-        email: "educator@upskill.local",
-        firstName: "Default",
-        lastName: "Educator",
-        password: "Educator@12345",
+        email: "educator@upskill.local",        fullName: "Default Educator",
         role: "EDUCATOR",
       },
       {
         username: "finance",
-        email: "finance@upskill.local",
-        firstName: "Finance",
-        lastName: "Officer",
-        password: "Finance@12345",
+        email: "finance@upskill.local",        fullName: "Finance Officer",
         role: "FINANCE_OFFICER",
       },
       {
         username: "reviewer",
-        email: "reviewer@upskill.local",
-        firstName: "Course",
-        lastName: "Reviewer",
-        password: "Reviewer@12345",
+        email: "reviewer@upskill.local",        fullName: "Course Reviewer",
         role: "COURSE_REVIEWER",
       },
       {
         username: "support",
-        email: "support@upskill.local",
-        firstName: "Support",
-        lastName: "Agent",
-        password: "Support@12345",
+        email: "support@upskill.local",        fullName: "Support Agent",
         role: "SUPPORT_AGENT",
       },
       {
         username: "analyst",
-        email: "analyst@upskill.local",
-        firstName: "Data",
-        lastName: "Analyst",
-        password: "Analyst@12345",
+        email: "analyst@upskill.local",        fullName: "Data Analyst",
         role: "ANALYST",
       },
     ];
@@ -77,11 +55,10 @@ export default class UserSeeder {
         continue;
       }
 
-      const { role: roleName, password, ...baseData } = userData;
-      const passwordHash = await bcrypt.hash(password, 10);
+      const { role: roleName, ...baseData } = userData;
       const createData = {
         ...baseData,
-        passwordHash,
+        emailVerifiedAt: new Date(),
       };
 
       const user = await prisma.user.upsert({
@@ -111,7 +88,7 @@ export default class UserSeeder {
       });
 
       console.log(
-        `✅ Upserted: ${user.email} with role ${roleName} (password: ${password})`,
+        `✅ Upserted: ${user.email} with role ${roleName}`,
       );
     }
   }

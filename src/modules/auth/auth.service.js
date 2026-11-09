@@ -7,18 +7,7 @@ import {
   signRefreshToken,
   verifyRefreshToken,
 } from "../../shared/utils/jwt.js";
-import { sendEmail } from "../../shared/mail/mailer.js";
-import {
-  buildPasswordResetEmail,
-  buildVerificationEmail,
-} from "../../shared/mail/templates.js";
-import {
-  comparePassword,
-  compareToken,
-  hashPassword,
-  hashToken,
-  randomToken,
-} from "../../shared/utils/security.js";
+import { compareToken, hashToken } from "../../shared/utils/security.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import {
   createUser,
@@ -28,7 +17,6 @@ import {
   updateUser,
 } from "./auth.repository.js";
 import { recordActivityEvent } from "../analytics/analytics.service.js";
-import { createNotification } from "../notification/notification.service.js";
 import { env } from "../../shared/config/env.js";
 import axios from "axios";
 import {
@@ -45,6 +33,7 @@ import {
   resolveDeviceLocationLabel,
   resolveTrustedDeviceForLogin,
 } from "./trusted-device.service.js";
+import { OTP_PURPOSE, consumeOtp, issueOtp } from "./otp.service.js";
 
 const USER_PICTURE_KEY_PREFIX = "profile_picture::";
 
@@ -52,16 +41,13 @@ function getRoles(user) {
   return (user.roles || []).map((item) => item.role.name);
 }
 
-function mapAuthUser(user, roles = getRoles(user), userPicture = null) {
+export function mapAuthUser(user, roles = getRoles(user), userPicture = null) {
   const permissions = mapPermissionsFromRoles(roles);
   return {
     id: user.id,
     email: user.email,
     username: user.username,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    firstname: user.firstName,
-    lastname: user.lastName,
+    fullName: user.fullName || "",
     verified: Boolean(user.emailVerifiedAt),
     isActive: user.isActive,
     is_suspended: !user.isActive,
@@ -220,14 +206,24 @@ function normalizeRole(rawRole) {
   return "LEARNER";
 }
 
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function maskEmail(email) {
+  const [local = "", domain = ""] = String(email).split("@");
+  const visible = local.slice(0, Math.min(2, local.length));
+  return `${visible}${"*".repeat(Math.max(local.length - visible.length, 2))}@${domain}`;
+}
+
 function normalizeGoogleProfile(data) {
+  const givenName = data?.given_name ? String(data.given_name).trim() : "";
+  const familyName = data?.family_name ? String(data.family_name).trim() : "";
+  const name = data?.name ? String(data.name).trim() : "";
   return {
-    email: String(data?.email || "")
-      .trim()
-      .toLowerCase(),
+    email: normalizeEmail(data?.email),
     emailVerified: String(data?.email_verified || "").toLowerCase() === "true",
-    givenName: data?.given_name ? String(data.given_name).trim() : "",
-    familyName: data?.family_name ? String(data.family_name).trim() : "",
+    fullName: name || [givenName, familyName].filter(Boolean).join(" "),
     picture: /^https:\/\//i.test(String(data?.picture || ""))
       ? String(data.picture).trim()
       : "",
@@ -294,119 +290,34 @@ async function generateUniqueUsername(email) {
   throw new ApiError(500, "Unable to generate a unique username");
 }
 
-export async function register(payload, context = {}) {
-  const [existingEmail, existingUsername] = await Promise.all([
-    findUserByEmail(payload.email),
-    findUserByUsername(payload.username),
-  ]);
-
-  if (existingEmail) {
-    throw new ApiError(409, "Email already in use");
-  }
-
-  if (existingUsername) {
-    throw new ApiError(409, "Username already in use");
-  }
-
-  const verificationToken = randomToken(24);
-  const hashedPassword = await hashPassword(payload.password);
-  const roleName = normalizeRole(payload.role);
-  const defaultRole = await ensureDefaultRole(roleName);
-
-  const user = await createUser({
-    email: payload.email,
-    username: payload.username,
-    firstName: payload.firstName || payload.firstname,
-    lastName: payload.lastName || payload.lastname,
-    passwordHash: hashedPassword,
-    verificationToken,
-    roles: {
-      create: [{ roleId: defaultRole.id }],
-    },
-  });
-
-  const tokenPayload = {
-    sub: user.id,
-    email: user.email,
-    roles: [roleName],
-  };
-  const accessToken = signAccessToken(tokenPayload);
-  const refreshToken = signRefreshToken(tokenPayload);
-  const refreshTokenHash = await hashToken(refreshToken);
-  await updateUser(user.id, { refreshTokenHash });
-
-  await recordActivityEvent({
-    eventType: "AUTH_REGISTER",
-    userId: user.id,
-    metadata: { role: roleName },
-    dedupeWindowSeconds: 5,
-  });
-
-  const verificationEmail = buildVerificationEmail({
-    firstName: user.firstName,
-    token: verificationToken,
-  });
-  void sendEmail({ to: user.email, ...verificationEmail });
-
-  await startTrialIfEligible(user.id, {
-    ipAddress: context.req ? getRequestIpAddress(context.req) : null,
-  });
-
-  return {
-    accessToken,
-    refreshToken,
-    user: mapAuthUser(user, [roleName]),
-  };
-}
-
-export async function login(payload, context = {}) {
-  const identifier = payload.email || payload.username;
-  if (!identifier) {
-    throw new ApiError(400, "Email or username is required");
-  }
-
-  const shouldUseEmail = Boolean(payload.email || identifier.includes("@"));
-  const user = shouldUseEmail
-    ? await findUserByEmail(identifier)
-    : await findUserByUsername(identifier);
-  if (!user) {
-    throw new ApiError(401, "These credentials do not match our records.");
-  }
-
-  const valid = await comparePassword(payload.password, user.passwordHash);
-  if (!valid) {
-    throw new ApiError(401, "These credentials do not match our records.");
-  }
-
+function assertAccountActive(user) {
   if (user.deletedAt || !user.isActive) {
     throw new ApiError(403, "Account disabled");
   }
+}
 
+function hasTwoFactor(user) {
+  return Boolean(user.twoFactorEnabled && user.twoFactorSecret);
+}
+
+// Issues tokens, remembers the device and records the login activity.
+async function createSession(
+  user,
+  { payload = {}, context = {}, provider, method, notifyNewDevice = true },
+) {
   const requestUserAgent = getRequestUserAgent(context.req);
   const requestIpAddress = getRequestIpAddress(context.req);
   const requestLocationLabel = resolveDeviceLocationLabel(
     context.req,
     payload?.locationLabel,
   );
-  const trustedDevice = await resolveTrustedDeviceForLogin(
-    user.id,
-    payload?.trustedDeviceToken,
-  );
 
-  if (user.twoFactorEnabled && user.twoFactorSecret && !trustedDevice.trusted) {
-    const userPicture = await getUserProfilePicture(user.id);
-    return {
-      requires_2fa: true,
-      pre_auth_token: signPreAuthToken(buildTokenPayload(user)),
-      user: mapAuthUser(user, getRoles(user), userPicture),
-    };
-  }
-
-  const accessToken = signAccessToken(buildTokenPayload(user));
-  const refreshToken = signRefreshToken(buildTokenPayload(user));
+  const tokenPayload = buildTokenPayload(user);
+  const accessToken = signAccessToken(tokenPayload);
+  const refreshToken = signRefreshToken(tokenPayload);
   const refreshTokenHash = await hashToken(refreshToken);
-
   await updateUser(user.id, { refreshTokenHash });
+
   const deviceName = payload?.deviceName || buildDeviceName(requestUserAgent);
   const { trustedDeviceToken, isNewDevice } = await registerTrustedDevice(
     user.id,
@@ -419,13 +330,13 @@ export async function login(payload, context = {}) {
     },
   );
 
-  if (isNewDevice) {
+  if (isNewDevice && notifyNewDevice) {
     await notifyNewDeviceLogin(user.id, {
       deviceName,
       locationLabel: requestLocationLabel,
       ipAddress: requestIpAddress,
       userAgent: requestUserAgent,
-      provider: "password",
+      provider,
     });
   }
 
@@ -433,10 +344,8 @@ export async function login(payload, context = {}) {
     eventType: "AUTH_LOGIN",
     userId: user.id,
     metadata: {
-      method:
-        user.twoFactorEnabled && user.twoFactorSecret
-          ? "trusted_device"
-          : "password",
+      ...(provider === "google" ? { provider: "google" } : {}),
+      method,
       device: deviceName,
       location: requestLocationLabel,
       ipAddress: requestIpAddress,
@@ -454,6 +363,165 @@ export async function login(payload, context = {}) {
   };
 }
 
+// Returns a pre-auth challenge when the user must pass 2FA, otherwise null.
+async function twoFactorChallengeFor(user, trustedDeviceToken) {
+  if (!hasTwoFactor(user)) return null;
+  const trustedDevice = await resolveTrustedDeviceForLogin(
+    user.id,
+    trustedDeviceToken,
+  );
+  if (trustedDevice.trusted) return null;
+
+  const userPicture = await getUserProfilePicture(user.id);
+  return {
+    requires_2fa: true,
+    pre_auth_token: signPreAuthToken(buildTokenPayload(user)),
+    user: mapAuthUser(user, getRoles(user), userPicture),
+  };
+}
+
+export async function requestRegistrationCode(payload) {
+  const email = normalizeEmail(payload.email);
+  const existing = await findUserByEmail(email);
+  if (existing) {
+    throw new ApiError(409, "Email already in use");
+  }
+
+  const fullName = String(payload.fullName || "").trim();
+  const role = normalizeRole(payload.role);
+  await ensureDefaultRole(role);
+
+  const { expiresInSeconds } = await issueOtp({
+    email,
+    purpose: OTP_PURPOSE.REGISTER,
+    payload: { fullName, role },
+    fullName,
+  });
+
+  return { email, maskedEmail: maskEmail(email), expiresInSeconds };
+}
+
+export async function verifyRegistration(payload, context = {}) {
+  const email = normalizeEmail(payload.email);
+  const otp = await consumeOtp({
+    email,
+    purpose: OTP_PURPOSE.REGISTER,
+    code: payload.code,
+  });
+
+  if (await findUserByEmail(email)) {
+    throw new ApiError(409, "Email already in use");
+  }
+
+  const roleName = normalizeRole(otp.payload?.role);
+  const defaultRole = await ensureDefaultRole(roleName);
+  const username = await generateUniqueUsername(email);
+
+  const created = await createUser({
+    email,
+    username,
+    fullName: otp.payload?.fullName || null,
+    emailVerifiedAt: new Date(),
+    roles: {
+      create: [{ roleId: defaultRole.id }],
+    },
+  });
+  const user = await findUserById(created.id);
+
+  await recordActivityEvent({
+    eventType: "AUTH_REGISTER",
+    userId: user.id,
+    metadata: { role: roleName },
+    dedupeWindowSeconds: 5,
+  });
+
+  await startTrialIfEligible(user.id, {
+    ipAddress: context.req ? getRequestIpAddress(context.req) : null,
+  });
+
+  return createSession(user, {
+    payload,
+    context,
+    provider: "email_code",
+    method: "email_code",
+    notifyNewDevice: false,
+  });
+}
+
+export async function login(payload, context = {}) {
+  const identifier = String(payload.email || payload.username || "").trim();
+  if (!identifier) {
+    throw new ApiError(400, "Email is required");
+  }
+
+  const user = identifier.includes("@")
+    ? await findUserByEmail(normalizeEmail(identifier))
+    : await findUserByUsername(identifier);
+  if (!user || user.deletedAt) {
+    throw new ApiError(404, "No account found for this email. Please sign up.");
+  }
+  assertAccountActive(user);
+
+  const challenge = await twoFactorChallengeFor(
+    user,
+    payload?.trustedDeviceToken,
+  );
+  if (challenge) return challenge;
+
+  if (hasTwoFactor(user)) {
+    return createSession(user, {
+      payload,
+      context,
+      provider: "trusted_device",
+      method: "trusted_device",
+    });
+  }
+
+  const { expiresInSeconds } = await issueOtp({
+    email: user.email,
+    purpose: OTP_PURPOSE.LOGIN,
+    userId: user.id,
+    fullName: user.fullName,
+  });
+
+  return {
+    requires_email_code: true,
+    email: user.email,
+    masked_email: maskEmail(user.email),
+    expires_in: expiresInSeconds,
+  };
+}
+
+export async function verifyLoginCode(payload, context = {}) {
+  const email = normalizeEmail(payload.email);
+  const user = await findUserByEmail(email);
+  if (!user || user.deletedAt) {
+    throw new ApiError(400, "Invalid or expired code");
+  }
+  assertAccountActive(user);
+  if (hasTwoFactor(user)) {
+    throw new ApiError(400, "Use your authenticator app to sign in");
+  }
+
+  await consumeOtp({
+    email,
+    purpose: OTP_PURPOSE.LOGIN,
+    code: payload.code,
+    userId: user.id,
+  });
+
+  if (!user.emailVerifiedAt) {
+    await updateUser(user.id, { emailVerifiedAt: new Date() });
+  }
+
+  return createSession(user, {
+    payload,
+    context,
+    provider: "email_code",
+    method: "email_code",
+  });
+}
+
 export async function googleAuth(payload, context = {}) {
   const profile = await verifyGoogleIdToken(payload.idToken);
   const roleName = payload.mode === "instructor" ? "EDUCATOR" : "LEARNER";
@@ -466,92 +534,26 @@ export async function googleAuth(payload, context = {}) {
         "No account found for this Google email. Please register first.",
       );
     }
-    if (existingUser.deletedAt || !existingUser.isActive) {
-      throw new ApiError(403, "Account disabled");
-    }
+    assertAccountActive(existingUser);
 
-    const requestUserAgent = getRequestUserAgent(context.req);
-    const requestIpAddress = getRequestIpAddress(context.req);
-    const requestLocationLabel = resolveDeviceLocationLabel(
-      context.req,
-      payload?.locationLabel,
-    );
     if (!existingUser.emailVerifiedAt) {
       // Google already verified this address.
-      await updateUser(existingUser.id, {
-        verificationToken: null,
-        emailVerifiedAt: new Date(),
-      });
+      await updateUser(existingUser.id, { emailVerifiedAt: new Date() });
       existingUser.emailVerifiedAt = new Date();
     }
-    const trustedDevice = await resolveTrustedDeviceForLogin(
-      existingUser.id,
+
+    const challenge = await twoFactorChallengeFor(
+      existingUser,
       payload?.trustedDeviceToken,
     );
+    if (challenge) return challenge;
 
-    if (
-      existingUser.twoFactorEnabled &&
-      existingUser.twoFactorSecret &&
-      !trustedDevice.trusted
-    ) {
-      const userPicture = await getUserProfilePicture(existingUser.id);
-      return {
-        requires_2fa: true,
-        pre_auth_token: signPreAuthToken(buildTokenPayload(existingUser)),
-        user: mapAuthUser(existingUser, getRoles(existingUser), userPicture),
-      };
-    }
-
-    const accessToken = signAccessToken(buildTokenPayload(existingUser));
-    const refreshToken = signRefreshToken(buildTokenPayload(existingUser));
-    const refreshTokenHash = await hashToken(refreshToken);
-    await updateUser(existingUser.id, { refreshTokenHash });
-    const deviceName = payload?.deviceName || buildDeviceName(requestUserAgent);
-    const { trustedDeviceToken, isNewDevice } = await registerTrustedDevice(
-      existingUser.id,
-      {
-        deviceIdentifier: payload?.deviceIdentifier,
-        deviceName,
-        userAgent: requestUserAgent,
-        ipAddress: requestIpAddress,
-        locationLabel: requestLocationLabel,
-      },
-    );
-
-    if (isNewDevice) {
-      await notifyNewDeviceLogin(existingUser.id, {
-        deviceName,
-        locationLabel: requestLocationLabel,
-        ipAddress: requestIpAddress,
-        userAgent: requestUserAgent,
-        provider: "google",
-      });
-    }
-
-    await recordActivityEvent({
-      eventType: "AUTH_LOGIN",
-      userId: existingUser.id,
-      metadata: {
-        provider: "google",
-        method:
-          existingUser.twoFactorEnabled && existingUser.twoFactorSecret
-            ? "trusted_device"
-            : "google",
-        device: deviceName,
-        location: requestLocationLabel,
-        ipAddress: requestIpAddress,
-      },
-      dedupeWindowSeconds: 5,
+    return createSession(existingUser, {
+      payload,
+      context,
+      provider: "google",
+      method: hasTwoFactor(existingUser) ? "trusted_device" : "google",
     });
-
-    const userPicture = await getUserProfilePicture(existingUser.id);
-
-    return {
-      accessToken,
-      refreshToken,
-      trustedDeviceToken,
-      user: mapAuthUser(existingUser, getRoles(existingUser), userPicture),
-    };
   }
 
   if (existingUser) {
@@ -563,31 +565,17 @@ export async function googleAuth(payload, context = {}) {
 
   const defaultRole = await ensureDefaultRole(roleName);
   const username = await generateUniqueUsername(profile.email);
-  const passwordHash = await hashPassword(randomToken(40));
 
-  const user = await createUser({
+  const created = await createUser({
     email: profile.email,
     username,
-    firstName: profile.givenName || null,
-    lastName: profile.familyName || null,
-    passwordHash,
-    passwordSet: false,
-    verificationToken: null,
+    fullName: profile.fullName || null,
     emailVerifiedAt: new Date(),
     roles: {
       create: [{ roleId: defaultRole.id }],
     },
   });
-
-  const tokenPayload = {
-    sub: user.id,
-    email: user.email,
-    roles: [roleName],
-  };
-  const accessToken = signAccessToken(tokenPayload);
-  const refreshToken = signRefreshToken(tokenPayload);
-  const refreshTokenHash = await hashToken(refreshToken);
-  await updateUser(user.id, { refreshTokenHash });
+  const user = await findUserById(created.id);
 
   await recordActivityEvent({
     eventType: "AUTH_REGISTER",
@@ -596,17 +584,22 @@ export async function googleAuth(payload, context = {}) {
     dedupeWindowSeconds: 5,
   });
 
+  const session = await createSession(user, {
+    payload,
+    context,
+    provider: "google",
+    method: "google",
+    notifyNewDevice: false,
+  });
+
   const userPicture = await setGoogleProfilePicture(user.id, profile.picture);
+  session.user.user_picture = userPicture;
 
   await startTrialIfEligible(user.id, {
     ipAddress: getRequestIpAddress(context.req),
   });
 
-  return {
-    accessToken,
-    refreshToken,
-    user: mapAuthUser(user, [roleName], userPicture),
-  };
+  return session;
 }
 
 export async function refreshTokens(refreshToken) {
@@ -631,66 +624,4 @@ export async function refreshTokens(refreshToken) {
     accessToken: nextAccessToken,
     refreshToken: nextRefreshToken,
   };
-}
-
-export async function forgotPassword(email) {
-  const user = await findUserByEmail(email);
-  if (!user || user.deletedAt) {
-    return { success: true };
-  }
-  const token = randomToken(24);
-  await updateUser(user.id, {
-    resetPasswordToken: token,
-    resetPasswordTokenExp: new Date(Date.now() + 1000 * 60 * 30),
-  });
-  const resetEmail = buildPasswordResetEmail({
-    firstName: user.firstName,
-    token,
-  });
-  await sendEmail({ to: user.email, ...resetEmail });
-  return { success: true };
-}
-
-export async function resetPassword(token, password) {
-  const user = await prisma.user.findFirst({
-    where: {
-      resetPasswordToken: token,
-      resetPasswordTokenExp: { gt: new Date() },
-      deletedAt: null,
-    },
-  });
-
-  if (!user) {
-    throw new ApiError(400, "Invalid or expired reset token");
-  }
-
-  await updateUser(user.id, {
-    passwordHash: await hashPassword(password),
-    passwordSet: true,
-    resetPasswordToken: null,
-    resetPasswordTokenExp: null,
-  });
-
-  return { success: true };
-}
-
-export async function verifyEmail(token, context = {}) {
-  const user = await prisma.user.findFirst({
-    where: { verificationToken: token, deletedAt: null },
-  });
-
-  if (!user) {
-    throw new ApiError(400, "Invalid verification token");
-  }
-
-  await updateUser(user.id, {
-    verificationToken: null,
-    emailVerifiedAt: new Date(),
-  });
-
-  await startTrialIfEligible(user.id, {
-    ipAddress: context.req ? getRequestIpAddress(context.req) : null,
-  });
-
-  return { success: true };
 }

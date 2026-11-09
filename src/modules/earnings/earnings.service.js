@@ -234,7 +234,7 @@ export async function getEarningsCycleDetail(month) {
     orderBy: { amount: "desc" },
     include: {
       educator: {
-        select: { id: true, username: true, firstName: true, lastName: true, email: true },
+        select: { id: true, username: true, fullName: true, email: true },
       },
     },
   });

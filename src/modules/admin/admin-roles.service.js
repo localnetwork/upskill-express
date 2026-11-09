@@ -1,7 +1,6 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { ROLE_GUIDES } from "../../shared/constants/staffRoles.js";
-import { hashPassword } from "../../shared/utils/security.js";
 
 const SYSTEM_ROLES = ["ADMIN", "EDUCATOR", "LEARNER"];
 
@@ -232,9 +231,7 @@ export async function createUserByAdmin(payload) {
     data: {
       email,
       username,
-      firstName: payload.firstName || null,
-      lastName: payload.lastName || null,
-      passwordHash: await hashPassword(payload.password),
+      fullName: payload.fullName?.trim() || null,
       emailVerifiedAt: new Date(),
       roles: { create: roles.map((role) => ({ roleId: role.id })) },
     },

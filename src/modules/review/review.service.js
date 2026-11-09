@@ -25,12 +25,10 @@ function sanitizeReplyHtml(value) {
 }
 
 function mapReviewAuthor(user, pictures) {
-  const fullName = `${user?.firstName || ""} ${user?.lastName || ""}`.trim();
+  const fullName = user?.fullName;
   return {
     id: user?.id || null,
-    username: user?.username || "",
-    firstName: user?.firstName || "",
-    lastName: user?.lastName || "",
+    username: user?.username || "",
     fullName: fullName || user?.username || "Learner",
     picture: (user?.id && pictures?.get(user.id)) || null,
   };
@@ -187,8 +185,7 @@ export async function listCourseReviews(courseId, query, viewerUserId = null) {
     where.OR = [
       { title: { contains: searchTerm, mode: "insensitive" } },
       { comment: { contains: searchTerm, mode: "insensitive" } },
-      { user: { firstName: { contains: searchTerm, mode: "insensitive" } } },
-      { user: { lastName: { contains: searchTerm, mode: "insensitive" } } },
+      { user: { fullName: { contains: searchTerm, mode: "insensitive" } } },
       { user: { username: { contains: searchTerm, mode: "insensitive" } } },
     ];
   }
@@ -211,8 +208,7 @@ export async function listCourseReviews(courseId, query, viewerUserId = null) {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
         reviewLikes: viewerUserId
@@ -232,8 +228,7 @@ export async function listCourseReviews(courseId, query, viewerUserId = null) {
               select: {
                 id: true,
                 username: true,
-                firstName: true,
-                lastName: true,
+                fullName: true,
               },
             },
           },
@@ -402,8 +397,7 @@ export async function replyToReview(userId, reviewId, payload) {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
       _count: {
@@ -417,8 +411,7 @@ export async function replyToReview(userId, reviewId, payload) {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
             },
           },
         },
@@ -544,8 +537,7 @@ export async function listInstructorReviews(userId, query = {}) {
             { title: { contains: search, mode: "insensitive" } },
             { comment: { contains: search, mode: "insensitive" } },
             { user: { username: { contains: search, mode: "insensitive" } } },
-            { user: { firstName: { contains: search, mode: "insensitive" } } },
-            { user: { lastName: { contains: search, mode: "insensitive" } } },
+            { user: { fullName: { contains: search, mode: "insensitive" } } },
             { course: { title: { contains: search, mode: "insensitive" } } },
           ],
         }
@@ -562,8 +554,7 @@ export async function listInstructorReviews(userId, query = {}) {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
         course: {

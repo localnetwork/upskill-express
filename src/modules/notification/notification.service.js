@@ -59,7 +59,7 @@ async function enrichNotifications(userId, rows, { withOrder = false } = {}) {
               slug: item.course?.slug,
               image: item.course?.cover_image?.path || null,
               instructor:
-                `${item.course?.educator?.firstName || ""} ${item.course?.educator?.lastName || ""}`.trim() ||
+                item.course?.educator?.fullName ||
                 item.course?.educator?.username ||
                 "",
             })),

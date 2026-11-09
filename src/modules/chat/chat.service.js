@@ -23,9 +23,8 @@ function mapUserLite(user) {
   if (!user) return null;
   return {
     id: user.id,
-    username: user.username || "",
-    firstName: user.firstName || "",
-    lastName: user.lastName || "",
+    username: user.username || "",
+    fullName: user.fullName || "",
     email: user.email || "",
   };
 }
@@ -47,7 +46,7 @@ function safeParseJson(value) {
 
 function getRealName(user) {
   if (!user) return "";
-  const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
+  const fullName = user.fullName;
   return fullName || user.username || "";
 }
 
@@ -191,8 +190,7 @@ function buildConversationSearchWhere(userId, q = "") {
                 user: {
                   OR: [
                     { username: { contains: search, mode: "insensitive" } },
-                    { firstName: { contains: search, mode: "insensitive" } },
-                    { lastName: { contains: search, mode: "insensitive" } },
+                    { fullName: { contains: search, mode: "insensitive" } },
                     { email: { contains: search, mode: "insensitive" } },
                   ],
                 },
@@ -272,8 +270,7 @@ export async function listConversations(userId, query = {}) {
               select: {
                 id: true,
                 username: true,
-                firstName: true,
-                lastName: true,
+                fullName: true,
                 email: true,
               },
             },
@@ -294,8 +291,7 @@ export async function listConversations(userId, query = {}) {
               select: {
                 id: true,
                 username: true,
-                firstName: true,
-                lastName: true,
+                fullName: true,
                 email: true,
               },
             },
@@ -364,7 +360,7 @@ export async function listConversations(userId, query = {}) {
             : others
                 .map((item) =>
                   item.nickname ||
-                  [item.firstName, item.lastName].filter(Boolean).join(" ").trim() ||
+                  item.fullName ||
                   item.username,
                 )
                 .filter(Boolean)
@@ -488,8 +484,7 @@ export async function listConversationMessages(userId, conversationId, query = {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
             email: true,
           },
         },
@@ -542,8 +537,7 @@ export async function sendMessage(userId, payload = {}) {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
           email: true,
         },
       },
@@ -624,8 +618,7 @@ export async function createSystemMessage(conversationId, actorId, body, metadat
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
           email: true,
         },
       },
@@ -680,8 +673,7 @@ export async function setParticipantNickname(
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
           email: true,
         },
       },
@@ -705,8 +697,7 @@ export async function setParticipantNickname(
     select: {
       id: true,
       username: true,
-      firstName: true,
-      lastName: true,
+      fullName: true,
       email: true,
     },
   });
@@ -830,8 +821,7 @@ export async function getConversationDetail(userId, conversationId) {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
               email: true,
             },
           },
@@ -880,10 +870,7 @@ export async function getConversationDetail(userId, conversationId) {
         : others
             .map((item) =>
               item.nickname ||
-              [item.user.firstName, item.user.lastName]
-                .filter(Boolean)
-                .join(" ")
-                .trim() ||
+              item.user.fullName ||
               item.user.username,
             )
             .filter(Boolean)
@@ -919,18 +906,16 @@ export async function searchChatUsers(userId, query = {}) {
       id: { not: userId },
       OR: [
         { username: { contains: q, mode: "insensitive" } },
-        { firstName: { contains: q, mode: "insensitive" } },
-        { lastName: { contains: q, mode: "insensitive" } },
+        { fullName: { contains: q, mode: "insensitive" } },
         { email: { contains: q, mode: "insensitive" } },
       ],
     },
     take: limit,
-    orderBy: [{ firstName: "asc" }, { username: "asc" }],
+    orderBy: [{ fullName: "asc" }, { username: "asc" }],
     select: {
       id: true,
       username: true,
-      firstName: true,
-      lastName: true,
+      fullName: true,
       email: true,
     },
   });

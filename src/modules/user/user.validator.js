@@ -4,12 +4,7 @@ export const createdUserValidator = z.object({
   username: z.string().min(3).max(40),
   email: z.string().email("Invalid email format"),
 
-  password: z.string().min(8, "Password must be at least 8 characters"),
-
-  firstName: z.string().optional(),
-  lastName: z.string().optional(),
-  firstname: z.string().optional(),
-  lastname: z.string().optional(),
+  fullName: z.string().trim().max(120).optional(),
   headline: z.string().max(100).optional(),
   biography: z.string().optional(),
   link_website: z.string().optional(),
@@ -24,10 +19,7 @@ export const createdUserValidator = z.object({
 
 export const updateUserValidator = z.object({
   username: z.string().min(3).max(40).optional(),
-  firstName: z.string().optional(),
-  lastName: z.string().optional(),
-  firstname: z.string().optional(),
-  lastname: z.string().optional(),
+  fullName: z.string().trim().max(120).optional(),
   headline: z.string().max(100).optional(),
   biography: z.string().optional(),
   link_website: z.string().optional(),
@@ -38,10 +30,18 @@ export const updateUserValidator = z.object({
   link_tiktok: z.string().optional(),
   link_youtube: z.string().optional(),
   link_github: z.string().optional(),
-  password: z
+});
+
+export const changeEmailRequestValidator = z.object({
+  newEmail: z.string().trim().toLowerCase().email("Invalid email format"),
+});
+
+export const changeEmailConfirmValidator = z.object({
+  newEmail: z.string().trim().toLowerCase().email("Invalid email format"),
+  code: z
     .string()
-    .min(8, "Password must be at least 8 characters")
-    .optional(),
+    .trim()
+    .regex(/^\d{6}$/, "Enter the 6-digit code"),
 });
 
 export const friendRequestTargetParamValidator = z.object({
@@ -57,8 +57,7 @@ export const friendRequestRespondBodyValidator = z.object({
 });
 
 export const adminUpdateUserValidator = z.object({
-  firstName: z.string().max(80).optional(),
-  lastName: z.string().max(80).optional(),
+  fullName: z.string().trim().max(120).optional(),
   headline: z.string().max(100).optional(),
   biography: z.string().max(2000).optional(),
 });

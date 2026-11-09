@@ -84,8 +84,7 @@ export async function getCart(userId) {
                 select: {
                   id: true,
                   username: true,
-                  firstName: true,
-                  lastName: true,
+                  fullName: true,
                 },
               },
             },

@@ -42,7 +42,7 @@ function generateReferenceNo() {
 }
 
 function getDisplayName(user) {
-  const fullName = `${user?.firstName || ""} ${user?.lastName || ""}`.trim();
+  const fullName = user?.fullName;
   return fullName || user?.username || "Unknown";
 }
 
@@ -88,7 +88,7 @@ export async function getCertificateBySlug(slug) {
   if (parsed.userId) {
     const user = await prisma.user.findUnique({
       where: { id: parsed.userId },
-      select: { firstName: true, lastName: true, username: true },
+      select: { fullName: true, username: true },
     });
     if (user) {
       studentName = getDisplayName(user);
@@ -172,7 +172,7 @@ export async function generateCourseCertificate(userId, courseSlug) {
     },
     include: {
       user: {
-        select: { id: true, firstName: true, lastName: true, username: true },
+        select: { id: true, fullName: true, username: true },
       },
       course: {
         select: {
@@ -180,7 +180,7 @@ export async function generateCourseCertificate(userId, courseSlug) {
           slug: true,
           title: true,
           educator: {
-            select: { firstName: true, lastName: true, username: true },
+            select: { fullName: true, username: true },
           },
         },
       },

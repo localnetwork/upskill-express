@@ -1,5 +1,5 @@
 import {
-  changePassword,
+  confirmEmailChange,
   getCurrentUser,
   listCurrentUserDevices,
   listCurrentUserActivity,
@@ -12,6 +12,7 @@ import {
   unfriend,
   respondToFriendRequest,
   removeCurrentUserDevice,
+  requestEmailChange,
   softDeleteUser,
   updateCurrentUser,
 } from "./user.service.js";
@@ -61,9 +62,14 @@ export async function removeMyDeviceController(req, res) {
   return res.json({ message: "Device removed", data });
 }
 
-export async function changePasswordController(req, res) {
-  const data = await changePassword(req.user.id, req.body.oldPassword, req.body.newPassword);
-  return res.json({ message: "Password changed", data });
+export async function requestEmailChangeController(req, res) {
+  const data = await requestEmailChange(req.user.id, req.body.newEmail);
+  return res.json({ message: "Verification required", data });
+}
+
+export async function confirmEmailChangeController(req, res) {
+  const data = await confirmEmailChange(req.user.id, req.body);
+  return res.json({ message: "Email updated", data });
 }
 
 export async function listUsersController(req, res) {

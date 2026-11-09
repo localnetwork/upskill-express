@@ -141,16 +141,14 @@ function mapDiscussionThreadSummary(thread) {
     updatedAt: thread.updatedAt,
     author: {
       id: thread.author?.id || null,
-      username: thread.author?.username || "",
-      firstName: thread.author?.firstName || "",
-      lastName: thread.author?.lastName || "",
+      username: thread.author?.username || "",
+      fullName: thread.author?.fullName || "",
     },
     resolvedBy: thread.resolvedBy
       ? {
           id: thread.resolvedBy.id,
-          username: thread.resolvedBy.username || "",
-          firstName: thread.resolvedBy.firstName || "",
-          lastName: thread.resolvedBy.lastName || "",
+          username: thread.resolvedBy.username || "",
+          fullName: thread.resolvedBy.fullName || "",
         }
       : null,
     upvotesCount: Number(thread?._count?.votes || 0),
@@ -168,9 +166,8 @@ function mapDiscussionReply(reply) {
     updatedAt: reply.updatedAt,
     author: {
       id: reply.author?.id || null,
-      username: reply.author?.username || "",
-      firstName: reply.author?.firstName || "",
-      lastName: reply.author?.lastName || "",
+      username: reply.author?.username || "",
+      fullName: reply.author?.fullName || "",
     },
   };
 }
@@ -209,16 +206,14 @@ export async function listLessonDiscussions(actor, slug, query = {}) {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
         resolvedBy: {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
         votes: {
@@ -291,12 +286,11 @@ export async function createDiscussionThread(actor, slug, payload = {}) {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
       resolvedBy: {
-        select: { id: true, username: true, firstName: true, lastName: true },
+        select: { id: true, username: true, fullName: true },
       },
       votes: {
         where: { voterId: actor.id },
@@ -316,7 +310,7 @@ export async function createDiscussionThread(actor, slug, payload = {}) {
       userId: course.educatorId,
       type: "SYSTEM",
       title: "New lesson discussion thread",
-      message: `${thread.author?.firstName || thread.author?.username || "A learner"} started a discussion in ${course.title}.`,
+      message: `${thread.author?.fullName || thread.author?.username || "A learner"} started a discussion in ${course.title}.`,
       metadata: {
         notificationKind: "DISCUSSION_THREAD_CREATED",
         threadId: thread.id,
@@ -337,16 +331,14 @@ export async function getDiscussionThread(actor, threadId) {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
       resolvedBy: {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
       replies: {
@@ -356,8 +348,7 @@ export async function getDiscussionThread(actor, threadId) {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
             },
           },
         },
@@ -432,8 +423,7 @@ export async function createDiscussionReply(actor, threadId, payload = {}) {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
     },
@@ -449,7 +439,7 @@ export async function createDiscussionReply(actor, threadId, payload = {}) {
       userId: thread.authorId,
       type: "SYSTEM",
       title: "New reply on your discussion",
-      message: `${reply.author?.firstName || reply.author?.username || "A learner"} replied to your discussion in ${thread.course.title}.`,
+      message: `${reply.author?.fullName || reply.author?.username || "A learner"} replied to your discussion in ${thread.course.title}.`,
       metadata: {
         notificationKind: "DISCUSSION_REPLY_CREATED",
         threadId: thread.id,
@@ -486,16 +476,14 @@ export async function toggleDiscussionResolved(actor, threadId, payload = {}) {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
       resolvedBy: {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
       votes: {
@@ -515,8 +503,7 @@ export async function toggleDiscussionResolved(actor, threadId, payload = {}) {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
             },
           },
         },

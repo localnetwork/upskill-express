@@ -1,11 +1,12 @@
 import { Router } from "express";
-import { z } from "zod";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import { authorize, authorizePermission } from "../../shared/middleware/rbac.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import {
+  changeEmailConfirmValidator,
+  changeEmailRequestValidator,
   friendRequestRespondBodyValidator,
   friendRequestRespondParamValidator,
   friendRequestTargetParamValidator,
@@ -19,7 +20,7 @@ import {
   preferenceOptionsController,
   updateMyPreferencesController,
   cancelFriendRequestController,
-  changePasswordController,
+  confirmEmailChangeController,
   deleteUserController,
   getFriendRequestStatusController,
   listMyDevicesController,
@@ -29,6 +30,7 @@ import {
   listMyActivityController,
   meController,
   removeMyDeviceController,
+  requestEmailChangeController,
   respondToFriendRequestController,
   sendFriendRequestController,
   unfriendController,
@@ -81,15 +83,16 @@ router.get(
 );
 router.delete("/me/devices/:deviceId", authenticate, asyncHandler(removeMyDeviceController));
 router.post(
-  "/me/change-password",
+  "/me/change-email/request",
   authenticate,
-  validate(
-    z.object({
-      oldPassword: z.string().min(8),
-      newPassword: z.string().min(8),
-    }),
-  ),
-  asyncHandler(changePasswordController),
+  validate(changeEmailRequestValidator),
+  asyncHandler(requestEmailChangeController),
+);
+router.post(
+  "/me/change-email/confirm",
+  authenticate,
+  validate(changeEmailConfirmValidator),
+  asyncHandler(confirmEmailChangeController),
 );
 router.get(
   "/friend-requests/status/:targetUserId",

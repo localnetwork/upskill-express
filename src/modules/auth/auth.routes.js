@@ -3,22 +3,20 @@ import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { createRateLimiter } from "../../shared/middleware/rate-limit.middleware.js";
 import {
-  emailVerificationValidator,
-  forgotPasswordValidator,
   googleAuthValidator,
   loginValidator,
+  loginVerifyValidator,
   refreshValidator,
-  registerValidator,
-  resetPasswordValidator,
+  registerRequestValidator,
+  registerVerifyValidator,
 } from "./auth.validator.js";
 import {
-  forgotPasswordController,
   googleAuthController,
   loginController,
+  loginVerifyController,
   refreshTokenController,
-  registerController,
-  resetPasswordController,
-  verifyEmailController,
+  registerRequestController,
+  registerVerifyController,
 } from "./auth.controller.js";
 
 const router = Router();
@@ -42,14 +40,26 @@ const authRefreshLimiter = createRateLimiter({
 router.post(
   "/register",
   authStrictLimiter,
-  validate(registerValidator),
-  asyncHandler(registerController),
+  validate(registerRequestValidator),
+  asyncHandler(registerRequestController),
+);
+router.post(
+  "/register/verify",
+  authStrictLimiter,
+  validate(registerVerifyValidator),
+  asyncHandler(registerVerifyController),
 );
 router.post(
   "/login",
   authStrictLimiter,
   validate(loginValidator),
   asyncHandler(loginController),
+);
+router.post(
+  "/login/verify",
+  authStrictLimiter,
+  validate(loginVerifyValidator),
+  asyncHandler(loginVerifyController),
 );
 router.post(
   "/google",
@@ -62,24 +72,6 @@ router.post(
   authRefreshLimiter,
   validate(refreshValidator),
   asyncHandler(refreshTokenController),
-);
-router.post(
-  "/forgot-password",
-  authStrictLimiter,
-  validate(forgotPasswordValidator),
-  asyncHandler(forgotPasswordController),
-);
-router.post(
-  "/reset-password",
-  authStrictLimiter,
-  validate(resetPasswordValidator),
-  asyncHandler(resetPasswordController),
-);
-router.post(
-  "/verify-email",
-  authStrictLimiter,
-  validate(emailVerificationValidator),
-  asyncHandler(verifyEmailController),
 );
 
 export default router;

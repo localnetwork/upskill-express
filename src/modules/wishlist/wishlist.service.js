@@ -52,9 +52,8 @@ function mapWishlistItem(row) {
       author: {
         data: {
           id: row.course.educator?.id,
-          username: row.course.educator?.username,
-          firstname: row.course.educator?.firstName || "",
-          lastname: row.course.educator?.lastName || "",
+          username: row.course.educator?.username,
+          fullName: row.course.educator?.fullName || "",
           user_picture: null,
         },
       },
@@ -78,7 +77,7 @@ export async function listWishlist(userId, query) {
         course: {
           include: {
             educator: {
-              select: { id: true, username: true, firstName: true, lastName: true },
+              select: { id: true, username: true, fullName: true },
             },
             priceTier: true,
             media: {

@@ -8,7 +8,6 @@ import { getPlatformCommerceSettings } from "../platform-settings/platform-setti
 import { recordActivityEvent } from "../analytics/analytics.service.js";
 import { mapWithConcurrency } from "../../shared/utils/concurrency.js";
 import { getAvailableEducatorEarnings } from "../earnings/earnings.service.js";
-import { comparePassword } from "../../shared/utils/security.js";
 import { verifyTotpToken } from "../auth/two-factor.service.js";
 import {
   createXenditPayout,
@@ -41,8 +40,7 @@ const payoutRequestItemsInclude = {
                   id: true,
                   username: true,
                   email: true,
-                  firstName: true,
-                  lastName: true,
+                  fullName: true,
                 },
               },
             },
@@ -680,13 +678,10 @@ async function refreshExecutedPayoutStatus(payout) {
 }
 
 function resolveVerificationMethod(user) {
-  if (user.twoFactorEnabled && user.twoFactorSecret) return "authenticator";
-  return user.passwordSet ? "password" : "none";
+  return user.twoFactorEnabled && user.twoFactorSecret ? "authenticator" : "none";
 }
 
 const VERIFY_USER_SELECT = {
-  passwordHash: true,
-  passwordSet: true,
   twoFactorEnabled: true,
   twoFactorSecret: true,
 };
@@ -700,7 +695,7 @@ export async function getAccountVerificationMethod(userId) {
   return { method: resolveVerificationMethod(user) };
 }
 
-export async function verifyAccountOwnership(userId, { password, code } = {}) {
+export async function verifyAccountOwnership(userId, { code } = {}) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: VERIFY_USER_SELECT,
@@ -711,9 +706,6 @@ export async function verifyAccountOwnership(userId, { password, code } = {}) {
     if (!/^\d{6}$/.test(String(code || "")) || !verifyTotpToken(user.twoFactorSecret, String(code))) {
       throw new ApiError(401, "Invalid authenticator code");
     }
-  } else if (method === "password") {
-    const valid = await comparePassword(String(password || ""), user.passwordHash);
-    if (!valid) throw new ApiError(401, "Incorrect password");
   }
   return { verified: true, method };
 }

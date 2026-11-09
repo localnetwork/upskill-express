@@ -316,7 +316,7 @@ function estimateLessonDurationSeconds(lesson) {
 function getCourseInclude() {
   return {
     educator: {
-      select: { id: true, username: true, firstName: true, lastName: true, headline: true },
+      select: { id: true, username: true, fullName: true, headline: true },
     },
     level: true,
     priceTier: true,
@@ -459,8 +459,7 @@ function mapDiscoveryCourseItemBase(course, pictures = new Map()) {
       ? {
           id: course.educator.id,
           username: course.educator.username,
-          first_name: course.educator.firstName || "",
-          last_name: course.educator.lastName || "",
+          full_name: course.educator.fullName || "",
           user_picture: pictures.get(course.educator.id) || null,
         }
       : null,
@@ -2344,8 +2343,7 @@ export async function listCourses(query, user) {
             id: true,
             email: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
             headline: true,
           },
         },
@@ -2454,7 +2452,7 @@ export async function getCourseDiscoveryData(query = {}) {
     },
     include: {
       educator: {
-        select: { id: true, username: true, firstName: true, lastName: true },
+        select: { id: true, username: true, fullName: true },
       },
       category: {
         include: {
@@ -2742,8 +2740,7 @@ export async function getCourseDiscoveryData(query = {}) {
               .filter(Boolean)
               .map((word) => ({
                 OR: [
-                  { firstName: { contains: word, mode: "insensitive" } },
-                  { lastName: { contains: word, mode: "insensitive" } },
+                  { fullName: { contains: word, mode: "insensitive" } },
                   { username: { contains: word, mode: "insensitive" } },
                 ],
               })),
@@ -2751,8 +2748,7 @@ export async function getCourseDiscoveryData(query = {}) {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
             headline: true,
           },
           take: limit,
@@ -2763,8 +2759,7 @@ export async function getCourseDiscoveryData(query = {}) {
   const matchedUsers = matchedUserRows.map((user) => ({
     id: user.id,
     username: user.username,
-    first_name: user.firstName || "",
-    last_name: user.lastName || "",
+    full_name: user.fullName || "",
     headline: user.headline || "",
     user_picture: matchedUserPictures.get(user.id) || null,
   }));
@@ -3191,8 +3186,7 @@ function mapCourseDetails(course, goals) {
       data: {
         id: course.educator?.id || null,
         username: course.educator?.username || "",
-        firstname: course.educator?.firstName || "",
-        lastname: course.educator?.lastName || "",
+        fullName: course.educator?.fullName || "",
         headline: course.educator?.headline || "",
         biography: course.educator?.biography || "",
         user_picture: null,
@@ -3283,8 +3277,7 @@ export async function getCourseForManagement(user, slug) {
         select: {
           id: true,
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
           headline: true,
           biography: true,
         },
@@ -3374,8 +3367,7 @@ export async function getCourseStudentsForManagement(user, slug, query = {}) {
   const searchUserFilter = search
     ? {
         OR: [
-          { firstName: { contains: search, mode: "insensitive" } },
-          { lastName: { contains: search, mode: "insensitive" } },
+          { fullName: { contains: search, mode: "insensitive" } },
           { username: { contains: search, mode: "insensitive" } },
         ],
       }
@@ -3420,8 +3412,7 @@ export async function getCourseStudentsForManagement(user, slug, query = {}) {
           user: {
             select: {
               id: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
               username: true,
             },
           },
@@ -3451,9 +3442,7 @@ export async function getCourseStudentsForManagement(user, slug, query = {}) {
 
   const mappedRows = rows.map((row) => {
     const progressPct = Number(row.courseProgress?.progressPct || 0);
-    const firstName = row.user?.firstName || "";
-    const lastName = row.user?.lastName || "";
-    const fullName = `${firstName} ${lastName}`.trim();
+    const fullName = row.user?.fullName || "";
 
     return {
       enrollment_id: row.id,
@@ -3917,7 +3906,7 @@ export async function getCourseRoute(slug, actor = null) {
       deletedAt: null,
     },
     include: {
-      educator: { select: { id: true, username: true, firstName: true, lastName: true, headline: true, biography: true } },
+      educator: { select: { id: true, username: true, fullName: true, headline: true, biography: true } },
       category: true,
       level: true,
       priceTier: true,
@@ -4161,8 +4150,7 @@ export async function getCourseRoute(slug, actor = null) {
       data: {
         id: course.educator.id,
         username: course.educator.username,
-        firstname: course.educator.firstName || "",
-        lastname: course.educator.lastName || "",
+        fullName: course.educator.fullName || "",
         headline: course.educator.headline || "",
         biography: course.educator.biography || "",
         user_picture: educatorPictures.get(course.educator.id) || null,
@@ -4241,8 +4229,7 @@ export async function getCourseForLearner(userId, slug) {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
               headline: true,
               biography: true,
             },
@@ -4305,8 +4292,7 @@ export async function getCourseForLearner(userId, slug) {
         data: {
           id: enrollment.course.educator?.id || null,
           username: enrollment.course.educator?.username || null,
-          firstname: enrollment.course.educator?.firstName || "",
-          lastname: enrollment.course.educator?.lastName || "",
+          fullName: enrollment.course.educator?.fullName || "",
           headline: enrollment.course.educator?.headline || "",
           biography: enrollment.course.educator?.biography || "",
           user_picture: null,
@@ -5015,8 +5001,7 @@ const LEARNER_ASSISTANT_COURSE_INCLUDE = {
   educator: {
     select: {
       username: true,
-      firstName: true,
-      lastName: true,
+      fullName: true,
     },
   },
 };
@@ -5140,10 +5125,7 @@ function toAssistantCourseCard(course, inCartSet = new Set(), enrolledSet = new 
         title: course.level.title || "",
       }
     : null;
-  const educatorName = [course?.educator?.firstName, course?.educator?.lastName]
-    .filter(Boolean)
-    .join(" ")
-    .trim();
+  const educatorName = course?.educator?.fullName || "";
 
   return {
     id: course.id,
@@ -5216,8 +5198,7 @@ async function searchPublishedCoursesForLearner(
             educator: {
               OR: [
                 { username: { contains: authorQuery, mode: "insensitive" } },
-                { firstName: { contains: authorQuery, mode: "insensitive" } },
-                { lastName: { contains: authorQuery, mode: "insensitive" } },
+                { fullName: { contains: authorQuery, mode: "insensitive" } },
               ],
             },
           }
@@ -5244,8 +5225,7 @@ async function searchPublishedCoursesForLearner(
         educator: {
           select: {
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
       },
@@ -5263,8 +5243,7 @@ async function searchInstructorsForLearner(search, limit = 5) {
   const tokens = tokenizeScopeText(query).slice(0, 4);
   const tokenOr = tokens.flatMap((token) => [
     { username: { contains: token, mode: "insensitive" } },
-    { firstName: { contains: token, mode: "insensitive" } },
-    { lastName: { contains: token, mode: "insensitive" } },
+    { fullName: { contains: token, mode: "insensitive" } },
   ]);
 
   const rows = await prisma.user.findMany({
@@ -5280,16 +5259,14 @@ async function searchInstructorsForLearner(search, limit = 5) {
       },
       OR: [
         { username: { contains: query, mode: "insensitive" } },
-        { firstName: { contains: query, mode: "insensitive" } },
-        { lastName: { contains: query, mode: "insensitive" } },
+        { fullName: { contains: query, mode: "insensitive" } },
         ...tokenOr,
       ],
     },
     select: {
       id: true,
       username: true,
-      firstName: true,
-      lastName: true,
+      fullName: true,
       headline: true,
       biography: true,
       courses: {
@@ -5317,12 +5294,12 @@ async function searchInstructorsForLearner(search, limit = 5) {
 
   const filtered = rows.filter((row) => {
     if (!tokens.length) return true;
-    const haystack = `${row.username || ""} ${row.firstName || ""} ${row.lastName || ""}`.toLowerCase();
+    const haystack = `${row.username || ""} ${row.fullName || ""}`.toLowerCase();
     return tokens.every((token) => haystack.includes(token));
   });
 
   return filtered.slice(0, Math.min(Math.max(Number(limit) || 5, 1), 12)).map((row) => {
-    const displayName = `${row.firstName || ""} ${row.lastName || ""}`.trim() || row.username || "Educator";
+    const displayName = row.fullName || row.username || "Educator";
     return {
       id: row.id,
       username: row.username || "",
@@ -5373,8 +5350,7 @@ async function resolveCourseForLearnerAssistant(
         educator: {
           select: {
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
       },
@@ -5404,8 +5380,7 @@ async function resolveCourseForLearnerAssistant(
           educator: {
             select: {
               username: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
             },
           },
         },
@@ -5428,8 +5403,7 @@ async function resolveCourseForLearnerAssistant(
         educator: {
           select: {
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
       },
@@ -5459,8 +5433,7 @@ async function resolveCourseForLearnerAssistant(
           educator: {
             select: {
               username: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
             },
           },
         },
@@ -5493,8 +5466,7 @@ async function resolveCourseForLearnerAssistant(
       educator: {
         select: {
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
     },
@@ -5522,8 +5494,7 @@ async function resolveCourseForLearnerAssistant(
       educator: {
         select: {
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
     },
@@ -5597,8 +5568,7 @@ async function buildLearnerRecommendations(userId, limit = 6) {
       educator: {
         select: {
           username: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
         },
       },
     },
@@ -5626,8 +5596,7 @@ async function buildLearnerRecommendations(userId, limit = 6) {
         educator: {
           select: {
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
       },

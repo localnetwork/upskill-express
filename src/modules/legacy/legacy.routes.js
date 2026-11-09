@@ -158,10 +158,7 @@ function mapAuthUser(user) {
     id: user.id,
     email: user.email,
     username: user.username,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    firstname: user.firstName,
-    lastname: user.lastName,
+    fullName: user.fullName || "",
     verified: Boolean(user.emailVerifiedAt),
     isActive: user.isActive,
     is_suspended: !user.isActive,
@@ -1918,8 +1915,7 @@ router.get("/user/:slug", async (req, res, next) => {
                   },
                   educator: {
                     select: {
-                      firstName: true,
-                      lastName: true,
+                      fullName: true,
                       username: true,
                     },
                   },
@@ -2014,7 +2010,7 @@ router.get("/user/:slug", async (req, res, next) => {
         course_title: row?.course?.title || "Course",
         reviews_count: Number(row?.course?._count?.reviews || 0),
         instructor_name:
-          `${row?.course?.educator?.firstName || ""} ${row?.course?.educator?.lastName || ""}`.trim() ||
+          row?.course?.educator?.fullName ||
           row?.course?.educator?.username ||
           "Instructor",
         completed_at:
@@ -2079,10 +2075,7 @@ router.get("/user/:slug", async (req, res, next) => {
       id: user.id,
       username: user.username,
       email: user.email,
-      firstname: user.firstName || "",
-      lastname: user.lastName || "",
-      firstName: user.firstName || "",
-      lastName: user.lastName || "",
+      fullName: user.fullName || "",
       biography: extended.biography,
       headline: extended.headline,
       link_website: extended.link_website,
@@ -2130,8 +2123,7 @@ router.get("/instructor/courses/:userId", authenticateOptional, async (req, res,
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
             headline: true,
           },
         },
@@ -2234,8 +2226,7 @@ router.get("/instructor/courses/:userId", authenticateOptional, async (req, res,
         data: {
           id: course.educator.id,
           username: course.educator.username,
-          firstname: course.educator.firstName || "",
-          lastname: course.educator.lastName || "",
+          fullName: course.educator.fullName || "",
           headline: course.educator.headline || "",
           user_picture:
             educatorPicturesByUserId.get(course.educator.id) || null,
@@ -2265,14 +2256,10 @@ router.put("/profile", authenticate, async (req, res, next) => {
     const updatedUser = await prisma.user.update({
       where: { id: req.user.id },
       data: {
-        firstName:
-          req.body.firstName === undefined
-            ? req.body.firstname
-            : req.body.firstName,
-        lastName:
-          req.body.lastName === undefined
-            ? req.body.lastname
-            : req.body.lastName,
+        fullName:
+          req.body.fullName === undefined
+            ? undefined
+            : String(req.body.fullName ?? "").trim().slice(0, 120) || null,
         headline:
           req.body.headline === undefined ? undefined : req.body.headline,
         biography:
@@ -2317,10 +2304,7 @@ router.put("/profile", authenticate, async (req, res, next) => {
       message: "Profile updated",
       data: {
         id: updatedUser.id,
-        firstname: updatedUser.firstName || "",
-        lastname: updatedUser.lastName || "",
-        firstName: updatedUser.firstName || "",
-        lastName: updatedUser.lastName || "",
+        fullName: updatedUser.fullName || "",
         ...extended,
       },
     });
@@ -4131,7 +4115,7 @@ router.post("/confirm-2fa", authenticate, async (req, res, next) => {
         twoFactorEnabled: true,
         twoFactorTempSecret: true,
         email: true,
-        firstName: true,
+        fullName: true,
       },
     });
 
@@ -4163,7 +4147,7 @@ router.post("/confirm-2fa", authenticate, async (req, res, next) => {
 
     void sendEmail({
       to: user.email,
-      ...buildBackupCodesEmail({ firstName: user.firstName, codes: rawCodes }),
+      ...buildBackupCodesEmail({ fullName: user.fullName, codes: rawCodes }),
     }).catch(() => {});
 
     return res.json({
@@ -4453,7 +4437,7 @@ router.post(
           twoFactorEnabled: true,
           twoFactorSecret: true,
           email: true,
-          firstName: true,
+          fullName: true,
         },
       });
 
@@ -4480,7 +4464,7 @@ router.post(
       void sendEmail({
         to: user.email,
         ...buildBackupCodesEmail({
-          firstName: user.firstName,
+          fullName: user.fullName,
           codes: rawCodes,
           regenerated: true,
         }),

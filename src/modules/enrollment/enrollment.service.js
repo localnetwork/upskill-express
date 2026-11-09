@@ -29,7 +29,7 @@ export async function listMyEnrollments(userId, query) {
         course: {
           include: {
             educator: {
-              select: { id: true, username: true, firstName: true, lastName: true },
+              select: { id: true, username: true, fullName: true },
             },
             media: {
               where: {

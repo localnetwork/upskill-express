@@ -7,8 +7,7 @@ const RANK = { MEMBER: 1, MODERATOR: 2, ADMIN: 3 };
 const POST_PAGE = 10;
 const userSelect = {
   id: true,
-  firstName: true,
-  lastName: true,
+  fullName: true,
   username: true,
 };
 
@@ -51,7 +50,7 @@ function mapUser(u, pictures) {
   if (!u) return null;
   return {
     id: u.id,
-    name: [u.firstName, u.lastName].filter(Boolean).join(" ") || u.username || "User",
+    name: u.fullName || u.username || "User",
     username: u.username,
     picture: pictures.get(u.id) || null,
   };
@@ -284,8 +283,7 @@ export async function listMembers(slug, userId, query = {}) {
       ? {
           user: {
             OR: [
-              { firstName: { contains: search, mode: "insensitive" } },
-              { lastName: { contains: search, mode: "insensitive" } },
+              { fullName: { contains: search, mode: "insensitive" } },
               { username: { contains: search, mode: "insensitive" } },
             ],
           },
@@ -588,7 +586,7 @@ export async function listComments(postId, userId, query = {}) {
 }
 
 function displayName(user) {
-  return [user?.firstName, user?.lastName].filter(Boolean).join(" ") || user?.username || "Someone";
+  return user?.fullName || user?.username || "Someone";
 }
 
 async function notifyComment({ post, ctx, parent, comment, userId }) {

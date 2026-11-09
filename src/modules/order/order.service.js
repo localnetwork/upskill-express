@@ -167,8 +167,7 @@ export async function listMyOrders(userId, query) {
                 educator: {
                   select: {
                     id: true,
-                    firstName: true,
-                    lastName: true,
+                    fullName: true,
                     username: true,
                   },
                 },
@@ -177,8 +176,7 @@ export async function listMyOrders(userId, query) {
             educator: {
               select: {
                 id: true,
-                firstName: true,
-                lastName: true,
+                fullName: true,
                 username: true,
               },
             },
@@ -200,8 +198,7 @@ export async function listMyOrders(userId, query) {
       educator: {
         select: {
           id: true,
-          firstName: true,
-          lastName: true,
+          fullName: true,
           username: true,
         },
       },
@@ -211,9 +208,7 @@ export async function listMyOrders(userId, query) {
 
   const authors = authorRows
     .map((row) => {
-      const firstName = row?.educator?.firstName || "";
-      const lastName = row?.educator?.lastName || "";
-      const displayName = `${firstName} ${lastName}`.trim() || row?.educator?.username || "Unknown author";
+      const displayName = row?.educator?.fullName || row?.educator?.username || "Unknown author";
       return {
         id: row.educatorId,
         name: displayName,
@@ -255,8 +250,7 @@ export async function getMyOrder(userId, orderId) {
               educator: {
                 select: {
                   id: true,
-                  firstName: true,
-                  lastName: true,
+                  fullName: true,
                   username: true,
                 },
               },

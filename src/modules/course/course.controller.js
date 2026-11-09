@@ -80,9 +80,8 @@ function toLegacyCourseSummary(course) {
     author: {
       data: {
         id: course.educator?.id,
-        username: course.educator?.username,
-        firstname: course.educator?.firstName || course.educator?.firstname || "",
-        lastname: course.educator?.lastName || course.educator?.lastname || "",
+        username: course.educator?.username,
+        fullName: course.educator?.fullName || "",
         headline: course.educator?.headline || "",
         user_picture: course.educator?.user_picture || null,
       },

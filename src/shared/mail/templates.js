@@ -85,48 +85,50 @@ const callout = (html) =>
 const linkFallback = (href) =>
   `<p style="margin:16px 0 0;font-size:12px;line-height:1.6;color:${MUTED};word-break:break-all;">Button not working? Paste this link into your browser:<br><a href="${escapeHtml(href)}" style="color:${BRAND};text-decoration:underline;">${escapeHtml(href)}</a></p>`;
 
-export function buildVerificationEmail({ firstName, token }) {
-  const link = `${baseUrl()}/verify-email?token=${encodeURIComponent(token)}`;
-  const name = firstName || "there";
+const greetingName = (fullName) =>
+  String(fullName || "").trim().split(/\s+/)[0] || "there";
+
+const OTP_PURPOSE_COPY = {
+  REGISTER: {
+    subject: "Your Upskill sign-up code",
+    eyebrow: "Welcome aboard",
+    title: "Confirm your email",
+    intro: "Use this code to finish creating your account.",
+  },
+  LOGIN: {
+    subject: "Your Upskill login code",
+    eyebrow: "Account security",
+    title: "Your login code",
+    intro: "Use this code to sign in to your account.",
+  },
+  CHANGE_EMAIL: {
+    subject: "Confirm your email change",
+    eyebrow: "Account security",
+    title: "Confirm your email change",
+    intro: "Use this code to confirm you want to change the email on your account.",
+  },
+};
+
+export function buildOtpEmail({ fullName, code, purpose, expiresInMinutes = 10 }) {
+  const copy = OTP_PURPOSE_COPY[purpose] || OTP_PURPOSE_COPY.LOGIN;
+  const name = greetingName(fullName);
   return {
-    subject: "Confirm your email to get started",
-    text: `Hi ${name},\n\nWelcome to ${env.emailFromName}. Confirm your email address to activate your account:\n${link}\n\nIf you didn't create an account, you can ignore this email.`,
+    subject: copy.subject,
+    text: `Hi ${name},\n\n${copy.intro}\n\nYour code: ${code}\n\nIt expires in ${expiresInMinutes} minutes. If you didn't request this, you can ignore this email.`,
     html: layout({
-      preheader: "One quick step to activate your Upskill account.",
-      eyebrow: "Welcome aboard",
-      title: `Confirm your email, ${name}`,
-      bodyHtml: `${paragraph("You're almost in. Confirm your email address to activate your account and start learning.")}
-        ${button(link, "Confirm email address")}
-        ${callout("If you didn't create an Upskill account, you can safely ignore this email.")}
-        ${linkFallback(link)}`,
-      footerNote:
-        "You're receiving this because someone signed up with this address.",
+      preheader: `Your code is ${code}. It expires in ${expiresInMinutes} minutes.`,
+      eyebrow: copy.eyebrow,
+      title: copy.title,
+      bodyHtml: `${paragraph(`Hi ${escapeHtml(name)}, ${escapeHtml(copy.intro.charAt(0).toLowerCase() + copy.intro.slice(1))}`)}
+        <p style="margin:24px 0;text-align:center;font-family:Consolas,Menlo,monospace;font-size:36px;font-weight:800;letter-spacing:10px;color:${INK};">${escapeHtml(code)}</p>
+        ${callout(`<strong style="color:${INK};">This code expires in ${expiresInMinutes} minutes.</strong> Never share it with anyone. If you didn't request it, you can safely ignore this email.`)}`,
+      footerNote: "You're receiving this because a code was requested for this email address.",
     }),
   };
 }
 
-export function buildPasswordResetEmail({ firstName, token }) {
-  const link = `${baseUrl()}/reset-password?token=${encodeURIComponent(token)}`;
-  const name = firstName || "there";
-  return {
-    subject: "Reset your password",
-    text: `Hi ${name},\n\nUse this link to choose a new password (valid for 30 minutes):\n${link}\n\nIf you didn't request this, ignore this email and your password won't change.`,
-    html: layout({
-      preheader: "Your password reset link is valid for 30 minutes.",
-      eyebrow: "Account security",
-      title: "Reset your password",
-      bodyHtml: `${paragraph(`Hi ${escapeHtml(name)}, we received a request to reset the password for your account. Choose a new one using the button below.`)}
-        ${button(link, "Choose a new password")}
-        ${callout(`<strong style="color:${INK};">This link expires in 30 minutes.</strong> If you didn't ask for a reset, ignore this email and your password will stay the same.`)}
-        ${linkFallback(link)}`,
-      footerNote:
-        "You're receiving this because a password reset was requested for your account.",
-    }),
-  };
-}
-
-export function buildBackupCodesEmail({ firstName, codes, regenerated }) {
-  const name = firstName || "there";
+export function buildBackupCodesEmail({ fullName, codes, regenerated }) {
+  const name = greetingName(fullName);
   const list = codes.map((c) => escapeHtml(c));
   const grid = `<table role="presentation" width="100%" cellpadding="0" cellspacing="8" style="margin:0 0 16px;">${list
     .reduce((rows, c, i) => {
@@ -157,7 +159,7 @@ export function buildBackupCodesEmail({ firstName, codes, regenerated }) {
         : "Two-factor authentication enabled",
       bodyHtml: `${paragraph(`Hi ${escapeHtml(name)}, here are your single-use backup codes. Each one can be used once if you lose access to your authenticator app.`)}
         ${grid}
-        ${callout(`<strong style="color:${INK};">Keep these private.</strong> Delete this email after saving them somewhere safe. If this wasn't you, change your password right away.`)}`,
+        ${callout(`<strong style="color:${INK};">Keep these private.</strong> Delete this email after saving them somewhere safe. If this wasn't you, secure your account right away.`)}`,
       footerNote:
         "You're receiving this because two-factor settings changed on your account.",
     }),
@@ -165,12 +167,12 @@ export function buildBackupCodesEmail({ firstName, codes, regenerated }) {
 }
 
 export function buildCoursePublishedEmail({
-  firstName,
+  fullName,
   courseTitle,
   courseSlug,
   note,
 }) {
-  const name = firstName || "there";
+  const name = greetingName(fullName);
   const link = `${baseUrl()}/courses/${encodeURIComponent(courseSlug)}`;
   return {
     subject: `Your course "${courseTitle}" is live`,
@@ -188,9 +190,9 @@ export function buildCoursePublishedEmail({
   };
 }
 
-export function buildReceiptEmail({ firstName, order, paidAt }) {
+export function buildReceiptEmail({ fullName, order, paidAt }) {
   const currency = order.currency || "PHP";
-  const name = firstName || "there";
+  const name = greetingName(fullName);
   const receiptNo = String(order.id).slice(-10).toUpperCase();
   const dateLabel = new Date(
     paidAt || order.updatedAt || Date.now(),
@@ -205,9 +207,7 @@ export function buildReceiptEmail({ firstName, order, paidAt }) {
       const border =
         index === all.length - 1 ? "" : `border-bottom:1px solid ${LINE};`;
       const educator = item.course?.educator;
-      const educatorName = [educator?.firstName, educator?.lastName]
-        .filter(Boolean)
-        .join(" ");
+      const educatorName = educator?.fullName || "";
       const cover = Array.isArray(item.course?.media)
         ? item.course.media[0]?.storagePath
         : null;

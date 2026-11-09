@@ -77,7 +77,7 @@ export async function approveCourse(adminId, courseId, note) {
       rejectedReason: null,
     },
     include: {
-      educator: { select: { email: true, firstName: true } },
+      educator: { select: { email: true, fullName: true } },
     },
   });
 
@@ -91,7 +91,7 @@ export async function approveCourse(adminId, courseId, note) {
 
   if (updated.educator?.email) {
     const email = buildCoursePublishedEmail({
-      firstName: updated.educator.firstName,
+      fullName: updated.educator.fullName,
       courseTitle: updated.title,
       courseSlug: updated.slug,
       note,
@@ -228,8 +228,7 @@ export async function listAdminCourses(query = {}) {
           { title: { contains: search, mode: "insensitive" } },
           { slug: { contains: search, mode: "insensitive" } },
           { educator: { username: { contains: search, mode: "insensitive" } } },
-          { educator: { firstName: { contains: search, mode: "insensitive" } } },
-          { educator: { lastName: { contains: search, mode: "insensitive" } } },
+          { educator: { fullName: { contains: search, mode: "insensitive" } } },
           { educator: { email: { contains: search, mode: "insensitive" } } },
           { category: { name: { contains: search, mode: "insensitive" } } },
           { category: { slug: { contains: search, mode: "insensitive" } } },
@@ -245,7 +244,7 @@ export async function listAdminCourses(query = {}) {
       orderBy: { createdAt: "desc" },
       include: {
         educator: {
-          select: { id: true, username: true, email: true, firstName: true, lastName: true },
+          select: { id: true, username: true, email: true, fullName: true },
         },
         category: true,
         level: true,
@@ -322,8 +321,7 @@ export async function listAdminOrders(query = {}) {
           { id: { contains: search, mode: "insensitive" } },
           { user: { username: { contains: search, mode: "insensitive" } } },
           { user: { email: { contains: search, mode: "insensitive" } } },
-          { user: { firstName: { contains: search, mode: "insensitive" } } },
-          { user: { lastName: { contains: search, mode: "insensitive" } } },
+          { user: { fullName: { contains: search, mode: "insensitive" } } },
           { items: { some: { course: { title: { contains: search, mode: "insensitive" } } } } },
         ]
       : undefined,
@@ -337,7 +335,7 @@ export async function listAdminOrders(query = {}) {
       orderBy: { createdAt: "desc" },
       include: {
         user: {
-          select: { id: true, username: true, email: true, firstName: true, lastName: true },
+          select: { id: true, username: true, email: true, fullName: true },
         },
         payment: { select: { provider: true, status: true } },
         items: { select: { id: true, course: { select: { id: true, title: true } } } },

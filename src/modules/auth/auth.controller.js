@@ -1,15 +1,22 @@
 import {
-  forgotPassword,
   googleAuth,
   login,
   refreshTokens,
-  register,
-  resetPassword,
-  verifyEmail,
+  requestRegistrationCode,
+  verifyLoginCode,
+  verifyRegistration,
 } from "./auth.service.js";
 
-export async function registerController(req, res) {
-  const result = await register(req.body, { req });
+export async function registerRequestController(req, res) {
+  const result = await requestRegistrationCode(req.body);
+  return res.status(200).json({
+    message: "Verification code sent",
+    data: result,
+  });
+}
+
+export async function registerVerifyController(req, res) {
+  const result = await verifyRegistration(req.body, { req });
   return res.status(201).json({
     message: "User registered",
     data: result,
@@ -18,6 +25,16 @@ export async function registerController(req, res) {
 
 export async function loginController(req, res) {
   const result = await login(req.body, { req });
+  return res.status(200).json({
+    message: result.requires_email_code
+      ? "Login code sent"
+      : "Login successful",
+    data: result,
+  });
+}
+
+export async function loginVerifyController(req, res) {
+  const result = await verifyLoginCode(req.body, { req });
   return res.status(200).json({
     message: "Login successful",
     data: result,
@@ -39,30 +56,6 @@ export async function refreshTokenController(req, res) {
   const result = await refreshTokens(req.body.refreshToken);
   return res.status(200).json({
     message: "Token refreshed",
-    data: result,
-  });
-}
-
-export async function forgotPasswordController(req, res) {
-  const result = await forgotPassword(req.body.email);
-  return res.status(200).json({
-    message: "Password reset initiated",
-    data: result,
-  });
-}
-
-export async function resetPasswordController(req, res) {
-  const result = await resetPassword(req.body.token, req.body.password);
-  return res.status(200).json({
-    message: "Password reset successful",
-    data: result,
-  });
-}
-
-export async function verifyEmailController(req, res) {
-  const result = await verifyEmail(req.body.token, { req });
-  return res.status(200).json({
-    message: "Email verified",
     data: result,
   });
 }

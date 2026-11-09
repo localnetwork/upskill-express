@@ -188,8 +188,7 @@ model User {
   id                    String    @id @default(cuid())
   username              String    @unique
   email                 String    @unique
-  firstName             String?
-  lastName              String?
+  fullName              String?
   headline              String?
   biography             String?
   link_website          String?
@@ -200,13 +199,8 @@ model User {
   link_tiktok           String?
   link_youtube          String?
   link_github           String?
-  passwordHash          String
-  passwordSet           Boolean   @default(true)
   isActive              Boolean   @default(true)
   emailVerifiedAt       DateTime?
-  verificationToken     String?
-  resetPasswordToken    String?
-  resetPasswordTokenExp DateTime?
   refreshTokenHash      String?
   twoFactorEnabled      Boolean   @default(false)
   twoFactorSecret       String?
@@ -272,6 +266,23 @@ model User {
   @@index([deletedAt])
   @@index([occupationId])
   @@map("users")
+}
+
+model AuthOtp {
+  id        String    @id @default(cuid())
+  email     String
+  purpose   String
+  userId    String?
+  codeHash  String
+  payload   Json?
+  attempts  Int       @default(0)
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([email, purpose])
+  @@index([userId, purpose])
+  @@map("auth_otps")
 }
 
 model FriendRequest {

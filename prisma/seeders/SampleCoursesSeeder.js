@@ -407,7 +407,7 @@ async function seedOneCourse({ slot, context }) {
       /python|script|sql|bash|programming|code/i.test(subCategory.name));
 
   const educatorName =
-    `${educatorUser.firstName || ""} ${educatorUser.lastName || ""}`.trim() ||
+      educatorUser.fullName ||
     educatorUser.username;
 
   const plan = await withRetry(`plan for ${slot.key}`, async () => {
@@ -586,7 +586,7 @@ export default class SampleCoursesSeeder {
           deletedAt: null,
           roles: { some: { role: { name: "EDUCATOR" } } },
         },
-        select: { id: true, username: true, firstName: true, lastName: true, headline: true },
+        select: { id: true, username: true, fullName: true, headline: true },
         orderBy: { email: "asc" },
       }),
       prisma.user.findMany({

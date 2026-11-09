@@ -1,6 +1,7 @@
 import { ApiError } from "../../shared/utils/ApiError.js";
 import { Prisma } from "@prisma/client";
-import { comparePassword, hashPassword } from "../../shared/utils/security.js";
+import { verifyTotpToken } from "../auth/two-factor.service.js";
+import { OTP_PURPOSE, consumeOtp, issueOtp } from "../auth/otp.service.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { mapPermissionsFromRoles } from "../../shared/utils/rolePermissions.js";
 import { STAFF_ROLE_NAMES } from "../../shared/constants/staffRoles.js";
@@ -48,10 +49,7 @@ function mapUser(user) {
     id: user.id,
     email: user.email,
     username: user.username,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    firstname: user.firstName,
-    lastname: user.lastName,
+    fullName: user.fullName || "",
     isActive: user.isActive,
     is_suspended: !user.isActive,
     verified: Boolean(user.emailVerifiedAt),
@@ -254,20 +252,9 @@ export async function updateCurrentUser(userId, payload) {
     }
   }
 
-  let passwordHash;
-  if (payload.password) {
-    passwordHash = await hashPassword(payload.password);
-  }
-
-  const firstName =
-    payload.firstName === undefined ? payload.firstname : payload.firstName;
-  const lastName =
-    payload.lastName === undefined ? payload.lastname : payload.lastName;
-
   const updated = await updateById(userId, {
     username: payload.username,
-    firstName,
-    lastName,
+    fullName: payload.fullName?.trim() || (payload.fullName === undefined ? undefined : null),
     headline: getOptional(payload, "headline"),
     biography: getOptional(payload, "biography"),
     link_website: getOptional(payload, "link_website"),
@@ -278,7 +265,6 @@ export async function updateCurrentUser(userId, payload) {
     link_x: getOptional(payload, "link_x"),
     link_youtube: getOptional(payload, "link_youtube"),
     link_github: getOptional(payload, "link_github"),
-    passwordHash,
   });
 
   await recordActivityEvent({
@@ -294,22 +280,74 @@ export async function updateCurrentUser(userId, payload) {
   return mapUser(updated);
 }
 
-export async function changePassword(userId, oldPassword, newPassword) {
+async function getChangeEmailUser(userId, newEmail) {
   const user = await findById(userId);
   if (!user || user.deletedAt) {
     throw new ApiError(404, "User not found");
   }
+  if (newEmail === user.email) {
+    throw new ApiError(400, "That is already your email address");
+  }
+  const taken = await prisma.user.findUnique({
+    where: { email: newEmail },
+    select: { id: true },
+  });
+  if (taken) {
+    throw new ApiError(409, "Email already in use");
+  }
+  return user;
+}
 
-  const valid = await comparePassword(oldPassword, user.passwordHash);
-  if (!valid) {
-    throw new ApiError(400, "Old password is incorrect");
+// 2FA users confirm with an authenticator code; everyone else gets a code at their current email.
+export async function requestEmailChange(userId, newEmail) {
+  const user = await getChangeEmailUser(userId, newEmail);
+  if (user.twoFactorEnabled && user.twoFactorSecret) {
+    return { method: "totp" };
   }
 
-  await updateById(userId, {
-    passwordHash: await hashPassword(newPassword),
+  const { expiresInSeconds } = await issueOtp({
+    email: user.email,
+    purpose: OTP_PURPOSE.CHANGE_EMAIL,
+    userId: user.id,
+    payload: { newEmail },
+    fullName: user.fullName,
+  });
+  return { method: "email", sentTo: user.email, expiresInSeconds };
+}
+
+export async function confirmEmailChange(userId, { newEmail, code }) {
+  const user = await getChangeEmailUser(userId, newEmail);
+
+  if (user.twoFactorEnabled && user.twoFactorSecret) {
+    if (!verifyTotpToken(user.twoFactorSecret, code)) {
+      throw new ApiError(401, "Invalid authenticator code");
+    }
+  } else {
+    const otp = await consumeOtp({
+      email: user.email,
+      purpose: OTP_PURPOSE.CHANGE_EMAIL,
+      code,
+      userId: user.id,
+    });
+    if (otp.payload?.newEmail !== newEmail) {
+      throw new ApiError(400, "Invalid or expired code");
+    }
+  }
+
+  const updated = await updateById(userId, {
+    email: newEmail,
+    emailVerifiedAt: new Date(),
   });
 
-  return { success: true };
+  await recordActivityEvent({
+    eventType: "ACCOUNT_PROFILE_UPDATED",
+    userId,
+    pagePath: "/profile/basic-information",
+    metadata: { changedFields: ["email"] },
+    dedupeWindowSeconds: 5,
+  });
+
+  return mapUser(updated);
 }
 
 export async function listUsers(query) {
@@ -335,10 +373,7 @@ export async function adminUpdateUser(actorId, userId, payload) {
   if (!user || user.deletedAt) throw new ApiError(404, "User not found");
 
   const data = {};
-  const firstName = payload.firstName ?? payload.firstname;
-  const lastName = payload.lastName ?? payload.lastname;
-  if (firstName !== undefined) data.firstName = firstName.trim() || null;
-  if (lastName !== undefined) data.lastName = lastName.trim() || null;
+  if (payload.fullName !== undefined) data.fullName = payload.fullName.trim() || null;
   if (payload.headline !== undefined) data.headline = payload.headline.trim() || null;
   if (payload.biography !== undefined) data.biography = payload.biography.trim() || null;
 
@@ -492,7 +527,7 @@ export async function sendFriendRequest(currentUserId, targetUserId) {
       userId: targetUserId,
       type: "SYSTEM",
       title: "New friend request",
-      message: `${currentUser.firstName || currentUser.username} sent you a friend request.`,
+      message: `${currentUser.fullName || currentUser.username} sent you a friend request.`,
       metadata: {
         notificationKind: "FRIEND_REQUEST",
         friendRequestId: request.id,
@@ -504,8 +539,7 @@ export async function sendFriendRequest(currentUserId, targetUserId) {
         requester: {
           id: currentUser.id,
           username: currentUser.username,
-          firstName: currentUser.firstName || "",
-          lastName: currentUser.lastName || "",
+          fullName: currentUser.fullName || "",
         },
       },
     });
@@ -606,16 +640,14 @@ export async function respondToFriendRequest(currentUserId, requestId, action) {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
         addressee: {
           select: {
             id: true,
             username: true,
-            firstName: true,
-            lastName: true,
+            fullName: true,
           },
         },
       },
@@ -641,7 +673,7 @@ export async function respondToFriendRequest(currentUserId, requestId, action) {
     await updateFriendRequestNotificationStatus(updated.id, nextStatus);
 
     const responderName =
-      request.addressee.firstName?.trim() || request.addressee.username;
+      request.addressee.fullName?.trim() || request.addressee.username;
 
     await createNotification({
       userId: request.requesterId,
@@ -661,8 +693,7 @@ export async function respondToFriendRequest(currentUserId, requestId, action) {
         responder: {
           id: request.addressee.id,
           username: request.addressee.username,
-          firstName: request.addressee.firstName || "",
-          lastName: request.addressee.lastName || "",
+          fullName: request.addressee.fullName || "",
         },
       },
     });

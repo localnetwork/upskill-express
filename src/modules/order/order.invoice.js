@@ -25,7 +25,7 @@ function money(value, currency = "PHP") {
 }
 
 function personName(person) {
-  const full = `${person?.firstName || ""} ${person?.lastName || ""}`.trim();
+  const full = person?.fullName;
   return full || person?.username || "";
 }
 
@@ -41,7 +41,7 @@ export async function buildOrderInvoicePdf(userId, orderId) {
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { email: true, firstName: true, lastName: true, username: true },
+    select: { email: true, fullName: true, username: true },
   });
 
   const currency = order.currency || "PHP";

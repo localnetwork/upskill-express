@@ -27,7 +27,7 @@ async function getEnrollmentForLesson(userId, lessonId) {
           welcomeMessage: true,
           congratulationsMessage: true,
           educator: {
-            select: { firstName: true, lastName: true, username: true },
+            select: { fullName: true, username: true },
           },
         },
       },
@@ -126,7 +126,7 @@ export async function updateLessonProgress(userId, payload) {
   const isFirstProgressUpdate = existingLessonProgressCount === 0;
 
   const instructorName =
-    `${enrollment.course.educator?.firstName || ""} ${enrollment.course.educator?.lastName || ""}`.trim() ||
+    enrollment.course.educator?.fullName ||
     enrollment.course.educator?.username ||
     "Instructor";
   const defaultWelcomeMessage = `Welcome to "${enrollment.course.title}"! We're excited to have you in this course.`;

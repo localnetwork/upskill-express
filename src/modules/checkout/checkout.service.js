@@ -32,7 +32,7 @@ async function sendOrderReceiptEmail(order, userId) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { email: true, firstName: true },
+      select: { email: true, fullName: true },
     });
     if (!user?.email) return;
     const payment = await prisma.payment.findUnique({
@@ -40,7 +40,7 @@ async function sendOrderReceiptEmail(order, userId) {
       select: { provider: true, rawResponse: true },
     });
     const receipt = buildReceiptEmail({
-      firstName: user.firstName,
+      fullName: user.fullName,
       order: {
         ...order,
         paymentMethod: resolvePaymentMethodLabel(payment),
@@ -78,8 +78,7 @@ const checkoutOrderInclude = {
             select: {
               id: true,
               username: true,
-              firstName: true,
-              lastName: true,
+              fullName: true,
             },
           },
         },
@@ -103,7 +102,7 @@ function getCaptureInfo(captureResponse) {
 }
 
 function getDisplayName(user) {
-  const fullName = `${user?.firstName || ""} ${user?.lastName || ""}`.trim();
+  const fullName = user?.fullName;
   return fullName || user?.username || "Instructor";
 }
 
@@ -203,7 +202,7 @@ async function createEnrollmentWithWelcomeNotification(db, payload) {
       educatorId: true,
       title: true,
       educator: {
-        select: { firstName: true, lastName: true, username: true },
+        select: { fullName: true, username: true },
       },
     },
   });
