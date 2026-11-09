@@ -41,6 +41,7 @@ model User {
   communityComments     CommunityComment[]
   communityReactions    CommunityReaction[]
   communityReports      CommunityReport[]
+  courseReports         CourseReport[]
   payoutAccount         PayoutAccount?
   payoutRequests        PayoutRequest[]   @relation("EducatorPayoutRequests")
   reviewedPayouts       PayoutRequest[]   @relation("AdminReviewedPayoutRequests")
@@ -281,6 +282,9 @@ model Course {
   approvedAt          DateTime?
   rejectedAt          DateTime?
   rejectedReason      String?
+  suspendedAt         DateTime?
+  suspendedReason     String?
+  suspendedById       String?
   deletedAt           DateTime?
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
@@ -312,6 +316,7 @@ model Course {
   trialEvents         TrialEvent[]
   watchSessions       WatchSession[]
   educatorEarnings    EducatorEarning[]
+  reports             CourseReport[]
 
   @@index([educatorId, workflowStatus])
   @@index([categoryId])
@@ -1346,6 +1351,27 @@ model CommunityReaction {
 
   @@unique([postId, userId])
   @@map("community_reactions")
+}
+
+model CourseReport {
+  id             String    @id @default(cuid())
+  courseId       String
+  reporterId     String
+  issueType      String
+  details        String
+  status         String    @default("OPEN")
+  resolvedById   String?
+  resolvedAt     DateTime?
+  resolutionNote String?
+  createdAt      DateTime  @default(now())
+
+  course         Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  reporter       User      @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([courseId, status])
+  @@index([reporterId, courseId])
+  @@map("course_reports")
 }
 
 model CommunityReport {

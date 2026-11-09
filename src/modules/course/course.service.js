@@ -2159,6 +2159,9 @@ export async function unpublishCourse(userId, courseId) {
   if (course.educatorId !== userId) {
     throw new ApiError(403, "Forbidden");
   }
+  if (course.workflowStatus === "SUSPENDED") {
+    throw new ApiError(400, "This course is suspended. Contact support to have it reinstated.");
+  }
 
   return prisma.course.update({
     where: { id: courseId },
@@ -3954,8 +3957,20 @@ export async function getCourseRoute(slug, actor = null) {
     throw new ApiError(404, "Course not found");
   }
   if (!canViewCourseRoute(course, actor)) {
-    throw new ApiError(404, "Course not found");
+    // Suspended courses stay visible to people who already enrolled.
+    const keepsAccess =
+      course.workflowStatus === "SUSPENDED" &&
+      actor?.id &&
+      (await prisma.enrollment.findFirst({
+        where: { userId: actor.id, courseId: course.id, ...activeEnrollmentFilter() },
+        select: { id: true },
+      }));
+    if (!keepsAccess) {
+      throw new ApiError(404, "Course not found");
+    }
   }
+  const canSeeSuspensionReason =
+    Boolean(actor?.id) && (course.educatorId === actor.id || canReviewCourseContent(actor));
 
   const [isEnrolled, isInCart, isInWishlist, activePromotionCouponRows] = await Promise.all([
     actor?.id
@@ -4179,6 +4194,13 @@ export async function getCourseRoute(slug, actor = null) {
     cover_image: coverImage,
     goals,
     workflow_status: course.workflowStatus,
+    suspension:
+      course.workflowStatus === "SUSPENDED"
+        ? {
+            suspended_at: course.suspendedAt,
+            reason: canSeeSuspensionReason ? course.suspendedReason || null : null,
+          }
+        : null,
     stats: {
       average_rating: averageRating,
       total_reviews: totalReviews,
@@ -4299,6 +4321,11 @@ export async function getCourseForLearner(userId, slug) {
         },
       },
       goals,
+      workflow_status: enrollment.course.workflowStatus,
+      suspension:
+        enrollment.course.workflowStatus === "SUSPENDED"
+          ? { suspended_at: enrollment.course.suspendedAt }
+          : null,
       sections: enrollment.course.sections.map((section) => ({
         id: section.id,
         uuid: section.id,

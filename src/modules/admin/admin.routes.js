@@ -16,6 +16,10 @@ import {
   listPermissionsController,
   listRolesController,
   rejectCourseController,
+  suspendCourseController,
+  reinstateCourseController,
+  listCourseReportsController,
+  dismissCourseReportController,
   revenueReportController,
   setRolePermissionsController,
   setUserStaffRolesController,
@@ -58,7 +62,7 @@ router.put(
 router.delete("/roles/:roleId", authorize("ADMIN"), asyncHandler(deleteRoleController));
 router.get(
   "/courses",
-  authorizePermission("courses.list", "courses.approve", "courses.reject"),
+  authorizePermission("courses.list", "courses.approve", "courses.reject", "courses.suspend"),
   cacheGetResponse({
     prefix: "admin:courses",
     ttlSeconds: 60,
@@ -80,6 +84,14 @@ router.get(
 );
 router.post("/courses/:courseId/approve", authorizePermission("courses.approve"), validate(reviewCourseValidator), asyncHandler(approveCourseController));
 router.post("/courses/:courseId/reject", authorizePermission("courses.reject"), validate(reviewCourseValidator), asyncHandler(rejectCourseController));
+router.post("/courses/:courseId/suspend", authorizePermission("courses.suspend"), validate(reviewCourseValidator), asyncHandler(suspendCourseController));
+router.post("/courses/:courseId/reinstate", authorizePermission("courses.suspend"), validate(reviewCourseValidator), asyncHandler(reinstateCourseController));
+router.get(
+  "/course-reports",
+  authorizePermission("courses.list", "courses.approve", "courses.reject", "courses.suspend"),
+  asyncHandler(listCourseReportsController),
+);
+router.post("/course-reports/:reportId/dismiss", authorizePermission("courses.suspend"), validate(reviewCourseValidator), asyncHandler(dismissCourseReportController));
 router.get(
   "/reports/activity",
   authorizePermission("reports.view"),

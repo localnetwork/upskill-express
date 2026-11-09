@@ -21,6 +21,7 @@ import subscriptionRoutes from "./src/modules/subscription/subscription.routes.j
 import earningsRoutes from "./src/modules/earnings/earnings.routes.js";
 import adminRoutes from "./src/modules/admin/admin.routes.js";
 import wishlistRoutes from "./src/modules/wishlist/wishlist.routes.js";
+import courseReportRoutes from "./src/modules/course-report/course-report.routes.js";
 import certificationRoutes from "./src/modules/certification/certification.routes.js";
 import analyticsRoutes from "./src/modules/analytics/analytics.routes.js";
 import communicationRoutes from "./src/modules/communication/communication.routes.js";
@@ -104,6 +105,7 @@ app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/earnings", earningsRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/wishlist", wishlistRoutes);
+app.use("/api/course-reports", courseReportRoutes);
 app.use("/api/certifications", certificationRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/communication", communicationRoutes);

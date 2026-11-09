@@ -16,8 +16,24 @@ import {
   listAdminCourses,
   listAdminOrders,
   rejectCourse,
+  suspendCourse,
+  reinstateCourse,
   updateAdminPlatformSettings,
 } from "./admin.service.js";
+import {
+  dismissCourseReport,
+  listAdminCourseReports,
+} from "../course-report/course-report.service.js";
+
+export async function listCourseReportsController(req, res) {
+  const data = await listAdminCourseReports(req.query);
+  return res.json({ message: "Course reports fetched", ...data });
+}
+
+export async function dismissCourseReportController(req, res) {
+  const data = await dismissCourseReport(req.user.id, req.params.reportId, req.body.note);
+  return res.json({ message: "Report dismissed", data });
+}
 
 export async function listPermissionsController(_req, res) {
   const data = await listPermissions();
@@ -62,6 +78,16 @@ export async function approveCourseController(req, res) {
 export async function rejectCourseController(req, res) {
   const data = await rejectCourse(req.user.id, req.params.courseId, req.body.note);
   return res.json({ message: "Course rejected", data });
+}
+
+export async function suspendCourseController(req, res) {
+  const data = await suspendCourse(req.user.id, req.params.courseId, req.body.note);
+  return res.json({ message: "Course suspended", data });
+}
+
+export async function reinstateCourseController(req, res) {
+  const data = await reinstateCourse(req.user.id, req.params.courseId, req.body.note);
+  return res.json({ message: "Course reinstated", data });
 }
 
 export async function revenueReportController(_req, res) {

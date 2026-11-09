@@ -17,6 +17,7 @@ const COURSE_WORKFLOW_STATUSES = new Set([
   "APPROVED",
   "PUBLISHED",
   "REJECTED",
+  "SUSPENDED",
 ]);
 
 function normalizeQueryString(value) {
@@ -136,6 +137,89 @@ export async function rejectCourse(adminId, courseId, note) {
     title: "Course rejected",
     message: `Your course "${updated.title}" was rejected.\nReason: ${normalizedNote}`,
     metadata: { courseId: updated.id, note: normalizedNote },
+  });
+
+  return updated;
+}
+
+// Suspending hides a published course from public surfaces; existing enrollees keep access.
+export async function suspendCourse(adminId, courseId, note) {
+  const reason = normalizeQueryString(note);
+  if (!reason) {
+    throw new ApiError(400, "Suspension reason is required");
+  }
+  const course = await prisma.course.findFirst({
+    where: { id: courseId, deletedAt: null },
+  });
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+  if (course.workflowStatus !== "PUBLISHED") {
+    throw new ApiError(400, "Only published courses can be suspended");
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.course.update({
+      where: { id: courseId },
+      data: {
+        workflowStatus: "SUSPENDED",
+        isPublished: false,
+        suspendedAt: new Date(),
+        suspendedById: adminId,
+        suspendedReason: reason,
+      },
+    });
+    await tx.courseReport.updateMany({
+      where: { courseId, status: "OPEN" },
+      data: {
+        status: "ACTIONED",
+        resolvedById: adminId,
+        resolvedAt: new Date(),
+        resolutionNote: "Course suspended",
+      },
+    });
+    return result;
+  });
+
+  await createNotification({
+    userId: updated.educatorId,
+    type: "COURSE_APPROVAL",
+    title: "Course suspended",
+    message: `Your course "${updated.title}" was suspended and is no longer visible publicly. Existing students keep access.\nReason: ${reason}`,
+    metadata: { courseId: updated.id, slug: updated.slug, note: reason },
+  });
+
+  return updated;
+}
+
+export async function reinstateCourse(adminId, courseId, note) {
+  const course = await prisma.course.findFirst({
+    where: { id: courseId, deletedAt: null },
+  });
+  if (!course) {
+    throw new ApiError(404, "Course not found");
+  }
+  if (course.workflowStatus !== "SUSPENDED") {
+    throw new ApiError(400, "Course is not suspended");
+  }
+
+  const updated = await prisma.course.update({
+    where: { id: courseId },
+    data: {
+      workflowStatus: "PUBLISHED",
+      isPublished: true,
+      suspendedAt: null,
+      suspendedById: null,
+      suspendedReason: null,
+    },
+  });
+
+  await createNotification({
+    userId: updated.educatorId,
+    type: "COURSE_APPROVAL",
+    title: "Course reinstated",
+    message: `Your course "${updated.title}" was reinstated and is live again.`,
+    metadata: { courseId: updated.id, slug: updated.slug, note: normalizeQueryString(note) || null },
   });
 
   return updated;
