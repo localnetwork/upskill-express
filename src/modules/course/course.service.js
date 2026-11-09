@@ -3369,6 +3369,24 @@ function mapCourseDetails(course, goals) {
   };
 }
 
+async function getCourseOverviewStats(courseId) {
+  const [enrollees, reviewAgg] = await Promise.all([
+    prisma.enrollment.count({
+      where: { courseId, status: { in: ["ACTIVE", "COMPLETED"] } },
+    }),
+    prisma.review.aggregate({
+      where: { courseId },
+      _avg: { rating: true },
+      _count: { rating: true },
+    }),
+  ]);
+  return {
+    total_enrollees: enrollees,
+    average_rating: Number(Number(reviewAgg._avg.rating || 0).toFixed(1)),
+    total_reviews: reviewAgg._count.rating || 0,
+  };
+}
+
 export async function getCourseForManagement(user, slug) {
   const course = await prisma.course.findFirst({
     where: {
@@ -3425,7 +3443,8 @@ export async function getCourseForManagement(user, slug) {
   }
 
   const goals = await readCourseGoals(course.id);
-  return mapCourseDetails(course, goals);
+  const overviewStats = await getCourseOverviewStats(course.id);
+  return { ...mapCourseDetails(course, goals), stats: overviewStats };
 }
 
 async function resolveCourseForManagementAccess(user, slug) {
@@ -4391,6 +4410,8 @@ export async function getCourseForLearner(userId, slug) {
   }
 
   const goals = await readCourseGoals(enrollment.course.id);
+  const overviewStats = await getCourseOverviewStats(enrollment.course.id);
+  const educatorPictures = await getLatestUserPicturesMap([enrollment.course.educator?.id]);
   const lessonAccessMap = await getLessonAccessMapForEnrollment(
     enrollment.id,
     enrollment.course.id,
@@ -4404,6 +4425,8 @@ export async function getCourseForLearner(userId, slug) {
       title: enrollment.course.title,
       subtitle: enrollment.course.subtitle,
       description: enrollment.course.description,
+      language: enrollment.course.language || "English",
+      stats: overviewStats,
       instructional_level: enrollment.course.level
         ? {
             id: enrollment.course.level.id,
@@ -4417,7 +4440,7 @@ export async function getCourseForLearner(userId, slug) {
           fullName: enrollment.course.educator?.fullName || "",
           headline: enrollment.course.educator?.headline || "",
           biography: enrollment.course.educator?.biography || "",
-          user_picture: null,
+          user_picture: educatorPictures.get(enrollment.course.educator?.id) || null,
         },
       },
       goals,
