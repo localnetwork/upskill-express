@@ -2172,6 +2172,101 @@ export async function unpublishCourse(userId, courseId) {
   });
 }
 
+const RELEVANCE_STOP_WORDS = new Set(["and", "the", "for", "with", "of", "in", "to", "a", "an", "at", "manager", "senior", "junior"]);
+
+function tokenizeRelevanceText(text) {
+  return [
+    ...new Set(
+      String(text || "")
+        .toLowerCase()
+        .split(/[^a-z0-9+#.]+/)
+        .filter((token) => token.length >= 3 && !RELEVANCE_STOP_WORDS.has(token)),
+    ),
+  ];
+}
+
+// Ranks matching courses for a learner using cart, purchases, interests and occupation/skills.
+async function rankCourseIdsByRelevance(where, userId) {
+  const courseSignalSelect = {
+    categoryId: true,
+    lessons: {
+      select: { topicId: true, lessonTopics: { select: { topicId: true } } },
+    },
+  };
+  const collectTopicIds = (course) =>
+    (course.lessons || []).flatMap((lesson) => [
+      lesson.topicId,
+      ...(lesson.lessonTopics || []).map((row) => row.topicId),
+    ]).filter(Boolean);
+
+  const [cartRows, enrollmentRows, interestRows, profile, candidates] = await Promise.all([
+    prisma.cartItem.findMany({
+      where: { cart: { userId } },
+      select: { courseId: true, course: { select: courseSignalSelect } },
+    }),
+    prisma.enrollment.findMany({
+      where: { userId, ...activeEnrollmentFilter() },
+      select: { courseId: true, course: { select: courseSignalSelect } },
+    }),
+    prisma.userInterest.findMany({
+      where: { userId },
+      select: { topicId: true, topic: { select: { categoryId: true, name: true } } },
+    }),
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { occupationCustom: true, occupation: { select: { name: true } } },
+    }),
+    prisma.course.findMany({
+      where,
+      select: {
+        id: true,
+        title: true,
+        subtitle: true,
+        createdAt: true,
+        ...courseSignalSelect,
+        category: { select: { name: true } },
+        _count: { select: { enrollments: true } },
+      },
+    }),
+  ]);
+
+  const enrolledIds = new Set(enrollmentRows.map((row) => row.courseId));
+  const cartIds = new Set(cartRows.map((row) => row.courseId));
+  const interestTopicIds = new Set(interestRows.map((row) => row.topicId));
+  const interestCategoryIds = new Set(interestRows.map((row) => row.topic?.categoryId).filter(Boolean));
+  const purchasedCategoryIds = new Set(enrollmentRows.map((row) => row.course?.categoryId).filter(Boolean));
+  const cartCategoryIds = new Set(cartRows.map((row) => row.course?.categoryId).filter(Boolean));
+  const purchasedTopicIds = new Set(enrollmentRows.flatMap((row) => collectTopicIds(row.course || {})));
+  const cartTopicIds = new Set(cartRows.flatMap((row) => collectTopicIds(row.course || {})));
+  const skillTokens = tokenizeRelevanceText(
+    [profile?.occupation?.name, profile?.occupationCustom, ...interestRows.map((row) => row.topic?.name)].join(" "),
+  );
+
+  const scored = candidates.map((course) => {
+    const topicIds = new Set(collectTopicIds(course));
+    const countMatches = (set) => [...topicIds].filter((id) => set.has(id)).length;
+    const haystack = `${course.title} ${course.subtitle || ""} ${course.category?.name || ""}`.toLowerCase();
+
+    let score = 0;
+    score += Math.min(countMatches(interestTopicIds), 3) * 4;
+    if (interestCategoryIds.has(course.categoryId)) score += 3;
+    score += Math.min(countMatches(purchasedTopicIds), 3) * 2;
+    if (purchasedCategoryIds.has(course.categoryId)) score += 3;
+    score += Math.min(countMatches(cartTopicIds), 3) * 2;
+    if (cartCategoryIds.has(course.categoryId)) score += 2;
+    score += Math.min(skillTokens.filter((token) => haystack.includes(token)).length, 4) * 1.5;
+    if (cartIds.has(course.id)) score += 6;
+    if (enrolledIds.has(course.id)) score -= 100;
+    const enrollmentCount = course._count.enrollments;
+    score += enrollmentCount / (enrollmentCount + 10);
+
+    return { id: course.id, score, createdAt: course.createdAt };
+  });
+
+  scored.sort((a, b) => b.score - a.score || b.createdAt - a.createdAt);
+  return scored.map((row) => row.id);
+}
+
 export async function listCourses(query, user) {
   const { page, limit, skip } = getPagination(query);
   const resolvedLevelId = await resolveLevelId(query.levelId || query.instructional_level);
@@ -2316,13 +2411,18 @@ export async function listCourses(query, user) {
   };
 
   const sort = toTrimmedString(query.sort || query.sortBy).toLowerCase();
+  const isRelevance = sort === "relevance" || sort === "most_relevant";
   const orderBy =
-    sort === "best_selling" || sort === "best-selling"
+    sort === "best_selling" || sort === "best-selling" || isRelevance
       ? [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }]
       : { createdAt: "desc" };
 
   const isTopRated = sort === "top_rated" || sort === "top-rated";
   let topRatedIds = null;
+  if (isRelevance && user?.id) {
+    const rankedIds = await rankCourseIdsByRelevance(where, user.id);
+    topRatedIds = rankedIds.slice(skip, skip + limit);
+  }
   if (isTopRated) {
     const ratingRows = await prisma.review.groupBy({
       by: ["courseId"],
