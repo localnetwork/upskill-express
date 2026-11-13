@@ -69,7 +69,7 @@ export const learnAssistantValidator = z.object({
     .array(
       z.object({
         role: z.enum(["user", "assistant"]),
-        content: z.string().min(1).max(2000),
+        content: z.string().min(1).max(4000),
       }),
     )
     .max(20)

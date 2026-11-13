@@ -28,6 +28,7 @@ enum LessonType {
   CODING_EXERCISE
   RESOURCE
   ASSIGNMENT
+  ROLE_PLAY
 }
 
 enum LessonUnlockType {
@@ -247,6 +248,7 @@ model User {
   createdChatConversations ChatConversation[] @relation("ChatConversationCreator")
   sentChatMessages ChatMessage[] @relation("ChatMessageSender")
   hiddenChatMessages ChatMessageHidden[]
+  rolePlayAttempts   RolePlayAttempt[]
   nudgeRules            CourseNudgeRule[] @relation("CourseNudgeRuleOwner")
   sentNudgeLogs         CourseNudgeLog[]  @relation("NudgeSentByEducator")
   receivedNudgeLogs     CourseNudgeLog[]  @relation("NudgeRecipient")
@@ -259,6 +261,7 @@ model User {
   subscriptions         Subscription[]
   watchSessionsAsLearner WatchSession[]   @relation("WatchSessionLearner")
   watchSessionsAsEducator WatchSession[]  @relation("WatchSessionEducator")
+  mockInterviews        MockInterview[]
   educatorEarnings      EducatorEarning[]
   occupationId          String?
   occupationCustom      String?
@@ -504,6 +507,7 @@ model Course {
   watchSessions       WatchSession[]
   educatorEarnings    EducatorEarning[]
   reports             CourseReport[]
+  mockInterviews      MockInterview[]
 
   @@index([educatorId, workflowStatus])
   @@index([categoryId])
@@ -562,6 +566,7 @@ model Lesson {
   codingInstructions String?
   codingStarterCode  String?
   quizQuestions      Json?
+  rolePlay           Json?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 
@@ -575,12 +580,32 @@ model Lesson {
   media              Media[]
   videoUpload        LessonVideoUpload?
   discussionThreads  DiscussionThread[]
+  rolePlayAttempts   RolePlayAttempt[]
 
   @@unique([sectionId, position])
   @@index([courseId])
   @@index([topicId])
   @@index([prerequisiteLessonId])
   @@map("lessons")
+}
+
+model RolePlayAttempt {
+  id                String   @id @default(cuid())
+  lessonId          String
+  userId            String
+  mode              String   @default("text")
+  transcript        Json
+  report            Json?
+  completed         Boolean  @default(true)
+  durationInSeconds Int      @default(0)
+  startedAt         DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  lesson            Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([lessonId, userId])
+  @@map("role_play_attempts")
 }
 
 model LessonVideoUpload {
@@ -1578,6 +1603,47 @@ model CommunityReport {
 
   @@index([communityId, status, createdAt])
   @@map("community_reports")
+}
+
+model MockInterview {
+  id         String   @id @default(cuid())
+  userId     String
+  courseId   String
+  role       String?
+  difficulty String   @default("intermediate")
+  status     String   @default("IN_PROGRESS")
+  maxQuestions Int    @default(6)
+  score      Int?
+  summary    String?
+  report     Json?
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course     Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  turns      MockInterviewTurn[]
+
+  @@index([userId, courseId])
+  @@index([courseId])
+  @@map("mock_interviews")
+}
+
+model MockInterviewTurn {
+  id          String   @id @default(cuid())
+  interviewId String
+  position    Int
+  speaker     String
+  text        String
+  feedback    String?
+  score       Int?
+  createdAt   DateTime @default(now())
+
+  interview   MockInterview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@unique([interviewId, position])
+  @@map("mock_interview_turns")
 }
 
 model Occupation {

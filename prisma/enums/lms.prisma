@@ -19,6 +19,7 @@ enum LessonType {
   CODING_EXERCISE
   RESOURCE
   ASSIGNMENT
+  ROLE_PLAY
 }
 
 enum LessonUnlockType {

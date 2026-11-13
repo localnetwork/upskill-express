@@ -60,6 +60,7 @@ model User {
   createdChatConversations ChatConversation[] @relation("ChatConversationCreator")
   sentChatMessages ChatMessage[] @relation("ChatMessageSender")
   hiddenChatMessages ChatMessageHidden[]
+  rolePlayAttempts   RolePlayAttempt[]
   nudgeRules            CourseNudgeRule[] @relation("CourseNudgeRuleOwner")
   sentNudgeLogs         CourseNudgeLog[]  @relation("NudgeSentByEducator")
   receivedNudgeLogs     CourseNudgeLog[]  @relation("NudgeRecipient")
@@ -72,6 +73,7 @@ model User {
   subscriptions         Subscription[]
   watchSessionsAsLearner WatchSession[]   @relation("WatchSessionLearner")
   watchSessionsAsEducator WatchSession[]  @relation("WatchSessionEducator")
+  mockInterviews        MockInterview[]
   educatorEarnings      EducatorEarning[]
   occupationId          String?
   occupationCustom      String?
@@ -317,6 +319,7 @@ model Course {
   watchSessions       WatchSession[]
   educatorEarnings    EducatorEarning[]
   reports             CourseReport[]
+  mockInterviews      MockInterview[]
 
   @@index([educatorId, workflowStatus])
   @@index([categoryId])
@@ -375,6 +378,7 @@ model Lesson {
   codingInstructions String?
   codingStarterCode  String?
   quizQuestions      Json?
+  rolePlay           Json?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 
@@ -388,12 +392,32 @@ model Lesson {
   media              Media[]
   videoUpload        LessonVideoUpload?
   discussionThreads  DiscussionThread[]
+  rolePlayAttempts   RolePlayAttempt[]
 
   @@unique([sectionId, position])
   @@index([courseId])
   @@index([topicId])
   @@index([prerequisiteLessonId])
   @@map("lessons")
+}
+
+model RolePlayAttempt {
+  id                String   @id @default(cuid())
+  lessonId          String
+  userId            String
+  mode              String   @default("text")
+  transcript        Json
+  report            Json?
+  completed         Boolean  @default(true)
+  durationInSeconds Int      @default(0)
+  startedAt         DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  lesson            Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([lessonId, userId])
+  @@map("role_play_attempts")
 }
 
 model LessonVideoUpload {

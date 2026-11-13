@@ -16,6 +16,10 @@ import { getLessonAccessMapForEnrollment } from "../progress/lesson-access.servi
 import { buildAICodingExercise } from "./course-coding-exercise.service.js";
 import { buildAIArticleContent } from "./course-article.service.js";
 import {
+  normalizeRolePlay,
+  toLearnerRolePlay,
+} from "../curriculum/role-play.service.js";
+import {
   buildCloudflareEmbedUrlFromPlaybackUrl,
 } from "../../shared/storage/cloudflare-stream.js";
 import { buildBunnyEmbedUrlFromPlaybackUrl } from "../../shared/storage/bunny-stream.js";
@@ -3312,7 +3316,9 @@ function mapCourseDetails(course, goals) {
               ? "quiz"
               : lesson.type === "CODING_EXERCISE"
                 ? "coding_exercise"
-                : lesson.type === "VIDEO" || lesson.videoUrl
+                : lesson.type === "ROLE_PLAY"
+                  ? "role_play"
+                  : lesson.type === "VIDEO" || lesson.videoUrl
                   ? "video"
                   : lesson.assignmentText || lesson.type === "RESOURCE"
                     ? "article"
@@ -3321,7 +3327,9 @@ function mapCourseDetails(course, goals) {
           estimated_duration: estimateLessonDurationSeconds(lesson),
           curriculum_description: lesson.description || "",
           asset:
-            lesson.type === "QUIZ"
+            lesson.type === "ROLE_PLAY"
+              ? normalizeRolePlay(safeParseJson(lesson.rolePlay) || {})
+              : lesson.type === "QUIZ"
               ? {
                   questions: Array.isArray(parsedQuizQuestions)
                     ? parsedQuizQuestions
@@ -4236,7 +4244,9 @@ export async function getCourseRoute(slug, actor = null) {
         uuid: lesson.id,
         title: lesson.title,
         curriculum_resource_type:
-          lesson.type === "QUIZ"
+          lesson.type === "ROLE_PLAY"
+            ? "role_play"
+            : lesson.type === "QUIZ"
             ? "quiz"
             : lesson.type === "CODING_EXERCISE"
               ? "coding_exercise"
@@ -4410,6 +4420,11 @@ export async function getCourseForLearner(userId, slug) {
   }
 
   const goals = await readCourseGoals(enrollment.course.id);
+  const certificateIndex = await prisma.platformSetting.findUnique({
+    where: { key: `certificate_index::${userId}::${enrollment.course.id}` },
+    select: { value: true },
+  });
+  const certificateSlug = safeParseJson(certificateIndex?.value)?.slug || null;
   const overviewStats = await getCourseOverviewStats(enrollment.course.id);
   const educatorPictures = await getLatestUserPicturesMap([enrollment.course.educator?.id]);
   const lessonAccessMap = await getLessonAccessMapForEnrollment(
@@ -4427,6 +4442,7 @@ export async function getCourseForLearner(userId, slug) {
       description: enrollment.course.description,
       language: enrollment.course.language || "English",
       stats: overviewStats,
+      certificate_slug: certificateSlug,
       instructional_level: enrollment.course.level
         ? {
             id: enrollment.course.level.id,
@@ -4473,7 +4489,9 @@ export async function getCourseForLearner(userId, slug) {
             uuid: lesson.id,
             title: lesson.title,
             curriculum_resource_type:
-                lesson.type === "QUIZ"
+                lesson.type === "ROLE_PLAY"
+                  ? "role_play"
+                  : lesson.type === "QUIZ"
                   ? "quiz"
                   : lesson.type === "CODING_EXERCISE"
                     ? "coding_exercise"
@@ -4488,6 +4506,13 @@ export async function getCourseForLearner(userId, slug) {
             asset:
               !canAccessAsset
                 ? null
+                : lesson.type === "ROLE_PLAY"
+                  ? (() => {
+                      const rolePlay = toLearnerRolePlay(
+                        safeParseJson(lesson.rolePlay) || {},
+                      );
+                      return rolePlay.status === "PUBLISHED" ? rolePlay : null;
+                    })()
                 : lesson.type === "QUIZ"
                   ? {
                       questions: Array.isArray(parsedQuizQuestions)

@@ -29,6 +29,7 @@ import tagRoutes from "./src/modules/tag/tag.routes.js";
 import shareRoutes from "./src/modules/share/share.routes.js";
 import discussionRoutes from "./src/modules/discussion/discussion.routes.js";
 import chatRoutes from "./src/modules/chat/chat.routes.js";
+import mockInterviewRoutes from "./src/modules/mock-interview/mock-interview.routes.js";
 import legacyRoutes from "./src/modules/legacy/legacy.routes.js";
 import {
   cacheGetResponse,
@@ -113,6 +114,7 @@ app.use("/api/tags", tagRoutes);
 app.use("/api/share", shareRoutes);
 app.use("/api", discussionRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/mock-interviews", mockInterviewRoutes);
 app.use("/api", legacyRoutes);
 app.get(
   "/api/languages",

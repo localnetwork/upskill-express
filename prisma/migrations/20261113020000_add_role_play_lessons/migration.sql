@@ -1,0 +1,5 @@
+-- AlterEnum
+ALTER TYPE "LessonType" ADD VALUE IF NOT EXISTS 'ROLE_PLAY';
+
+-- AlterTable
+ALTER TABLE "lessons" ADD COLUMN IF NOT EXISTS "rolePlay" JSONB;

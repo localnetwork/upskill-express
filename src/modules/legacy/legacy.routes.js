@@ -79,7 +79,17 @@ import {
   assertLessonUnlockedForEnrollment,
   assertLessonUnlockedForUser,
 } from "../progress/lesson-access.service.js";
+import {
+  buildAttemptReport,
+  generateRolePlay,
+  normalizeRolePlay,
+  normalizeTranscript,
+  replyAsRolePlayCharacter,
+  synthesizeRolePlaySpeech,
+} from "../curriculum/role-play.service.js";
 
+const ROLE_PLAY_MIN_SETUP_CHARS = 100;
+const ROLE_PLAY_MAX_LINKED_SECONDS = 40 * 60;
 const router = Router();
 const supportsLessonTopics = Boolean(prisma.lessonTopic);
 const QUIZ_ATTEMPT_KEY_PREFIX = "quiz_attempt::";
@@ -315,6 +325,7 @@ function mapLegacyMedia(media) {
 function mapLessonTypeToLegacyResource(type, lesson) {
   if (type === "QUIZ") return "quiz";
   if (type === "CODING_EXERCISE") return "coding_exercise";
+  if (type === "ROLE_PLAY") return "role_play";
   if (type === "VIDEO" || lesson.videoUrl || lesson.videoUpload) return "video";
   if (lesson.assignmentText) return "article";
   return "null";
@@ -438,7 +449,9 @@ function mapLessonToLegacyCurriculum(lesson) {
           ? "coding_exercise"
           : lesson.type === "ASSIGNMENT"
             ? "assignment"
-            : "lecture",
+            : lesson.type === "ROLE_PLAY"
+              ? "role_play"
+              : "lecture",
     curriculum_description: lesson.description || "",
     curriculum_resource_type: mapLessonTypeToLegacyResource(
       lesson.type,
@@ -455,7 +468,9 @@ function mapLessonToLegacyCurriculum(lesson) {
     unlock_at: lesson.unlockAt || null,
     prerequisite_lesson_id: lesson.prerequisiteLessonId || null,
     asset:
-      lesson.type === "QUIZ"
+      lesson.type === "ROLE_PLAY"
+        ? normalizeRolePlay(parseJsonOrNull(lesson.rolePlay) || {})
+        : lesson.type === "QUIZ"
         ? {
             questions: Array.isArray(parsedQuizQuestions)
               ? parsedQuizQuestions
@@ -548,6 +563,50 @@ async function ensureEducatorOwnsLesson(userId, lessonId) {
     throw new ApiError(404, "Curriculum not found");
   }
   return lesson;
+}
+
+async function ensureEducatorOwnsRolePlay(userId, lessonId) {
+  const lesson = await ensureEducatorOwnsLesson(userId, lessonId);
+  if (lesson.type !== "ROLE_PLAY") {
+    throw new ApiError(400, "This curriculum is not a role play");
+  }
+  return lesson;
+}
+
+// Instructors preview their own role play; enrolled learners use the published one.
+async function resolveRolePlayAccess(user, lessonId) {
+  const roles = (user.roles || []).map((role) => String(role).toUpperCase());
+  if (roles.includes("EDUCATOR")) {
+    try {
+      const lesson = await ensureEducatorOwnsRolePlay(user.id, lessonId);
+      return { lesson, isOwner: true };
+    } catch (_error) {
+      // Not the owner: fall through to the enrolled-learner checks.
+    }
+  }
+
+  const lesson = await prisma.lesson.findUnique({
+    where: { id: String(lessonId) },
+    include: { course: true },
+  });
+  if (!lesson || !lesson.course || lesson.course.deletedAt) {
+    throw new ApiError(404, "Lesson not found");
+  }
+  const enrollment = await prisma.enrollment.findFirst({
+    where: { userId: user.id, courseId: lesson.courseId, ...activeEnrollmentFilter() },
+  });
+  if (!enrollment) {
+    throw new ApiError(403, "Not enrolled in this course");
+  }
+  if (lesson.type !== "ROLE_PLAY") {
+    throw new ApiError(400, "This curriculum is not a role play");
+  }
+  const saved = normalizeRolePlay(parseJsonOrNull(lesson.rolePlay) || {});
+  if (saved.status !== "PUBLISHED") {
+    throw new ApiError(404, "This role play is not available yet");
+  }
+  await assertLessonUnlockedForUser(user.id, lesson.id);
+  return { lesson, isOwner: false };
 }
 
 function normalizeTopicIds(input) {
@@ -2729,7 +2788,9 @@ router.post(
                 ? "CODING_EXERCISE"
                 : req.body.curriculum_type === "assignment"
                   ? "ASSIGNMENT"
-                  : "RESOURCE",
+                  : req.body.curriculum_type === "role_play"
+                    ? "ROLE_PLAY"
+                    : "RESOURCE",
           title: req.body.title,
           description: req.body.description || "",
           isPreview:
@@ -2924,6 +2985,299 @@ router.delete(
       await deleteStreamVideosForLessons({ id: lesson.id });
       await prisma.lesson.delete({ where: { id: lesson.id } });
       return res.json({ success: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.get(
+  "/course-curriculums/:lessonId/role-play",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsRolePlay(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const sections = await prisma.courseSection.findMany({
+        where: { courseId: lesson.courseId },
+        orderBy: { position: "asc" },
+        include: {
+          lessons: {
+            where: { type: { in: ["VIDEO", "RESOURCE"] } },
+            orderBy: { position: "asc" },
+            include: { videoUpload: true },
+          },
+        },
+      });
+
+      return res.json({
+        data: {
+          curriculum: mapLessonToLegacyCurriculum(lesson),
+          section_id: lesson.sectionId,
+          course: {
+            id: lesson.course.id,
+            title: lesson.course.title,
+            slug: lesson.course.slug,
+          },
+          sections: sections
+            .filter((section) => section.lessons.length > 0 || section.id === lesson.sectionId)
+            .map((section) => ({
+              id: section.id,
+              title: section.title,
+              lectures: section.lessons.map((lecture) => ({
+                id: lecture.id,
+                title: lecture.title,
+                duration_seconds: lecture.durationInSeconds || 0,
+                has_content: Boolean(
+                  lecture.videoUrl || lecture.videoUpload || lecture.assignmentText,
+                ),
+              })),
+            })),
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/course-curriculums/:lessonId/role-play/generate",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsRolePlay(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const skills = String(req.body.skills || "").trim();
+      const scenario = String(req.body.scenario || "").trim();
+      const additionalContext = String(req.body.additional_context || "").trim();
+      if (
+        skills.length < ROLE_PLAY_MIN_SETUP_CHARS ||
+        scenario.length < ROLE_PLAY_MIN_SETUP_CHARS
+      ) {
+        throw new ApiError(
+          400,
+          `Skills and scenario need at least ${ROLE_PLAY_MIN_SETUP_CHARS} characters each`,
+        );
+      }
+
+      const requestedIds = normalizeTopicIds(req.body.lecture_ids);
+      const linkedLectures = requestedIds.length
+        ? await prisma.lesson.findMany({
+            where: {
+              id: { in: requestedIds },
+              courseId: lesson.courseId,
+              type: { in: ["VIDEO", "RESOURCE"] },
+            },
+            select: { id: true, title: true, durationInSeconds: true },
+          })
+        : [];
+      const linkedSeconds = linkedLectures.reduce(
+        (total, lecture) => total + (lecture.durationInSeconds || 0),
+        0,
+      );
+      if (linkedSeconds > ROLE_PLAY_MAX_LINKED_SECONDS) {
+        throw new ApiError(400, "Linked lectures can total at most 40 minutes");
+      }
+
+      const generated = await generateRolePlay({
+        courseTitle: lesson.course.title,
+        title: lesson.title,
+        skills,
+        scenario,
+        additionalContext,
+        lectureTitles: linkedLectures.map((lecture) => lecture.title),
+      });
+      const { usedFallback, ...details } = generated;
+
+      const rolePlay = normalizeRolePlay({
+        ...details,
+        generated: true,
+        status: "DRAFT",
+        setup: {
+          skills,
+          scenario,
+          additional_context: additionalContext,
+          lecture_ids: linkedLectures.map((lecture) => lecture.id),
+        },
+      });
+
+      const updated = await prisma.lesson.update({
+        where: { id: lesson.id },
+        data: {
+          rolePlay,
+          durationInSeconds: rolePlay.duration_minutes * 60,
+        },
+        include: lessonIncludeForTopics(),
+      });
+
+      return res.json({
+        data: mapLessonToLegacyCurriculum(updated),
+        used_fallback: usedFallback,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+const mapRolePlayAttempt = (attempt) => ({
+  id: attempt.id,
+  mode: attempt.mode,
+  transcript: attempt.transcript || [],
+  report: attempt.report || null,
+  completed: attempt.completed,
+  duration_seconds: attempt.durationInSeconds,
+  created_at: attempt.startedAt,
+});
+
+router.get(
+  "/course-curriculums/:lessonId/role-play/attempts",
+  authenticate,
+  async (req, res, next) => {
+    try {
+      const { lesson } = await resolveRolePlayAccess(req.user, req.params.lessonId);
+      const attempts = await prisma.rolePlayAttempt.findMany({
+        where: { lessonId: lesson.id, userId: req.user.id },
+        orderBy: { startedAt: "asc" },
+      });
+      return res.json({ data: attempts.map(mapRolePlayAttempt) });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/course-curriculums/:lessonId/role-play/attempts",
+  authenticate,
+  async (req, res, next) => {
+    try {
+      const { lesson, isOwner } = await resolveRolePlayAccess(req.user, req.params.lessonId);
+      const saved = normalizeRolePlay(parseJsonOrNull(lesson.rolePlay) || {});
+      const rolePlay = isOwner
+        ? normalizeRolePlay(req.body.role_play || {}, saved)
+        : saved;
+      const transcript = normalizeTranscript(req.body.messages);
+      if (!transcript.length) throw new ApiError(400, "Nothing to save for this practice");
+
+      const completed = req.body.completed !== false;
+      const report = completed ? await buildAttemptReport(rolePlay, transcript) : null;
+      const startedAt = new Date(req.body.started_at);
+      const attempt = await prisma.rolePlayAttempt.create({
+        data: {
+          lessonId: lesson.id,
+          userId: req.user.id,
+          mode: req.body.mode === "audio" ? "audio" : "text",
+          transcript,
+          report: report || undefined,
+          completed,
+          durationInSeconds: Math.max(0, Math.min(3600, Number(req.body.duration_seconds) || 0)),
+          ...(Number.isNaN(startedAt.getTime()) ? {} : { startedAt }),
+        },
+      });
+      if (!isOwner && completed) {
+        await updateLessonProgress(req.user.id, {
+          lessonId: lesson.id,
+          progressPct: 100,
+          isCompleted: true,
+          lastPosition: 0,
+        });
+      }
+      return res.status(201).json({ data: mapRolePlayAttempt(attempt) });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/role-play/tts",
+  authenticate,
+  async (req, res, next) => {
+    try {
+      const audio = await synthesizeRolePlaySpeech(
+        req.body.voice,
+        req.body.text,
+      );
+      if (!audio) throw new ApiError(400, "Unable to synthesize speech");
+      return res.json({ data: { audio: audio.toString("base64") } });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/course-curriculums/:lessonId/role-play/chat",
+  authenticate,
+  async (req, res, next) => {
+    try {
+      const { lesson, isOwner } = await resolveRolePlayAccess(
+        req.user,
+        req.params.lessonId,
+      );
+      const saved = normalizeRolePlay(parseJsonOrNull(lesson.rolePlay) || {});
+      // Instructors preview unsaved edits from the review page; learners get the published version.
+      const rolePlay = isOwner
+        ? normalizeRolePlay(req.body.role_play || {}, saved)
+        : saved;
+      const { reply, ended } = await replyAsRolePlayCharacter(rolePlay, req.body.messages);
+      return res.json({ data: { reply, ended } });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.put(
+  "/course-curriculums/:lessonId/role-play",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsRolePlay(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const previous = normalizeRolePlay(parseJsonOrNull(lesson.rolePlay) || {});
+      if (!previous.generated) {
+        throw new ApiError(400, "Generate the role play before saving details");
+      }
+
+      const rolePlay = normalizeRolePlay(req.body.role_play || {}, previous);
+      if (req.body.publish === true) {
+        if (
+          !rolePlay.meeting_title ||
+          !rolePlay.scenario ||
+          !rolePlay.learner_role ||
+          rolePlay.learner_goals.length === 0
+        ) {
+          throw new ApiError(
+            400,
+            "Meeting title, scenario, learner role and at least one goal are required to publish",
+          );
+        }
+        rolePlay.status = "PUBLISHED";
+      } else if (req.body.publish === false) {
+        rolePlay.status = "DRAFT";
+      }
+
+      const updated = await prisma.lesson.update({
+        where: { id: lesson.id },
+        data: {
+          rolePlay,
+          durationInSeconds: rolePlay.duration_minutes * 60,
+        },
+        include: lessonIncludeForTopics(),
+      });
+      return res.json({ data: mapLessonToLegacyCurriculum(updated) });
     } catch (error) {
       return next(error);
     }
