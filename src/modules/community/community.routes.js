@@ -47,6 +47,7 @@ router.post("/posts/:postId/comments", validate(v.postParams, "params"), validat
 router.delete("/comments/:commentId", validate(v.commentParams, "params"), ok("Comment deleted")((req) => svc.deleteComment(req.params.commentId, req.user.id)));
 
 router.post("/course/:slug/reports", validate(v.slugParams, "params"), validate(v.reportBody), ok("Report submitted", 201)((req) => svc.createReport(req.params.slug, req.user.id, req.body)));
+router.get("/course/:slug/insights", validate(v.slugParams, "params"), ok("Insights fetched")((req) => svc.getInsights(req.params.slug, req.user.id, req.query)));
 router.get("/course/:slug/reports", validate(v.slugParams, "params"), ok("Reports fetched")((req) => svc.listReports(req.params.slug, req.user.id, req.query)));
 router.post("/course/:slug/reports/:reportId/resolve", validate(v.slugReportParams, "params"), validate(v.resolveBody), ok("Report resolved")((req) => svc.resolveReport(req.params.slug, req.user.id, req.params.reportId, req.body.action)));
 

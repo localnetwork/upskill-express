@@ -217,6 +217,7 @@ export async function getCommunity(slug, userId) {
     canCreate: false,
     enrolled: true,
     role: ctx.role,
+    isOwner: ctx.isAuthor,
     me: userId,
     joined: Boolean(ctx.role),
     banned: isBanActive(ctx.member),
@@ -782,4 +783,141 @@ export function uploadCommunityImage(file) {
         ? `/uploads/${file.filename}`
         : file.path;
   return { path };
+}
+
+
+const INSIGHT_RANGES = [7, 28, 90];
+
+// Owner-only engagement analytics for the community, modelled on group insights.
+export async function getInsights(slug, userId, query = {}) {
+  const ctx = await getContext(slug, userId);
+  if (!ctx.isAuthor) throw new ApiError(403, "Only the course owner can view community insights");
+
+  const days = INSIGHT_RANGES.includes(Number(query.days)) ? Number(query.days) : 28;
+  const audience = ["members", "staff"].includes(query.audience) ? query.audience : "everyone";
+  const by = ["admins", "members"].includes(query.by) ? query.by : "all";
+  const sort = query.sort === "recent" ? "recent" : "top";
+  const tz = Number.isFinite(Number(query.tzOffset)) ? Number(query.tzOffset) : 0;
+
+  const now = Date.now();
+  const start = now - days * DAY_MS;
+  const prevStart = start - days * DAY_MS;
+  const communityId = ctx.community.id;
+
+  const [members, posts, comments, reactions] = await Promise.all([
+    prisma.communityMember.findMany({ where: { communityId }, select: { userId: true, role: true } }),
+    prisma.communityPost.findMany({
+      where: { communityId, deletedAt: null, createdAt: { gte: new Date(prevStart) } },
+      select: { id: true, authorId: true, body: true, imageUrl: true, imageUrls: true, createdAt: true },
+    }),
+    prisma.communityComment.findMany({
+      where: { post: { communityId }, deletedAt: null, createdAt: { gte: new Date(prevStart) } },
+      select: { postId: true, authorId: true, createdAt: true },
+    }),
+    prisma.communityReaction.findMany({
+      where: { post: { communityId }, createdAt: { gte: new Date(prevStart) } },
+      select: { postId: true, userId: true, createdAt: true },
+    }),
+  ]);
+
+  const roleOf = new Map(members.map((m) => [m.userId, m.role]));
+  roleOf.set(ctx.course.educatorId, "ADMIN");
+  const isStaffUser = (id) => ["ADMIN", "MODERATOR"].includes(roleOf.get(id));
+  const allowed = (id) => {
+    if (audience === "staff") return isStaffUser(id);
+    if (audience === "members") return !isStaffUser(id);
+    return true;
+  };
+
+  // Shift timestamps so UTC getters return the viewer's local date parts.
+  const local = (date) => new Date(date.getTime() - tz * 60 * 1000);
+  const dayKey = (date) => local(date).toISOString().slice(0, 10);
+
+  const events = [
+    ...posts.map((p) => ({ type: "posts", at: p.createdAt, actor: p.authorId })),
+    ...comments.map((c) => ({ type: "comments", at: c.createdAt, actor: c.authorId })),
+    ...reactions.map((r) => ({ type: "reactions", at: r.createdAt, actor: r.userId })),
+  ].filter((e) => allowed(e.actor));
+
+  const emptyTotals = () => ({ posts: 0, comments: 0, reactions: 0, all: 0 });
+  const totals = emptyTotals();
+  const previous = emptyTotals();
+  const daily = new Map();
+  for (let i = days - 1; i >= 0; i -= 1) {
+    daily.set(dayKey(new Date(now - i * DAY_MS)), { ...emptyTotals() });
+  }
+
+  const weekdayTotals = Array(7).fill(0);
+  const hourly = Array.from({ length: 7 }, () => Array(24).fill(0));
+  const weekdayCount = Array(7).fill(0);
+  for (const key of daily.keys()) weekdayCount[(new Date(`${key}T00:00:00Z`).getUTCDay() + 6) % 7] += 1;
+
+  for (const e of events) {
+    const t = e.at.getTime();
+    if (t >= start) {
+      totals[e.type] += 1;
+      totals.all += 1;
+      const bucket = daily.get(dayKey(e.at));
+      if (bucket) {
+        bucket[e.type] += 1;
+        bucket.all += 1;
+      }
+      const shifted = local(e.at);
+      const weekday = (shifted.getUTCDay() + 6) % 7;
+      weekdayTotals[weekday] += 1;
+      hourly[weekday][shifted.getUTCHours()] += 1;
+    } else {
+      previous[e.type] += 1;
+      previous.all += 1;
+    }
+  }
+
+  const round = (n) => Math.round(n * 100) / 100;
+  const popularDays = weekdayTotals.map((total, i) => round(weekdayCount[i] ? total / weekdayCount[i] : 0));
+  const popularTimes = hourly.map((row, i) => row.map((total) => round(weekdayCount[i] ? total / weekdayCount[i] : 0)));
+
+  const commentCount = new Map();
+  const reactionCount = new Map();
+  for (const c of comments) if (c.createdAt.getTime() >= start) commentCount.set(c.postId, (commentCount.get(c.postId) || 0) + 1);
+  for (const r of reactions) if (r.createdAt.getTime() >= start) reactionCount.set(r.postId, (reactionCount.get(r.postId) || 0) + 1);
+
+  const authorOk = (id) => (by === "admins" ? isStaffUser(id) : by === "members" ? !isStaffUser(id) : true);
+  const rows = posts
+    .filter((p) => p.createdAt.getTime() >= start && allowed(p.authorId) && authorOk(p.authorId))
+    .map((p) => ({
+      post: p,
+      comments: commentCount.get(p.id) || 0,
+      likes: reactionCount.get(p.id) || 0,
+    }));
+  rows.sort((a, b) =>
+    sort === "recent"
+      ? b.post.createdAt - a.post.createdAt
+      : b.comments + b.likes - (a.comments + a.likes) || b.post.createdAt - a.post.createdAt,
+  );
+  const top = rows.slice(0, 20);
+  const authors = await prisma.user.findMany({
+    where: { id: { in: [...new Set(top.map((r) => r.post.authorId))] } },
+    select: userSelect,
+  });
+  const authorById = new Map(authors.map((u) => [u.id, u]));
+
+  return {
+    days,
+    range: { from: new Date(start), to: new Date(now) },
+    previousRange: { from: new Date(prevStart), to: new Date(start) },
+    totals,
+    previous,
+    series: [...daily.entries()].map(([date, v]) => ({ date, ...v })),
+    popularDays,
+    popularTimes,
+    posts: top.map((r) => ({
+      id: r.post.id,
+      createdAt: r.post.createdAt,
+      body: r.post.body,
+      image: r.post.imageUrls?.[0] || r.post.imageUrl || null,
+      author: authorById.get(r.post.authorId)?.fullName || authorById.get(r.post.authorId)?.username || "User",
+      comments: r.comments,
+      likes: r.likes,
+    })),
+  };
 }
