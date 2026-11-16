@@ -235,7 +235,7 @@ export async function getCurrentUser(userId) {
   const userPicture = await getUserProfilePicture(user.id);
   return {
     ...mapped,
-    user_picture: userPicture,
+    profile_picture: userPicture,
   };
 }
 

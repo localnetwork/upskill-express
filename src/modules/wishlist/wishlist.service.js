@@ -54,7 +54,7 @@ function mapWishlistItem(row) {
           id: row.course.educator?.id,
           username: row.course.educator?.username,
           fullName: row.course.educator?.fullName || "",
-          user_picture: null,
+          profile_picture: null,
         },
       },
       is_in_wishlist: true,

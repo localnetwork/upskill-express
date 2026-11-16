@@ -61,7 +61,7 @@ export function mapAuthUser(user, roles = getRoles(user), userPicture = null) {
     link_x: user.link_x || "",
     link_youtube: user.link_youtube || "",
     link_github: user.link_github || "",
-    user_picture: userPicture,
+    profile_picture: userPicture,
     roles,
     permissions,
   };
@@ -593,7 +593,7 @@ export async function googleAuth(payload, context = {}) {
   });
 
   const userPicture = await setGoogleProfilePicture(user.id, profile.picture);
-  session.user.user_picture = userPicture;
+  session.user.profile_picture = userPicture;
 
   await startTrialIfEligible(user.id, {
     ipAddress: getRequestIpAddress(context.req),

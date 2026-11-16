@@ -83,7 +83,7 @@ function toLegacyCourseSummary(course) {
         username: course.educator?.username,
         fullName: course.educator?.fullName || "",
         headline: course.educator?.headline || "",
-        user_picture: course.educator?.user_picture || null,
+        profile_picture: course.educator?.profile_picture || null,
       },
     },
     resources_count: {

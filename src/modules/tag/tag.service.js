@@ -296,6 +296,22 @@ export async function getTagBySlugOrId(slugOrId) {
   const profilePicturesByUserId = new Map();
 
   if (educatorIds.length) {
+    const settings = await prisma.platformSetting.findMany({
+      where: { key: { in: educatorIds.map((id) => `profile_picture::${id}`) } },
+      select: { key: true, value: true },
+    });
+    const selectedMediaIds = new Map();
+    for (const setting of settings) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(setting.value);
+      } catch {
+        parsed = null;
+      }
+      const mediaId = String(parsed?.mediaId || parsed?.id || setting.value || "").trim();
+      if (mediaId) selectedMediaIds.set(setting.key.slice("profile_picture::".length), mediaId);
+    }
+
     const mediaRows = await prisma.media.findMany({
       where: {
         userId: { in: educatorIds },
@@ -310,6 +326,14 @@ export async function getTagBySlugOrId(slugOrId) {
       orderBy: { createdAt: "desc" },
     });
 
+    for (const row of mediaRows) {
+      if (selectedMediaIds.get(row.userId) === row.id) {
+        profilePicturesByUserId.set(row.userId, {
+          id: row.id,
+          path: row.storagePath,
+        });
+      }
+    }
     for (const row of mediaRows) {
       if (!profilePicturesByUserId.has(row.userId)) {
         profilePicturesByUserId.set(row.userId, {

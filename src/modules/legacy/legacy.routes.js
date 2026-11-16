@@ -1,4 +1,5 @@
 import path from "path";
+import sanitizeHtml from "sanitize-html";
 import { activeEnrollmentFilter } from "../access/access.service.js";
 import { Readable } from "stream";
 import fs from "fs/promises";
@@ -146,6 +147,84 @@ const USER_PICTURE_KEY_PREFIX = "profile_picture::";
 
 function getUserPictureSettingKey(userId) {
   return `${USER_PICTURE_KEY_PREFIX}${userId}`;
+}
+
+function getStorefrontSettingKey(userId) {
+  return `educator_storefront::${userId}`;
+}
+
+function cleanStorefrontText(value, max) {
+  return String(value ?? "").trim().slice(0, max);
+}
+
+function cleanStorefrontHtml(value, max) {
+  const html = sanitizeHtml(String(value ?? ""), {
+    allowedTags: [
+      "p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li",
+      "a", "h1", "h2", "h3", "h4", "blockquote",
+    ],
+    allowedAttributes: { a: ["href", "target", "rel"] },
+    allowedSchemes: ["http", "https", "mailto"],
+    transformTags: {
+      a: sanitizeHtml.simpleTransform("a", {
+        rel: "noopener noreferrer",
+        target: "_blank",
+      }),
+    },
+  }).trim();
+  return html.slice(0, max);
+}
+
+function cleanStorefrontUrl(value) {
+  const url = cleanStorefrontText(value, 500);
+  if (!url) return "";
+  return /^(https?:\/\/|\/)/i.test(url) ? url : "";
+}
+
+function normalizeStorefront(input = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  return {
+    banner_url: cleanStorefrontUrl(source.banner_url),
+    skills: (Array.isArray(source.skills) ? source.skills : [])
+      .map((item) => ({
+        label: cleanStorefrontText(
+          typeof item === "string" ? item : item?.label,
+          40,
+        ),
+        icon: /^[a-z]{1,20}$/.test(String(item?.icon || ""))
+          ? item.icon
+          : "",
+      }))
+      .filter((item) => item.label)
+      .slice(0, 6),
+    ctas: (Array.isArray(source.ctas) ? source.ctas : [])
+      .map((item) => ({
+        title: cleanStorefrontText(item?.title, 100),
+        description: cleanStorefrontHtml(item?.description, 5000),
+        image_url: cleanStorefrontUrl(item?.image_url),
+      }))
+      .filter((item) => item.title)
+      .slice(0, 6),
+    featured_course_ids: Array.from(
+      new Set(
+        (Array.isArray(source.featured_course_ids)
+          ? source.featured_course_ids
+          : []
+        )
+          .map((id) => cleanStorefrontText(id, 64))
+          .filter(Boolean),
+      ),
+    ).slice(0, 4),
+    show_reviews: source.show_reviews !== false,
+  };
+}
+
+async function readStorefront(userId) {
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key: getStorefrontSettingKey(userId) },
+    select: { value: true },
+  });
+  return normalizeStorefront(parseJsonOrNull(setting?.value) || {});
 }
 
 function getUserRoles(user) {
@@ -2130,11 +2209,48 @@ router.get("/user/:slug", async (req, res, next) => {
           new Date(a.issued_at || 0).getTime(),
       );
 
+    const [storefront, educatorReviewsRaw] = isEducator
+      ? await Promise.all([
+          readStorefront(user.id),
+          prisma.review.findMany({
+            where: {
+              course: { educatorId: user.id, deletedAt: null },
+              comment: { not: null },
+            },
+            orderBy: { createdAt: "desc" },
+            take: 12,
+            select: {
+              id: true,
+              rating: true,
+              title: true,
+              comment: true,
+              createdAt: true,
+              user: { select: { fullName: true, username: true } },
+              course: { select: { title: true, slug: true } },
+            },
+          }),
+        ])
+      : [null, []];
+    const educatorReviews = (educatorReviewsRaw || [])
+      .filter((row) => String(row.comment || "").trim())
+      .map((row) => ({
+        id: row.id,
+        rating: row.rating,
+        title: row.title || "",
+        comment: row.comment,
+        created_at: row.createdAt,
+        reviewer: row.user?.fullName || row.user?.username || "Learner",
+        course_title: row.course?.title || "",
+        course_slug: row.course?.slug || "",
+      }));
+
     return res.json({
       id: user.id,
       username: user.username,
       email: user.email,
       fullName: user.fullName || "",
+      storefront,
+      educator_reviews: educatorReviews,
       biography: extended.biography,
       headline: extended.headline,
       link_website: extended.link_website,
@@ -2145,7 +2261,7 @@ router.get("/user/:slug", async (req, res, next) => {
       link_x: extended.link_x,
       link_youtube: extended.link_youtube,
       link_github: extended.link_github,
-      user_picture: userPicture,
+      profile_picture: userPicture,
       roles: user.roles.map((item) => ({
         role_name:
           item.role.name === "EDUCATOR"
@@ -2287,7 +2403,7 @@ router.get("/instructor/courses/:userId", authenticateOptional, async (req, res,
           username: course.educator.username,
           fullName: course.educator.fullName || "",
           headline: course.educator.headline || "",
-          user_picture:
+          profile_picture:
             educatorPicturesByUserId.get(course.educator.id) || null,
         },
       },
@@ -2372,13 +2488,59 @@ router.put("/profile", authenticate, async (req, res, next) => {
   }
 });
 
+router.get("/profile/storefront", authenticate, async (req, res, next) => {
+  try {
+    return res.json({ data: await readStorefront(req.user.id) });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.put("/profile/storefront", authenticate, async (req, res, next) => {
+  try {
+    if (!(req.user.roles || []).includes("EDUCATOR")) {
+      throw new ApiError(403, "Only instructors can customize a storefront");
+    }
+    const storefront = normalizeStorefront(req.body);
+
+    if (storefront.featured_course_ids.length) {
+      const owned = await prisma.course.findMany({
+        where: {
+          id: { in: storefront.featured_course_ids },
+          educatorId: req.user.id,
+          workflowStatus: "PUBLISHED",
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      const ownedIds = new Set(owned.map((row) => row.id));
+      storefront.featured_course_ids = storefront.featured_course_ids.filter(
+        (id) => ownedIds.has(id),
+      );
+    }
+
+    const value = JSON.stringify(storefront);
+    await prisma.platformSetting.upsert({
+      where: { key: getStorefrontSettingKey(req.user.id) },
+      create: {
+        key: getStorefrontSettingKey(req.user.id),
+        value,
+        description: `Educator storefront for user ${req.user.id}`,
+      },
+      update: { value },
+    });
+    return res.json({ message: "Storefront saved", data: storefront });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.put("/profile/user-picture", authenticate, async (req, res, next) => {
   try {
-    const mediaId = req.body.user_picture
-      ? String(req.body.user_picture)
-      : null;
+    const pictureId = req.body.profile_picture ?? req.body.user_picture;
+    const mediaId = pictureId ? String(pictureId) : null;
     if (!mediaId) {
-      throw new ApiError(400, "user_picture is required");
+      throw new ApiError(400, "profile_picture is required");
     }
 
     const media = await prisma.media.findFirst({

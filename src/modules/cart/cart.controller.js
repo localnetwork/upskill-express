@@ -48,7 +48,7 @@ function toLegacyCartItem(item) {
           id: item.course.educator?.id,
           username: item.course.educator?.username,
           fullName: item.course.educator?.fullName || "",
-          user_picture: null,
+          profile_picture: null,
         },
       },
     },

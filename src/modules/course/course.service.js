@@ -21,8 +21,35 @@ import {
 } from "../curriculum/role-play.service.js";
 import {
   buildCloudflareEmbedUrlFromPlaybackUrl,
+  buildCloudflareSignedEmbedUrl,
+  extractCloudflareVideoIdFromPlaybackUrl,
 } from "../../shared/storage/cloudflare-stream.js";
-import { buildBunnyEmbedUrlFromPlaybackUrl } from "../../shared/storage/bunny-stream.js";
+import {
+  buildBunnyEmbedUrlFromPlaybackUrl,
+  buildBunnySignedEmbedUrl,
+  extractBunnyVideoIdFromPlaybackUrl,
+} from "../../shared/storage/bunny-stream.js";
+
+async function mapVideoPlaybackToSignedEmbedUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const bunnyId = extractBunnyVideoIdFromPlaybackUrl(raw);
+    if (bunnyId) {
+      return buildBunnySignedEmbedUrl(bunnyId, { ttlSeconds: 3600 }) || mapVideoPlaybackToEmbedUrl(raw);
+    }
+    const cloudflareId = extractCloudflareVideoIdFromPlaybackUrl(raw);
+    if (cloudflareId) {
+      return (
+        (await buildCloudflareSignedEmbedUrl(cloudflareId, { ttlSeconds: 3600 })) ||
+        mapVideoPlaybackToEmbedUrl(raw)
+      );
+    }
+  } catch (_error) {
+    // fall through to unsigned URL
+  }
+  return mapVideoPlaybackToEmbedUrl(raw);
+}
 
 const COVER_MEDIA_TYPES = ["IMAGE", "COVER_IMAGE"];
 const PROMO_MEDIA_TYPES = ["PROMO_VIDEO"];
@@ -464,7 +491,7 @@ function mapDiscoveryCourseItemBase(course, pictures = new Map()) {
           id: course.educator.id,
           username: course.educator.username,
           full_name: course.educator.fullName || "",
-          user_picture: pictures.get(course.educator.id) || null,
+          profile_picture: pictures.get(course.educator.id) || null,
         }
       : null,
     cover_image: mapLegacyMedia(
@@ -2531,7 +2558,7 @@ export async function listCourses(query, user) {
     educator: course.educator
       ? {
           ...course.educator,
-          user_picture: educatorPicturesByUserId.get(course.educator.id) || null,
+          profile_picture: educatorPicturesByUserId.get(course.educator.id) || null,
         }
       : null,
     goals: courseGoalsMap.get(course.id) || normalizeGoalsPayload({}),
@@ -2868,7 +2895,7 @@ export async function getCourseDiscoveryData(query = {}) {
     username: user.username,
     full_name: user.fullName || "",
     headline: user.headline || "",
-    user_picture: matchedUserPictures.get(user.id) || null,
+    profile_picture: matchedUserPictures.get(user.id) || null,
   }));
 
   return {
@@ -3296,7 +3323,7 @@ function mapCourseDetails(course, goals) {
         fullName: course.educator?.fullName || "",
         headline: course.educator?.headline || "",
         biography: course.educator?.biography || "",
-        user_picture: null,
+        profile_picture: null,
       },
     },
     sections: course.sections.map((section) => ({
@@ -3990,7 +4017,7 @@ export async function listAuthoredCourses(userId, query) {
     educator: row.educator
       ? {
           ...row.educator,
-          user_picture: null,
+          profile_picture: null,
         }
       : null,
     stats: {
@@ -4010,7 +4037,7 @@ export async function listAuthoredCourses(userId, query) {
     educator: course.educator
       ? {
           ...course.educator,
-          user_picture: educatorPicturesByUserId.get(course.educator.id) || null,
+          profile_picture: educatorPicturesByUserId.get(course.educator.id) || null,
         }
       : null,
   }));
@@ -4222,6 +4249,20 @@ export async function getCourseRoute(slug, actor = null) {
     }
   }
 
+  const previewVideoUrls = new Map();
+  await Promise.all(
+    course.sections.flatMap((section) =>
+      section.lessons
+        .filter((lesson) => lesson.isPreview && lesson.videoUrl)
+        .map(async (lesson) => {
+          previewVideoUrls.set(
+            lesson.id,
+            await mapVideoPlaybackToSignedEmbedUrl(lesson.videoUrl),
+          );
+        }),
+    ),
+  );
+
   return {
     id: course.id,
     slug: course.slug,
@@ -4272,7 +4313,7 @@ export async function getCourseRoute(slug, actor = null) {
                 }
               : lesson.videoUrl
                 ? {
-                    path: mapVideoPlaybackToEmbedUrl(lesson.videoUrl),
+                    path: previewVideoUrls.get(lesson.id) || mapVideoPlaybackToEmbedUrl(lesson.videoUrl),
                   }
                 : lesson.assignmentText || lesson.type === "RESOURCE"
                   ? {
@@ -4297,7 +4338,7 @@ export async function getCourseRoute(slug, actor = null) {
         fullName: course.educator.fullName || "",
         headline: course.educator.headline || "",
         biography: course.educator.biography || "",
-        user_picture: educatorPictures.get(course.educator.id) || null,
+        profile_picture: educatorPictures.get(course.educator.id) || null,
         stats: {
           average_rating: Number(Number(educatorReviewAgg?._avg?.rating || 0).toFixed(1)),
           total_reviews: Number(educatorReviewAgg?._count?.rating || 0),
@@ -4456,7 +4497,7 @@ export async function getCourseForLearner(userId, slug) {
           fullName: enrollment.course.educator?.fullName || "",
           headline: enrollment.course.educator?.headline || "",
           biography: enrollment.course.educator?.biography || "",
-          user_picture: educatorPictures.get(enrollment.course.educator?.id) || null,
+          profile_picture: educatorPictures.get(enrollment.course.educator?.id) || null,
         },
       },
       goals,
