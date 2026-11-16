@@ -3646,7 +3646,7 @@ export async function getCourseStatisticsForManagement(user, slug) {
   startOfMonth.setHours(0, 0, 0, 0);
 
   const enrollmentTrendStart = new Date(startOfMonth);
-  enrollmentTrendStart.setMonth(enrollmentTrendStart.getMonth() - 5);
+  enrollmentTrendStart.setMonth(enrollmentTrendStart.getMonth() - 11);
 
   const roundMoney = (value) => Number(Number(value || 0).toFixed(2));
   const allocateByWeights = (totalAmount, weightedItems = []) => {
@@ -3844,6 +3844,8 @@ export async function getCourseStatisticsForManagement(user, slug) {
   }
 
   let totalRevenue = 0;
+  const revenueByMonth = new Map();
+  const revenueByDay = new Map();
   let revenueThisMonth = 0;
   for (const item of paidCourseOrderItems) {
     const unitPrice = Number(item.unitPrice || 0);
@@ -3864,6 +3866,16 @@ export async function getCourseStatisticsForManagement(user, slug) {
     );
 
     totalRevenue += educatorNetRevenue;
+    const revenueKey = `${item.createdAt.getFullYear()}-${item.createdAt.getMonth()}`;
+    revenueByMonth.set(
+      revenueKey,
+      (revenueByMonth.get(revenueKey) || 0) + educatorNetRevenue,
+    );
+    if (item.createdAt >= enrollmentTrendStart) {
+      const d = item.createdAt;
+      const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      revenueByDay.set(dayKey, (revenueByDay.get(dayKey) || 0) + educatorNetRevenue);
+    }
     if (item.createdAt >= startOfMonth) {
       revenueThisMonth += educatorNetRevenue;
     }
@@ -3894,8 +3906,66 @@ export async function getCourseStatisticsForManagement(user, slug) {
     };
   });
 
+  const engagementByDay = new Map();
+  if (activityEventModel) {
+    const impressionRows = await activityEventModel.findMany({
+      where: {
+        courseId: course.id,
+        eventType: "COURSE_IMPRESSION",
+        createdAt: { gte: enrollmentTrendStart },
+      },
+      select: { createdAt: true, userId: true, sessionKey: true },
+    });
+    for (const row of impressionRows) {
+      const d = row.createdAt;
+      const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const entry = engagementByDay.get(dayKey) || { impressions: 0, visitors: new Set() };
+      entry.impressions += 1;
+      const visitorId = row.userId || row.sessionKey;
+      if (visitorId) entry.visitors.add(visitorId);
+      engagementByDay.set(dayKey, entry);
+    }
+  }
+
+  const dayKeyOf = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const studentsByDay = new Map();
+  const bumpStudents = (date, field) => {
+    const key = dayKeyOf(date);
+    const entry = studentsByDay.get(key) || { enrollments: 0, completions: 0 };
+    entry[field] += 1;
+    studentsByDay.set(key, entry);
+  };
+  enrollmentTrendRows.forEach((row) => bumpStudents(row.enrolledAt, "enrollments"));
+  const completedRows = await prisma.enrollment.findMany({
+    where: { courseId: course.id, completedAt: { gte: enrollmentTrendStart } },
+    select: { completedAt: true },
+  });
+  completedRows.forEach((row) => bumpStudents(row.completedAt, "completions"));
+
+  const codingByDay = new Map();
+  const codingProgressRows = await prisma.lessonProgress.findMany({
+    where: {
+      lesson: { courseId: course.id, type: "CODING_EXERCISE" },
+      updatedAt: { gte: enrollmentTrendStart },
+    },
+    select: { userId: true, isCompleted: true, completedAt: true, updatedAt: true },
+  });
+  for (const row of codingProgressRows) {
+    const key = dayKeyOf(row.updatedAt);
+    const entry = codingByDay.get(key) || { learners: new Set(), completions: 0 };
+    entry.learners.add(row.userId);
+    codingByDay.set(key, entry);
+    if (row.isCompleted && row.completedAt && row.completedAt >= enrollmentTrendStart) {
+      const doneKey = dayKeyOf(row.completedAt);
+      const doneEntry = codingByDay.get(doneKey) || { learners: new Set(), completions: 0 };
+      doneEntry.completions += 1;
+      codingByDay.set(doneKey, doneEntry);
+    }
+  }
+
   const monthFormatter = new Intl.DateTimeFormat("en-US", { month: "short" });
-  const monthly_enrollments = Array.from({ length: 6 }).map((_, index) => {
+  const monthly_activity = Array.from({ length: 12 }).map((_, index) => {
     const date = new Date(enrollmentTrendStart);
     date.setMonth(enrollmentTrendStart.getMonth() + index);
     const month = date.getMonth();
@@ -3911,8 +3981,12 @@ export async function getCourseStatisticsForManagement(user, slug) {
       year,
       label: `${monthFormatter.format(date)} ${year}`,
       count,
+      revenue: roundMoney(revenueByMonth.get(`${year}-${month}`) || 0),
     };
   });
+  const monthly_enrollments = monthly_activity
+    .slice(-6)
+    .map(({ month, year, label, count }) => ({ month, year, label, count }));
 
   return {
     overview: {
@@ -3936,6 +4010,27 @@ export async function getCourseStatisticsForManagement(user, slug) {
     },
     trends: {
       monthly_enrollments,
+      monthly_activity,
+      daily_students: Array.from(studentsByDay.entries())
+        .sort(([x], [y]) => x.localeCompare(y))
+        .map(([date, entry]) => ({ date, ...entry })),
+      daily_coding: Array.from(codingByDay.entries())
+        .sort(([x], [y]) => x.localeCompare(y))
+        .map(([date, entry]) => ({
+          date,
+          learners: entry.learners.size,
+          completions: entry.completions,
+        })),
+      daily_engagement: Array.from(engagementByDay.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, entry]) => ({
+          date,
+          impressions: entry.impressions,
+          visitors: entry.visitors.size,
+        })),
+      daily_revenue: Array.from(revenueByDay.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, revenue]) => ({ date, revenue: roundMoney(revenue) })),
     },
   };
 }

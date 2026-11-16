@@ -3,6 +3,17 @@
     "category": "Development",
     "subcategories": [
       {
+        "title": "Artificial Intelligence",
+        "topics": [
+          "Artificial Intelligence (AI)",
+          "Generative AI (GenAI)",
+          "ChatGPT",
+          "AI Agents & Agentic AI",
+          "AI Ethics and Governance",
+          "Claude AI"
+        ]
+      },
+      {
         "title": "Web Development",
         "topics": [
           "HTML5",
@@ -10,7 +21,8 @@
           "JavaScript",
           "React.js",
           "Next.js",
-          "Node.js"
+          "Node.js",
+          "WordPress"
         ]
       },
       {
@@ -43,7 +55,8 @@
           "C++ Programming",
           "C# Programming",
           "Go Programming",
-          "Rust Programming"
+          "Rust Programming",
+          "Python"
         ]
       },
       {
@@ -136,7 +149,9 @@
           "Active Listening",
           "Presentation Skills",
           "Negotiation Skills",
-          "Cross-Cultural Communication"
+          "Cross-Cultural Communication",
+          "Communication Skills",
+          "Business Communication"
         ]
       },
       {
@@ -147,7 +162,8 @@
           "Conflict Resolution",
           "Delegation",
           "Decision Making",
-          "Manager Coaching"
+          "Manager Coaching",
+          "Management Skills"
         ]
       },
       {
@@ -158,7 +174,8 @@
           "Sales Negotiation",
           "CRM Tools",
           "Closing Techniques",
-          "Sales Pipeline Management"
+          "Sales Pipeline Management",
+          "Sales Skills"
         ]
       },
       {
@@ -191,7 +208,8 @@
           "Roadmapping",
           "Risk Management",
           "Stakeholder Management",
-          "Project Reporting"
+          "Project Reporting",
+          "Project Management"
         ]
       },
       {
@@ -224,7 +242,8 @@
           "Performance Reviews",
           "HR Policies",
           "Compensation Basics",
-          "Employee Engagement"
+          "Employee Engagement",
+          "Human Resources"
         ]
       },
       {
@@ -432,7 +451,8 @@
           "VPN Setup",
           "Penetration Testing Basics",
           "SIEM",
-          "Zero Trust Security"
+          "Zero Trust Security",
+          "Cybersecurity"
         ]
       },
       {
@@ -443,7 +463,8 @@
           "Networking Hardware",
           "Peripheral Setup",
           "Server Hardware Basics",
-          "IoT Devices"
+          "IoT Devices",
+          "Arduino"
         ]
       },
       {
@@ -574,7 +595,8 @@
           "Leading Through Change",
           "Coaching Conversations",
           "Influence Without Authority",
-          "Leadership Mindset"
+          "Leadership Mindset",
+          "Leadership"
         ]
       },
       {
@@ -1401,7 +1423,9 @@
           "Civil Engineering Basics",
           "Engineering Design Process",
           "CAD for Engineers",
-          "Engineering Math"
+          "Engineering Math",
+          "Mechanical Engineering",
+          "Piping"
         ]
       },
       {
@@ -1467,7 +1491,8 @@
           "Business English",
           "Spanish Basics",
           "Japanese Basics",
-          "Language Pronunciation"
+          "Language Pronunciation",
+          "English Language"
         ]
       },
       {

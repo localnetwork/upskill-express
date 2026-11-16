@@ -18,7 +18,10 @@ import { authorize } from "../../shared/middleware/rbac.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { upload } from "../../shared/middleware/upload.middleware.js";
 import { ApiError } from "../../shared/utils/ApiError.js";
-import { canReviewCourseContent } from "../../shared/utils/permissions.js";
+import {
+  canReviewCourseContent,
+  hasPermission,
+} from "../../shared/utils/permissions.js";
 import {
   signAccessToken,
   signRefreshToken,
@@ -191,7 +194,7 @@ function normalizeStorefront(input = {}) {
           typeof item === "string" ? item : item?.label,
           40,
         ),
-        icon: /^[a-z]{1,20}$/.test(String(item?.icon || ""))
+        icon: /^[a-z0-9-]{1,30}$/.test(String(item?.icon || ""))
           ? item.icon
           : "",
       }))
@@ -2209,10 +2212,10 @@ router.get("/user/:slug", async (req, res, next) => {
           new Date(a.issued_at || 0).getTime(),
       );
 
-    const [storefront, educatorReviewsRaw] = isEducator
-      ? await Promise.all([
-          readStorefront(user.id),
-          prisma.review.findMany({
+    const [storefront, educatorReviewsRaw] = await Promise.all([
+      readStorefront(user.id),
+      isEducator
+        ? prisma.review.findMany({
             where: {
               course: { educatorId: user.id, deletedAt: null },
               comment: { not: null },
@@ -2228,9 +2231,9 @@ router.get("/user/:slug", async (req, res, next) => {
               user: { select: { fullName: true, username: true } },
               course: { select: { title: true, slug: true } },
             },
-          }),
-        ])
-      : [null, []];
+          })
+        : [],
+    ]);
     const educatorReviews = (educatorReviewsRaw || [])
       .filter((row) => String(row.comment || "").trim())
       .map((row) => ({
@@ -2488,6 +2491,76 @@ router.put("/profile", authenticate, async (req, res, next) => {
   }
 });
 
+router.get("/profile/staff-stats", authenticate, async (req, res, next) => {
+  try {
+    const can = (permission) => hasPermission(req.user, permission);
+    const items = [];
+
+    if (can("users.view") || can("users.manage") || can("reports.view")) {
+      items.push({
+        key: "total_users",
+        label: "Total users",
+        value: await prisma.user.count({ where: { deletedAt: null } }),
+      });
+    }
+    if (can("courses.list") || can("courses.review")) {
+      const [pending, published] = await Promise.all([
+        prisma.course.count({
+          where: { workflowStatus: "PENDING_APPROVAL", deletedAt: null },
+        }),
+        prisma.course.count({
+          where: { workflowStatus: "PUBLISHED", deletedAt: null },
+        }),
+      ]);
+      items.push(
+        { key: "pending_courses", label: "Courses awaiting review", value: pending },
+        { key: "published_courses", label: "Published courses", value: published },
+      );
+    }
+    if (can("reports.view")) {
+      const [enrollments, openReports] = await Promise.all([
+        prisma.enrollment.count(),
+        prisma.courseReport.count({ where: { status: "OPEN" } }),
+      ]);
+      items.push(
+        { key: "enrollments", label: "Enrollments", value: enrollments },
+        { key: "open_reports", label: "Open course reports", value: openReports },
+      );
+    }
+    if (can("reports.revenue")) {
+      const [paidOrders, revenue] = await Promise.all([
+        prisma.order.count({ where: { status: "PAID" } }),
+        prisma.order.aggregate({
+          where: { status: "PAID" },
+          _sum: { totalAmount: true },
+        }),
+      ]);
+      items.push(
+        { key: "paid_orders", label: "Paid orders", value: paidOrders },
+        {
+          key: "revenue",
+          label: "Total revenue",
+          value: Number(revenue?._sum?.totalAmount || 0),
+          format: "currency",
+        },
+      );
+    }
+    if (can("payouts.manage")) {
+      items.push({
+        key: "pending_payouts",
+        label: "Pending payouts",
+        value: await prisma.payoutRequest.count({
+          where: { status: "REQUESTED" },
+        }),
+      });
+    }
+
+    return res.json({ data: { items } });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/profile/storefront", authenticate, async (req, res, next) => {
   try {
     return res.json({ data: await readStorefront(req.user.id) });
@@ -2498,9 +2571,6 @@ router.get("/profile/storefront", authenticate, async (req, res, next) => {
 
 router.put("/profile/storefront", authenticate, async (req, res, next) => {
   try {
-    if (!(req.user.roles || []).includes("EDUCATOR")) {
-      throw new ApiError(403, "Only instructors can customize a storefront");
-    }
     const storefront = normalizeStorefront(req.body);
 
     if (storefront.featured_course_ids.length) {

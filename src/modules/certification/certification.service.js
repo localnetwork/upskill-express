@@ -61,6 +61,7 @@ function normalizeStoredCertificate(value, overrides = {}) {
     instructor_name: parsed.instructorName,
     student_name: overrides.studentName ?? parsed.studentName,
     issued_at: parsed.issuedAt,
+    user_id: parsed.userId || null,
   };
 }
 
