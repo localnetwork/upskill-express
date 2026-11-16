@@ -30,6 +30,7 @@ import {
   listCoursesController,
   listAlsoBoughtCoursesController,
   learnerRecommendationsController,
+  searchAiOverviewController,
   listCoursesByAuthorController,
   publishCourseController,
   submitCourseController,
@@ -76,6 +77,7 @@ router.get(
   }),
   asyncHandler(listAuthoredCoursesController),
 );
+router.get("/ai-overview", authenticateOptional, asyncHandler(searchAiOverviewController));
 router.get(
   "/recommendations",
   authenticate,

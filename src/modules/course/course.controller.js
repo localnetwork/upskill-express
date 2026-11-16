@@ -36,6 +36,7 @@ import {
   getCourseAIDraftJob,
   getLatestActiveCourseAIDraftJob,
 } from "./course-ai-draft-job.service.js";
+import { getSearchAiOverview } from "./course-ai-overview.service.js";
 
 const submitSchema = z.object({
   note: z.string().optional(),
@@ -179,6 +180,22 @@ export async function listAlsoBoughtCoursesController(req, res) {
   return res.json({
     message: "Courses fetched",
     data: data.map(toLegacyCourseSummary),
+  });
+}
+
+export async function searchAiOverviewController(req, res) {
+  const data = await getSearchAiOverview(req.query.q, req.user || null);
+  return res.json({
+    message: "AI overview fetched",
+    data: data
+      ? {
+          ...data,
+          picks: data.picks.map((pick) => ({
+            reason: pick.reason,
+            course: toLegacyCourseSummary(pick.course),
+          })),
+        }
+      : null,
   });
 }
 

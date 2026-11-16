@@ -2446,13 +2446,34 @@ export async function listCourses(query, user) {
   const orderBy =
     sort === "best_selling" || sort === "best-selling" || isRelevance
       ? [{ enrollments: { _count: "desc" } }, { createdAt: "desc" }]
-      : { createdAt: "desc" };
+      : sort === "most_reviewed" || sort === "most-reviewed"
+        ? [{ reviews: { _count: "desc" } }, { createdAt: "desc" }]
+        : { createdAt: "desc" };
 
   const isTopRated = sort === "top_rated" || sort === "top-rated";
   let topRatedIds = null;
   if (isRelevance && user?.id) {
     const rankedIds = await rankCourseIdsByRelevance(where, user.id);
     topRatedIds = rankedIds.slice(skip, skip + limit);
+  }
+  if (sort === "most_viewed" || sort === "most-viewed") {
+    const matching = await prisma.course.findMany({
+      where,
+      select: { id: true },
+      orderBy: { createdAt: "desc" },
+    });
+    const viewRows = matching.length
+      ? await prisma.activityEvent.groupBy({
+          by: ["courseId"],
+          where: { eventType: "COURSE_PAGE_VIEW", courseId: { in: matching.map((row) => row.id) } },
+          _count: { _all: true },
+        })
+      : [];
+    const views = new Map(viewRows.map((row) => [row.courseId, row._count._all]));
+    topRatedIds = matching
+      .map((row) => row.id)
+      .sort((x, y) => (views.get(y) || 0) - (views.get(x) || 0))
+      .slice(skip, skip + limit);
   }
   if (isTopRated) {
     const ratingRows = await prisma.review.groupBy({
@@ -2487,7 +2508,7 @@ export async function listCourses(query, user) {
         sections: {
           include: {
             lessons: {
-              select: { id: true, type: true },
+              select: { id: true, type: true, durationInSeconds: true },
             },
           },
         },
@@ -2567,6 +2588,12 @@ export async function listCourses(query, user) {
     stats: {
       average_rating: ratingsByCourseId.get(course.id)?.average_rating || 0,
       total_reviews: ratingsByCourseId.get(course.id)?.total_reviews || 0,
+      total_duration_seconds: course.sections.reduce(
+        (sum, section) =>
+          sum + section.lessons.reduce((acc, lesson) => acc + (lesson.durationInSeconds || 0), 0),
+        0,
+      ),
+      total_lectures: course.sections.reduce((sum, section) => sum + section.lessons.length, 0),
     },
   }));
 
