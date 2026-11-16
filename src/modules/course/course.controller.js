@@ -197,6 +197,7 @@ export async function learnerRecommendationsController(req, res) {
         : null,
       trending: mapList(data.trending),
       top_rated: mapList(data.top_rated),
+      recommended_topics: data.recommended_topics || [],
       topic_next: data.topic_next.map((tab) => ({ ...tab, courses: mapList(tab.courses) })),
     },
   });

@@ -3001,6 +3001,53 @@ export async function listAlsoBoughtCourses(slug, user, limit = 12) {
   return [...result.data].sort((a, b) => order.get(a.id) - order.get(b.id));
 }
 
+async function getRecommendedTopics({ interestTopics, categoryIds, published }) {
+  const limit = 20;
+  const select = { id: true, name: true, slug: true };
+  const picked = new Map();
+  const add = (rows) => {
+    for (const row of rows) {
+      if (picked.size < limit && !picked.has(row.id)) {
+        picked.set(row.id, { id: row.id, name: row.name, slug: row.slug });
+      }
+    }
+  };
+
+  add(interestTopics);
+
+  const withCourses = {
+    deletedAt: null,
+    OR: [
+      { lessons: { some: { course: published } } },
+      { lessonTopics: { some: { lesson: { course: published } } } },
+    ],
+  };
+
+  if (categoryIds.length) {
+    add(
+      await prisma.topic.findMany({
+        where: { ...withCourses, categoryId: { in: categoryIds } },
+        orderBy: { name: "asc" },
+        take: limit,
+        select,
+      }),
+    );
+  }
+
+  if (picked.size < limit) {
+    add(
+      await prisma.topic.findMany({
+        where: withCourses,
+        orderBy: [{ lessons: { _count: "desc" } }, { name: "asc" }],
+        take: limit,
+        select,
+      }),
+    );
+  }
+
+  return [...picked.values()];
+}
+
 export async function getLearnerRecommendations(user, query = {}) {
   const take = clampInteger(query.limit, 4, 20, 12);
   const published = { deletedAt: null, isPublished: true, workflowStatus: "PUBLISHED" };
@@ -3074,6 +3121,7 @@ export async function getLearnerRecommendations(user, query = {}) {
 
   // Most recent viewed course that still exists
   let becauseViewed = null;
+  let anchorCategoryId = null;
   const viewedIds = [...new Set(viewRows.map((row) => row.courseId))];
   if (viewedIds.length) {
     const rows = await prisma.course.findMany({
@@ -3082,6 +3130,7 @@ export async function getLearnerRecommendations(user, query = {}) {
     });
     const anchor = viewedIds.map((id) => rows.find((row) => row.id === id)).find(Boolean);
     if (anchor) {
+      anchorCategoryId = anchor.categoryId;
       const similar = await fetchCourses({ categoryId: anchor.categoryId }, popularity, [anchor.id]);
       if (similar.length) {
         becauseViewed = {
@@ -3164,6 +3213,11 @@ export async function getLearnerRecommendations(user, query = {}) {
     trending,
     top_rated: topRated,
     topic_next: topicNext.filter((tab) => tab.courses.length),
+    recommended_topics: await getRecommendedTopics({
+      interestTopics,
+      categoryIds: [...interestCategoryIds, ...(becauseViewed ? [anchorCategoryId] : [])],
+      published,
+    }),
   };
 }
 
