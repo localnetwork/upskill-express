@@ -4032,6 +4032,27 @@ export async function getCourseStatisticsForManagement(user, slug) {
   });
   completedRows.forEach((row) => bumpStudents(row.completedAt, "completions"));
 
+  const reviewsByDay = new Map();
+  const reviewRows = await prisma.review.findMany({
+    where: { courseId: course.id, createdAt: { gte: enrollmentTrendStart } },
+    select: { createdAt: true, rating: true },
+  });
+  for (const row of reviewRows) {
+    const key = dayKeyOf(row.createdAt);
+    const entry = reviewsByDay.get(key) || {
+      reviews: 0,
+      star1: 0,
+      star2: 0,
+      star3: 0,
+      star4: 0,
+      star5: 0,
+    };
+    entry.reviews += 1;
+    const star = Math.min(5, Math.max(1, Math.round(Number(row.rating) || 0)));
+    entry[`star${star}`] += 1;
+    reviewsByDay.set(key, entry);
+  }
+
   const codingByDay = new Map();
   const codingProgressRows = await prisma.lessonProgress.findMany({
     where: {
@@ -4101,6 +4122,9 @@ export async function getCourseStatisticsForManagement(user, slug) {
       monthly_enrollments,
       monthly_activity,
       daily_students: Array.from(studentsByDay.entries())
+        .sort(([x], [y]) => x.localeCompare(y))
+        .map(([date, entry]) => ({ date, ...entry })),
+      daily_reviews: Array.from(reviewsByDay.entries())
         .sort(([x], [y]) => x.localeCompare(y))
         .map(([date, entry]) => ({ date, ...entry })),
       daily_coding: Array.from(codingByDay.entries())
