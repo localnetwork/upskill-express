@@ -2367,6 +2367,7 @@ export async function listCourses(query, user) {
     });
   }
   if (handsOnFilters.includes("role-plays")) {
+    lessonHandsOnOr.push({ type: "ROLE_PLAY" });
     lessonHandsOnOr.push({
       title: { contains: "role play", mode: "insensitive" },
     });
