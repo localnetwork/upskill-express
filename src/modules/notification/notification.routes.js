@@ -3,10 +3,14 @@ import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import { cacheGetResponse } from "../../shared/middleware/cache.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import {
+  createAnnouncementCommentController,
   getNotificationController,
+  listAnnouncementCommentsController,
   listNotificationsController,
   markNotificationReadController,
 } from "./notification.controller.js";
+import { validate } from "../../shared/middleware/validate.middleware.js";
+import { createAnnouncementCommentValidator } from "./notification.validator.js";
 
 const router = Router();
 
@@ -32,5 +36,14 @@ router.get(
   asyncHandler(getNotificationController),
 );
 router.post("/:notificationId/read", asyncHandler(markNotificationReadController));
+router.get(
+  "/:notificationId/comments",
+  asyncHandler(listAnnouncementCommentsController),
+);
+router.post(
+  "/:notificationId/comments",
+  validate(createAnnouncementCommentValidator),
+  asyncHandler(createAnnouncementCommentController),
+);
 
 export default router;

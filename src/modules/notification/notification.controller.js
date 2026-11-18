@@ -1,4 +1,10 @@
-import { getMyNotification, listMyNotifications, markAsRead } from "./notification.service.js";
+import {
+  createAnnouncementComment,
+  getMyNotification,
+  listAnnouncementComments,
+  listMyNotifications,
+  markAsRead,
+} from "./notification.service.js";
 
 export async function listNotificationsController(req, res) {
   const data = await listMyNotifications(req.user.id, req.query);
@@ -13,4 +19,22 @@ export async function markNotificationReadController(req, res) {
 export async function getNotificationController(req, res) {
   const data = await getMyNotification(req.user.id, req.params.notificationId);
   return res.json({ message: "Notification fetched", data });
+}
+
+export async function listAnnouncementCommentsController(req, res) {
+  const data = await listAnnouncementComments(
+    req.user.id,
+    req.params.notificationId,
+    req.query,
+  );
+  return res.json({ message: "Comments fetched", ...data });
+}
+
+export async function createAnnouncementCommentController(req, res) {
+  const data = await createAnnouncementComment(
+    req.user.id,
+    req.params.notificationId,
+    req.body.body,
+  );
+  return res.status(201).json({ message: "Comment posted", data });
 }

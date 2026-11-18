@@ -656,6 +656,7 @@ export async function sendAnnouncement(educatorId, payload) {
   }
 
   const uniqueUserIds = Array.from(new Set(enrollments.map((row) => row.userId)));
+  const announcementId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
   const [sender, announcementCourse] = await Promise.all([
     prisma.user.findUnique({
@@ -678,6 +679,7 @@ export async function sendAnnouncement(educatorId, payload) {
         message: htmlToPlainText(payload.body),
         metadata: {
           notificationKind: "INSTRUCTOR_ANNOUNCEMENT",
+          announcementId,
           educatorId,
           sender: {
             id: sender?.id || educatorId,
@@ -704,7 +706,7 @@ export async function sendAnnouncement(educatorId, payload) {
   );
   const sentAt = new Date();
   await appendAnnouncementHistory(educatorId, {
-    id: `${sentAt.getTime()}-${Math.random().toString(36).slice(2, 10)}`,
+    id: announcementId,
     courseId: payload.courseId,
     subject: String(payload.subject).trim(),
     body: htmlToPlainText(payload.body),

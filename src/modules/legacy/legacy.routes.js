@@ -91,6 +91,11 @@ import {
   replyAsRolePlayCharacter,
   synthesizeRolePlaySpeech,
 } from "../curriculum/role-play.service.js";
+import {
+  normalizeAssignment,
+  normalizeSubmissionAnswers,
+  toLearnerAssignment,
+} from "../curriculum/assignment.service.js";
 
 const ROLE_PLAY_MIN_SETUP_CHARS = 100;
 const ROLE_PLAY_MAX_LINKED_SECONDS = 40 * 60;
@@ -408,6 +413,7 @@ function mapLessonTypeToLegacyResource(type, lesson) {
   if (type === "QUIZ") return "quiz";
   if (type === "CODING_EXERCISE") return "coding_exercise";
   if (type === "ROLE_PLAY") return "role_play";
+  if (type === "ASSIGNMENT") return "assignment";
   if (type === "VIDEO" || lesson.videoUrl || lesson.videoUpload) return "video";
   if (lesson.assignmentText) return "article";
   return "null";
@@ -552,6 +558,8 @@ function mapLessonToLegacyCurriculum(lesson) {
     asset:
       lesson.type === "ROLE_PLAY"
         ? normalizeRolePlay(parseJsonOrNull(lesson.rolePlay) || {})
+        : lesson.type === "ASSIGNMENT"
+        ? normalizeAssignment(parseJsonOrNull(lesson.assignment) || {})
         : lesson.type === "QUIZ"
         ? {
             questions: Array.isArray(parsedQuizQuestions)
@@ -3510,6 +3518,218 @@ router.put(
         include: lessonIncludeForTopics(),
       });
       return res.json({ data: mapLessonToLegacyCurriculum(updated) });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+async function ensureEducatorOwnsAssignment(userId, lessonId) {
+  const lesson = await ensureEducatorOwnsLesson(userId, lessonId);
+  if (lesson.type !== "ASSIGNMENT") {
+    throw new ApiError(400, "This curriculum is not an assignment");
+  }
+  return lesson;
+}
+
+router.get(
+  "/course-curriculums/:lessonId/assignment",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsAssignment(
+        req.user.id,
+        req.params.lessonId,
+      );
+      return res.json({
+        data: {
+          curriculum: mapLessonToLegacyCurriculum(lesson),
+          course: {
+            id: lesson.course.id,
+            title: lesson.course.title,
+            slug: lesson.course.slug,
+          },
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/course-curriculums/:lessonId/assignment/files",
+  authenticate,
+  authorize("EDUCATOR"),
+  upload.single("file"),
+  async (req, res, next) => {
+    try {
+      await ensureEducatorOwnsAssignment(req.user.id, req.params.lessonId);
+      if (!req.file) throw new ApiError(400, "File is required");
+      return res.json({
+        data: {
+          path: mediaPath(req.file),
+          name: req.file.originalname,
+          size: req.file.size,
+          type: req.file.mimetype,
+        },
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.put(
+  "/course-curriculums/:lessonId/assignment",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsAssignment(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const previous = normalizeAssignment(
+        parseJsonOrNull(lesson.assignment) || {},
+      );
+      const next_ = normalizeAssignment(req.body.assignment || {}, previous);
+      if (previous.status === "PUBLISHED" && req.body.publish !== false && next_.questions.length === 0) {
+        throw new ApiError(400, "You cannot delete the final question. Add another question before deleting it.");
+      }
+      if (req.body.publish === true) {
+        next_.status = "PUBLISHED";
+      } else if (req.body.publish === false) {
+        next_.status = "DRAFT";
+      }
+
+      const data = { assignment: next_ };
+      const basic = req.body.basic;
+      if (basic && typeof basic === "object") {
+        if (typeof basic.title === "string" && basic.title.trim()) {
+          data.title = basic.title.trim().slice(0, 80);
+        }
+        if (typeof basic.description === "string") {
+          data.description = basic.description.slice(0, 2000);
+        }
+        if (basic.duration_minutes !== undefined) {
+          data.durationInSeconds =
+            Math.max(0, Math.min(10000, Number(basic.duration_minutes) || 0)) * 60;
+        }
+      }
+
+      if (req.body.publish === true) {
+        const title = data.title ?? lesson.title;
+        const description = data.description ?? lesson.description;
+        const seconds = data.durationInSeconds ?? lesson.durationInSeconds;
+        const plainText = (value) => String(value || "").replace(/<[^>]*>/g, "").trim();
+        const missing = [];
+        if (!String(title || "").trim() || !String(description || "").trim() || !(Number(seconds) >= 60)) {
+          missing.push("Basic Info (title, description and a duration of at least 1 minute)");
+        }
+        if (!plainText(next_.instructions.text) && !next_.instructions.video) missing.push("Instructions (video or text)");
+        if (next_.questions.length === 0) missing.push("Questions");
+        if (missing.length) {
+          throw new ApiError(400, `Complete the following before publishing: ${missing.join("; ")}`);
+        }
+      }
+
+      const updated = await prisma.lesson.update({
+        where: { id: lesson.id },
+        data,
+        include: lessonIncludeForTopics(),
+      });
+      return res.json({ data: mapLessonToLegacyCurriculum(updated) });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+async function loadPublishedAssignmentForLearner(userId, lessonId) {
+  await assertLessonUnlockedForUser(userId, lessonId);
+  const lesson = await prisma.lesson.findUnique({ where: { id: lessonId } });
+  if (!lesson || lesson.type !== "ASSIGNMENT") {
+    throw new ApiError(404, "Assignment not found");
+  }
+  const assignment = normalizeAssignment(parseJsonOrNull(lesson.assignment) || {});
+  if (assignment.status !== "PUBLISHED") {
+    throw new ApiError(404, "Assignment not found");
+  }
+  return { lesson, assignment };
+}
+
+function mapSubmission(row) {
+  return row
+    ? {
+        answers: row.answers || {},
+        status: row.status,
+        submitted_at: row.submittedAt,
+      }
+    : { answers: {}, status: "NONE", submitted_at: null };
+}
+
+router.get(
+  "/course-curriculums/:lessonId/assignment-submission",
+  authenticate,
+  async (req, res, next) => {
+    try {
+      await loadPublishedAssignmentForLearner(req.user.id, req.params.lessonId);
+      const row = await prisma.assignmentSubmission.findUnique({
+        where: {
+          lessonId_userId: { lessonId: req.params.lessonId, userId: req.user.id },
+        },
+      });
+      return res.json({ data: mapSubmission(row) });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.put(
+  "/course-curriculums/:lessonId/assignment-submission",
+  authenticate,
+  async (req, res, next) => {
+    try {
+      const { assignment } = await loadPublishedAssignmentForLearner(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const answers = normalizeSubmissionAnswers(req.body.answers, assignment.questions);
+      const submit = req.body.submit === true;
+      if (submit) {
+        const empty = assignment.questions.some(
+          (q) => !String(answers[q.id] || "").replace(/<[^>]*>/g, "").trim(),
+        );
+        if (empty) {
+          throw new ApiError(400, "Answer every question before submitting");
+        }
+      }
+      const key = {
+        lessonId_userId: { lessonId: req.params.lessonId, userId: req.user.id },
+      };
+      const existing = await prisma.assignmentSubmission.findUnique({ where: key });
+      const data = {
+        answers,
+        status: submit || existing?.status === "SUBMITTED" ? "SUBMITTED" : "DRAFT",
+        submittedAt: submit ? new Date() : existing?.submittedAt || null,
+      };
+      const row = await prisma.assignmentSubmission.upsert({
+        where: key,
+        create: { lessonId: req.params.lessonId, userId: req.user.id, ...data },
+        update: data,
+      });
+      if (submit) {
+        await updateLessonProgress(req.user.id, {
+          lessonId: req.params.lessonId,
+          progressPct: 100,
+          isCompleted: true,
+          lastPosition: 0,
+        });
+      }
+      return res.json({ data: mapSubmission(row) });
     } catch (error) {
       return next(error);
     }

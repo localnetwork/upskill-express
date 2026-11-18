@@ -54,6 +54,7 @@ model User {
   createdCoupons        Coupon[]          @relation("CouponCreator")
   discussionThreads     DiscussionThread[] @relation("DiscussionAuthor")
   discussionReplies     DiscussionReply[]  @relation("DiscussionReplyAuthor")
+  announcementComments  AnnouncementComment[] @relation("AnnouncementCommentAuthor")
   discussionThreadVotes DiscussionThreadVote[] @relation("DiscussionThreadVoter")
   resolvedDiscussionThreads DiscussionThread[] @relation("DiscussionResolver")
   chatConversationMemberships ChatConversationParticipant[]
@@ -379,6 +380,7 @@ model Lesson {
   codingStarterCode  String?
   quizQuestions      Json?
   rolePlay           Json?
+  assignment         Json?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 
@@ -541,6 +543,35 @@ model DiscussionReply {
   @@index([authorId, createdAt])
   @@index([parentReplyId])
   @@map("discussion_replies")
+}
+
+model AssignmentSubmission {
+  id          String    @id @default(cuid())
+  lessonId    String
+  userId      String
+  answers     Json      @default("{}")
+  status      String    @default("DRAFT")
+  submittedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([lessonId, userId])
+  @@index([userId])
+  @@map("assignment_submissions")
+}
+
+model AnnouncementComment {
+  id             String   @id @default(cuid())
+  announcementId String
+  authorId       String
+  body           String
+  createdAt      DateTime @default(now())
+
+  author         User     @relation("AnnouncementCommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([announcementId, createdAt])
+  @@index([authorId])
+  @@map("announcement_comments")
 }
 
 model ChatConversation {

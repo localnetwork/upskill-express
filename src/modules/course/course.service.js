@@ -20,6 +20,10 @@ import {
   toLearnerRolePlay,
 } from "../curriculum/role-play.service.js";
 import {
+  toLearnerAssignment,
+  normalizeAssignment,
+} from "../curriculum/assignment.service.js";
+import {
   buildCloudflareEmbedUrlFromPlaybackUrl,
   buildCloudflareSignedEmbedUrl,
   extractCloudflareVideoIdFromPlaybackUrl,
@@ -3426,6 +3430,8 @@ function mapCourseDetails(course, goals) {
                 ? "coding_exercise"
                 : lesson.type === "ROLE_PLAY"
                   ? "role_play"
+                  : lesson.type === "ASSIGNMENT"
+                  ? "assignment"
                   : lesson.type === "VIDEO" || lesson.videoUrl
                   ? "video"
                   : lesson.assignmentText || lesson.type === "RESOURCE"
@@ -3459,7 +3465,9 @@ function mapCourseDetails(course, goals) {
                     checklist: normalizeStringArray(parsedStarterCode?.checklist),
                     hints: normalizeStringArray(parsedStarterCode?.hints),
                   }
-                : lesson.videoUrl
+                : lesson.type === "ASSIGNMENT"
+                  ? normalizeAssignment(lesson.assignment)
+                  : lesson.videoUrl
                   ? {
                       id: lesson.id,
                       path: mapVideoPlaybackToEmbedUrl(lesson.videoUrl),
@@ -4463,6 +4471,8 @@ export async function getCourseRoute(slug, actor = null) {
         curriculum_resource_type:
           lesson.type === "ROLE_PLAY"
             ? "role_play"
+            : lesson.type === "ASSIGNMENT"
+            ? "assignment"
             : lesson.type === "QUIZ"
             ? "quiz"
             : lesson.type === "CODING_EXERCISE"
@@ -4708,6 +4718,8 @@ export async function getCourseForLearner(userId, slug) {
             curriculum_resource_type:
                 lesson.type === "ROLE_PLAY"
                   ? "role_play"
+                  : lesson.type === "ASSIGNMENT"
+                  ? "assignment"
                   : lesson.type === "QUIZ"
                   ? "quiz"
                   : lesson.type === "CODING_EXERCISE"
@@ -4729,6 +4741,22 @@ export async function getCourseForLearner(userId, slug) {
                         safeParseJson(lesson.rolePlay) || {},
                       );
                       return rolePlay.status === "PUBLISHED" ? rolePlay : null;
+                    })()
+                : lesson.type === "ASSIGNMENT"
+                  ? (() => {
+                      const assignment = toLearnerAssignment(
+                        safeParseJson(lesson.assignment) || {},
+                      );
+                      return assignment.status === "PUBLISHED"
+                        ? {
+                            ...assignment,
+                            title: lesson.title,
+                            description: lesson.description || "",
+                            duration_minutes: Math.round(
+                              Number(lesson.durationInSeconds || 0) / 60,
+                            ),
+                          }
+                        : null;
                     })()
                 : lesson.type === "QUIZ"
                   ? {

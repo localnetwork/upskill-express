@@ -108,6 +108,9 @@ export async function listMyNotifications(userId, query) {
   const kind = String(query?.kind || "")
     .trim()
     .slice(0, 80);
+  const courseId = String(query?.courseId || "")
+    .trim()
+    .slice(0, 80);
 
   const where = {
     userId,
@@ -125,12 +128,16 @@ export async function listMyNotifications(userId, query) {
           ],
         }
       : {}),
-    ...(kind
+    ...(kind || courseId
       ? {
-          metadata: {
-            path: ["notificationKind"],
-            equals: kind,
-          },
+          AND: [
+            ...(kind
+              ? [{ metadata: { path: ["notificationKind"], equals: kind } }]
+              : []),
+            ...(courseId
+              ? [{ metadata: { path: ["courseId"], equals: courseId } }]
+              : []),
+          ],
         }
       : {}),
   };
@@ -169,4 +176,58 @@ export async function getMyNotification(userId, notificationId) {
     withOrder: true,
   });
   return enriched;
+}
+
+// Comments are shared by everyone who received the same announcement.
+async function resolveAnnouncementId(userId, notificationId) {
+  const notification = await prisma.notification.findFirst({
+    where: { id: notificationId, userId },
+    select: { id: true, metadata: true },
+  });
+  if (
+    !notification ||
+    notification.metadata?.notificationKind !== "INSTRUCTOR_ANNOUNCEMENT"
+  ) {
+    throw new ApiError(404, "Announcement not found");
+  }
+  return String(notification.metadata?.announcementId || notification.id);
+}
+
+function toAnnouncementComment(row) {
+  return {
+    id: row.id,
+    body: row.body,
+    createdAt: row.createdAt,
+    author: row.author,
+  };
+}
+
+const announcementCommentAuthorSelect = {
+  select: { id: true, username: true, fullName: true },
+};
+
+export async function listAnnouncementComments(userId, notificationId, query = {}) {
+  const announcementId = await resolveAnnouncementId(userId, notificationId);
+  const { page, limit, skip } = getPagination(query);
+  const where = { announcementId };
+  const [rows, total] = await Promise.all([
+    prisma.announcementComment.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: { createdAt: "asc" },
+      include: { author: announcementCommentAuthorSelect },
+    }),
+    prisma.announcementComment.count({ where }),
+  ]);
+  return toPagedResult(rows.map(toAnnouncementComment), total, page, limit);
+}
+
+export async function createAnnouncementComment(userId, notificationId, body) {
+  const announcementId = await resolveAnnouncementId(userId, notificationId);
+  const row = await prisma.announcementComment.create({
+    data: { announcementId, authorId: userId, body },
+    include: { author: announcementCommentAuthorSelect },
+  });
+  return toAnnouncementComment(row);
 }
