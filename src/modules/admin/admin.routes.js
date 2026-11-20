@@ -10,6 +10,7 @@ import {
   createRoleController,
   deleteRoleController,
   getPlatformSettingsController,
+  getAdminOrderController,
   listAdminCoursesController,
   listAdminOrdersController,
   overviewTrendsController,
@@ -81,6 +82,17 @@ router.get(
     tags: ["admin-revenue", "orders"],
   }),
   asyncHandler(listAdminOrdersController),
+);
+router.get(
+  "/orders/:orderId",
+  authorizePermission("reports.revenue"),
+  cacheGetResponse({
+    prefix: "admin:order-details",
+    ttlSeconds: 60,
+    varyByUser: true,
+    tags: ["admin-revenue", "orders"],
+  }),
+  asyncHandler(getAdminOrderController),
 );
 router.post("/courses/:courseId/approve", authorizePermission("courses.approve"), validate(reviewCourseValidator), asyncHandler(approveCourseController));
 router.post("/courses/:courseId/reject", authorizePermission("courses.reject"), validate(reviewCourseValidator), asyncHandler(rejectCourseController));

@@ -3,11 +3,20 @@ import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import { validate } from "../../shared/middleware/validate.middleware.js";
 import { asyncHandler } from "../../shared/utils/asyncHandler.js";
 import { upload } from "../../shared/middleware/upload.middleware.js";
+import { createRateLimiter } from "../../shared/middleware/rate-limit.middleware.js";
 import * as svc from "./community.service.js";
 import * as v from "./community.validator.js";
 
 const router = Router();
 router.use(authenticate);
+
+const reactionLimiter = createRateLimiter({
+  keyPrefix: "rl:community:reaction",
+  windowSeconds: 10,
+  maxRequests: 10,
+  by: "user",
+  message: "You're reacting too quickly. Please slow down.",
+});
 
 const ok = (message, status = 200) => (fn) =>
   asyncHandler(async (req, res) => {
@@ -38,9 +47,9 @@ router.get("/posts/:postId", validate(v.postParams, "params"), ok("Post fetched"
 router.patch("/posts/:postId", validate(v.postParams, "params"), validate(v.postBody), ok("Post updated")((req) => svc.updatePost(req.params.postId, req.user.id, req.body)));
 router.delete("/posts/:postId", validate(v.postParams, "params"), ok("Post deleted")((req) => svc.deletePost(req.params.postId, req.user.id)));
 router.post("/posts/:postId/pin", validate(v.postParams, "params"), validate(v.pinBody), ok("Post pin updated")((req) => svc.pinPost(req.params.postId, req.user.id, req.body.pinned)));
-router.post("/posts/:postId/like", validate(v.postParams, "params"), ok("Like toggled")((req) => svc.toggleLike(req.params.postId, req.user.id)));
-router.post("/posts/:postId/vote", validate(v.postParams, "params"), validate(v.voteBody), ok("Vote recorded")((req) => svc.votePoll(req.params.postId, req.user.id, req.body.optionId)));
-router.delete("/posts/:postId/vote", validate(v.postParams, "params"), ok("Vote removed")((req) => svc.removePollVote(req.params.postId, req.user.id)));
+router.post("/posts/:postId/like", reactionLimiter, validate(v.postParams, "params"), ok("Like toggled")((req) => svc.toggleLike(req.params.postId, req.user.id)));
+router.post("/posts/:postId/vote", reactionLimiter, validate(v.postParams, "params"), validate(v.voteBody), ok("Vote recorded")((req) => svc.votePoll(req.params.postId, req.user.id, req.body.optionId)));
+router.delete("/posts/:postId/vote", reactionLimiter, validate(v.postParams, "params"), ok("Vote removed")((req) => svc.removePollVote(req.params.postId, req.user.id)));
 
 router.get("/posts/:postId/comments", validate(v.postParams, "params"), ok("Comments fetched")((req) => svc.listComments(req.params.postId, req.user.id, req.query)));
 router.post("/posts/:postId/comments", validate(v.postParams, "params"), validate(v.commentBody), ok("Comment created", 201)((req) => svc.createComment(req.params.postId, req.user.id, req.body)));

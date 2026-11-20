@@ -10,6 +10,7 @@ import {
 import {
   approveCourse,
   getAdminPlatformSettings,
+  getAdminOrderDetails,
   getAdminActivityAnalytics,
   getRevenueReport,
   getOverviewTrends,
@@ -108,6 +109,11 @@ export async function activityReportController(req, res) {
 export async function listAdminOrdersController(req, res) {
   const data = await listAdminOrders(req.query);
   return res.json({ message: "Admin orders fetched", ...data });
+}
+
+export async function getAdminOrderController(req, res) {
+  const data = await getAdminOrderDetails(req.params.orderId);
+  return res.json({ message: "Admin order fetched", data });
 }
 
 export async function listAdminCoursesController(req, res) {

@@ -5,6 +5,7 @@ import { sendEmail } from "../../shared/mail/mailer.js";
 import { buildCoursePublishedEmail } from "../../shared/mail/templates.js";
 import { getPagination, toPagedResult } from "../../shared/utils/pagination.js";
 import { getAdminActivityReport } from "../analytics/analytics.service.js";
+import { resolvePaymentMethodLabel } from "../order/order.service.js";
 import {
   getPlatformCommerceSettings,
   updatePlatformCommerceSettings,
@@ -391,6 +392,48 @@ export async function listAdminCourses(query = {}) {
 }
 
 const ORDER_STATUSES = ["CREATED", "PAID", "FAILED", "REFUNDED", "CANCELLED"];
+
+export async function getAdminOrderDetails(orderId) {
+  const order = await prisma.order.findUnique({
+    where: { id: String(orderId) },
+    include: {
+      user: { select: { id: true, username: true, email: true, fullName: true } },
+      coupon: { select: { code: true } },
+      payment: {
+        select: {
+          provider: true,
+          rawResponse: true,
+          providerOrderId: true,
+          providerCaptureId: true,
+          status: true,
+          payerEmail: true,
+          createdAt: true,
+          capturedAt: true,
+        },
+      },
+      items: {
+        select: {
+          id: true,
+          unitPrice: true,
+          discountAmount: true,
+          taxAmount: true,
+          platformFeeAmount: true,
+          educatorEarning: true,
+          totalAmount: true,
+          course: { select: { id: true, title: true, slug: true } },
+          educator: { select: { id: true, username: true, fullName: true } },
+        },
+      },
+    },
+  });
+  if (!order) throw new ApiError(404, "Order not found");
+  const { rawResponse, ...payment } = order.payment || {};
+  return {
+    ...order,
+    payment: order.payment ? payment : null,
+    paymentMethod: resolvePaymentMethodLabel(order.payment),
+  };
+}
 
 export async function listAdminOrders(query = {}) {
   const { page, limit, skip } = getPagination(query);
