@@ -18,7 +18,38 @@ import {
 const MIN_PAYOUT_AMOUNT_PHP = 500;
 const PAYOUT_REVIEW_ESTIMATE_DAYS = 3;
 const PAYOUT_APPROVED_ESTIMATE_DAYS = 1;
-const PAYOUT_WITHDRAWAL_FEE_RATE = 0.02;
+// Xendit charges the platform a fee on the amount sent plus VAT on that fee.
+// We pass that cost on so the instructor's net covers it exactly.
+const PAYOUT_TRANSACTION_FEE_RATE = 0.01;
+const PAYOUT_TRANSACTION_FEE_MIN_PHP = 15;
+const PAYOUT_TRANSACTION_VAT_RATE = 0.12;
+
+function computePayoutDeductions(grossAmount) {
+  const vatFactor = 1 + PAYOUT_TRANSACTION_VAT_RATE;
+  const minFeeWithVat = PAYOUT_TRANSACTION_FEE_MIN_PHP * vatFactor;
+  const percentNet = Math.floor(
+    (grossAmount / (1 + PAYOUT_TRANSACTION_FEE_RATE * vatFactor)) * 100,
+  ) / 100;
+  const netAmount =
+    percentNet * PAYOUT_TRANSACTION_FEE_RATE >= PAYOUT_TRANSACTION_FEE_MIN_PHP
+      ? percentNet
+      : Math.max(Math.floor((grossAmount - minFeeWithVat) * 100) / 100, 0);
+  const transactionFeeAmount = Number(
+    Math.max(
+      netAmount * PAYOUT_TRANSACTION_FEE_RATE,
+      PAYOUT_TRANSACTION_FEE_MIN_PHP,
+    ).toFixed(2),
+  );
+  const transactionVatAmount = Number(
+    (transactionFeeAmount * PAYOUT_TRANSACTION_VAT_RATE).toFixed(2),
+  );
+  return {
+    netAmount: Number(netAmount.toFixed(2)),
+    transactionFeeAmount,
+    transactionVatAmount,
+    withdrawalFeeAmount: Number((grossAmount - netAmount).toFixed(2)),
+  };
+}
 const payoutRequestItemsInclude = {
   events: {
     orderBy: { occurredAt: "asc" },
@@ -904,7 +935,9 @@ export async function getMyPayoutSummary(educatorId) {
 
   return {
     minimumPayoutAmount: MIN_PAYOUT_AMOUNT_PHP,
-    withdrawalFeeRate: PAYOUT_WITHDRAWAL_FEE_RATE,
+    transactionFeeRate: PAYOUT_TRANSACTION_FEE_RATE,
+    transactionFeeMinimum: PAYOUT_TRANSACTION_FEE_MIN_PHP,
+    transactionVatRate: PAYOUT_TRANSACTION_VAT_RATE,
     currency: env.xenditPayoutCurrency,
     payoutCycle: cycleWindow.payoutCycle,
     availableBalance: Number(availableBalance.toFixed(2)),
@@ -1015,14 +1048,14 @@ export async function requestPayout(educatorId, payload) {
       `Minimum payout is PHP ${MIN_PAYOUT_AMOUNT_PHP.toFixed(2)}`,
     );
   }
-  const withdrawalFeeAmount = Number(
-    (grossPayoutAmount * PAYOUT_WITHDRAWAL_FEE_RATE).toFixed(2),
-  );
-  const payoutAmount = Number(
-    Math.max(grossPayoutAmount - withdrawalFeeAmount, 0).toFixed(2),
-  );
+  const {
+    netAmount: payoutAmount,
+    transactionFeeAmount,
+    transactionVatAmount,
+    withdrawalFeeAmount,
+  } = computePayoutDeductions(grossPayoutAmount);
   if (payoutAmount <= 0) {
-    throw new ApiError(400, "Payout amount is too low after withdrawal fee");
+    throw new ApiError(400, "Payout amount is too low after fees");
   }
 
   const request = await prisma.$transaction(async (tx) => {
@@ -1061,7 +1094,11 @@ export async function requestPayout(educatorId, payload) {
             subscriptionPool: sumSelected((item) => item.earningType === "SUBSCRIPTION_POOL"),
           },
           grossPayoutAmount,
-          withdrawalFeeRate: PAYOUT_WITHDRAWAL_FEE_RATE,
+          transactionFeeRate: PAYOUT_TRANSACTION_FEE_RATE,
+          transactionFeeMinimum: PAYOUT_TRANSACTION_FEE_MIN_PHP,
+          transactionVatRate: PAYOUT_TRANSACTION_VAT_RATE,
+          transactionFeeAmount,
+          transactionVatAmount,
           withdrawalFeeAmount,
           netPayoutAmount: payoutAmount,
           minimumPayoutAmount: MIN_PAYOUT_AMOUNT_PHP,
