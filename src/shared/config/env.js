@@ -57,6 +57,7 @@ export const env = {
     "http://localhost:3000"
   ).replace(/\/$/, ""),
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
+  feDeployHook: (process.env.FE_DEPLOY_HOOK || "").trim(),
   emailUser: process.env.EMAIL_USER || "",
   emailPassword: process.env.EMAIL_PASSWORD || "",
   emailHost: process.env.EMAIL_HOST || "",

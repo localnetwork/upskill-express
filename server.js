@@ -81,4 +81,20 @@ server.listen(PORT, () => {
   startAutoPayoutScheduler();
   startAutoNudgeScheduler();
   startAccessScheduler();
+  triggerFrontendRedeploy();
 });
+
+// Fire-and-forget: redeploy the frontend once the backend has booted after a deploy.
+function triggerFrontendRedeploy() {
+  if (env.nodeEnv !== "production" || !env.feDeployHook) return;
+  fetch(env.feDeployHook, {
+    method: "POST",
+    signal: AbortSignal.timeout(15000),
+  })
+    .then((res) => {
+      console.log(`Frontend redeploy hook triggered (${res.status})`);
+    })
+    .catch((error) => {
+      console.error("Frontend redeploy hook failed:", error?.message || error);
+    });
+}
