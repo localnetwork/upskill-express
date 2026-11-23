@@ -25,9 +25,18 @@ export async function listMyEnrollments(userId, query) {
       where,
       skip,
       take: limit,
-      include: {
+      select: {
+        id: true,
+        status: true,
+        accessSource: true,
+        accessEndsAt: true,
+        enrolledAt: true,
+        completedAt: true,
         course: {
-          include: {
+          select: {
+            id: true,
+            slug: true,
+            title: true,
             educator: {
               select: { id: true, username: true, fullName: true },
             },
@@ -36,15 +45,26 @@ export async function listMyEnrollments(userId, query) {
                 mediaType: { in: ["COVER_IMAGE", "IMAGE"] },
               },
               orderBy: { createdAt: "desc" },
+              take: 5,
+              select: {
+                id: true,
+                storagePath: true,
+                originalName: true,
+                mediaType: true,
+              },
             },
             sections: {
-              include: {
-                lessons: true,
-              },
+              select: { _count: { select: { lessons: true } } },
             },
           },
         },
-        courseProgress: true,
+        courseProgress: {
+          select: {
+            totalLessons: true,
+            completedLessons: true,
+            progressPct: true,
+          },
+        },
       },
       orderBy: { createdAt: "desc" },
     }),
@@ -52,23 +72,28 @@ export async function listMyEnrollments(userId, query) {
   ]);
 
   const mappedRows = rows.map((enrollment) => {
+    const { media, sections, educator, ...courseFields } =
+      enrollment.course || {};
     const coverImage = mapLegacyMedia(
-      pickLatestMediaByTypes(enrollment.course?.media, ["COVER_IMAGE", "IMAGE"]),
+      pickLatestMediaByTypes(media, ["COVER_IMAGE", "IMAGE"]),
     );
     const totalLessons =
       enrollment.courseProgress?.totalLessons ??
-      enrollment.course?.sections?.reduce(
-        (acc, section) => acc + (section.lessons?.length || 0),
+      sections?.reduce(
+        (acc, section) => acc + (section._count?.lessons || 0),
         0,
       ) ??
       0;
     const completedLessons = enrollment.courseProgress?.completedLessons || 0;
     const progressPct = Number(enrollment.courseProgress?.progressPct || 0);
+    const { courseProgress, ...enrollmentFields } = enrollment;
 
     return {
-      ...enrollment,
+      ...enrollmentFields,
       course: {
-        ...enrollment.course,
+        ...courseFields,
+        educator,
+        author: { data: educator },
         cover_image: coverImage,
       },
       progress: {
