@@ -142,9 +142,16 @@ async function resolveCloudflareSigningKey() {
   }
 
   const envKeyId = String(env.cfStreamSigningKeyId || "").trim();
-  const envPem = normalizeCloudflareSigningKeyPem(env.cfStreamSigningKey);
-  if (envKeyId && envPem) {
-    cachedSigningKey = { id: envKeyId, pem: envPem };
+  const envKeyValue = String(env.cfStreamSigningKey || "").trim();
+  // Tolerate the key id and PEM being set in either variable.
+  const pemFromKey = normalizeCloudflareSigningKeyPem(envKeyValue);
+  const pemFromId = normalizeCloudflareSigningKeyPem(envKeyId);
+  if (pemFromKey && envKeyId) {
+    cachedSigningKey = { id: envKeyId, pem: pemFromKey };
+    return cachedSigningKey;
+  }
+  if (pemFromId && envKeyValue) {
+    cachedSigningKey = { id: envKeyValue, pem: pemFromId };
     return cachedSigningKey;
   }
 
