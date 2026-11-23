@@ -430,10 +430,12 @@ function parseJsonOrNull(value) {
 }
 
 function lessonIncludeForTopics() {
+  const media = { where: { mediaType: "RESOURCE" }, orderBy: { createdAt: "asc" } };
   return supportsLessonTopics
     ? {
         topic: true,
         videoUpload: true,
+        media,
         lessonTopics: {
           include: {
             topic: true,
@@ -443,6 +445,7 @@ function lessonIncludeForTopics() {
     : {
         topic: true,
         videoUpload: true,
+        media,
       };
 }
 
@@ -555,6 +558,16 @@ function mapLessonToLegacyCurriculum(lesson) {
     unlock_type: String(lesson.unlockType || "IMMEDIATE").toLowerCase(),
     unlock_at: lesson.unlockAt || null,
     prerequisite_lesson_id: lesson.prerequisiteLessonId || null,
+    resources: (lesson.media || [])
+      .filter((media) => media.mediaType === "RESOURCE")
+      .map((media) => ({
+        id: media.id,
+        path: media.storagePath,
+        name: media.originalName,
+        type: media.mimeType,
+        size: media.sizeInBytes,
+        external: media.mimeType === "text/uri-list",
+      })),
     asset:
       lesson.type === "ROLE_PLAY"
         ? normalizeRolePlay(parseJsonOrNull(lesson.rolePlay) || {})
@@ -3225,6 +3238,110 @@ router.delete(
       await deleteStreamVideosForLessons({ id: lesson.id });
       await prisma.lesson.delete({ where: { id: lesson.id } });
       return res.json({ success: true });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
+  "/course-curriculums/:lessonId/resources",
+  authenticate,
+  authorize("EDUCATOR"),
+  upload.single("file"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      if (!req.file && !req.body?.url && !req.body?.library_media_id) {
+        throw new ApiError(400, "File, URL or library resource is required");
+      }
+      let data;
+      if (req.file) {
+        data = {
+          storagePath: mediaPath(req.file),
+          originalName: req.file.originalname,
+          mimeType: req.file.mimetype || "application/octet-stream",
+          sizeInBytes: req.file.size,
+        };
+      } else if (req.body.library_media_id) {
+        const source = await prisma.media.findFirst({
+          where: {
+            id: String(req.body.library_media_id),
+            courseId: lesson.courseId,
+            mediaType: "RESOURCE",
+          },
+        });
+        if (!source) throw new ApiError(404, "Library resource not found");
+        data = {
+          storagePath: source.storagePath,
+          originalName: source.originalName,
+          mimeType: source.mimeType,
+          sizeInBytes: source.sizeInBytes,
+        };
+      } else {
+        let url;
+        try {
+          url = new URL(String(req.body.url).trim());
+        } catch {
+          throw new ApiError(400, "A valid URL is required");
+        }
+        if (!["http:", "https:"].includes(url.protocol)) {
+          throw new ApiError(400, "Only http(s) URLs are allowed");
+        }
+        data = {
+          storagePath: url.toString(),
+          originalName:
+            String(req.body.title || "").trim().slice(0, 200) || url.hostname,
+          mimeType: "text/uri-list",
+          sizeInBytes: 0,
+        };
+      }
+      await prisma.media.create({
+        data: {
+          ...data,
+          userId: req.user.id,
+          courseId: lesson.courseId,
+          lessonId: lesson.id,
+          mediaType: "RESOURCE",
+        },
+      });
+      const updated = await prisma.lesson.findUnique({
+        where: { id: lesson.id },
+        include: lessonIncludeForTopics(),
+      });
+      return res.status(201).json({ data: mapLessonToLegacyCurriculum(updated) });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.delete(
+  "/course-curriculums/:lessonId/resources/:mediaId",
+  authenticate,
+  authorize("EDUCATOR"),
+  async (req, res, next) => {
+    try {
+      const lesson = await ensureEducatorOwnsLesson(
+        req.user.id,
+        req.params.lessonId,
+      );
+      const removed = await prisma.media.deleteMany({
+        where: {
+          id: req.params.mediaId,
+          lessonId: lesson.id,
+          mediaType: "RESOURCE",
+        },
+      });
+      if (!removed.count) throw new ApiError(404, "Resource not found");
+      const updated = await prisma.lesson.findUnique({
+        where: { id: lesson.id },
+        include: lessonIncludeForTopics(),
+      });
+      return res.json({ data: mapLessonToLegacyCurriculum(updated) });
     } catch (error) {
       return next(error);
     }

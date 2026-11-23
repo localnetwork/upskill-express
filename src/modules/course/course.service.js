@@ -82,6 +82,17 @@ function mapLegacyMedia(media) {
   };
 }
 
+export function mapLessonResource(media) {
+  return {
+    id: media.id,
+    path: media.storagePath,
+    name: media.originalName,
+    type: media.mimeType,
+    size: media.sizeInBytes,
+    external: media.mimeType === "text/uri-list",
+  };
+}
+
 async function getLatestUserPicturesMap(userIds = []) {
   const uniqueUserIds = Array.from(new Set((userIds || []).filter(Boolean)));
   if (!uniqueUserIds.length) return new Map();
@@ -3335,12 +3346,6 @@ export async function getCourseBySlug(slug) {
         include: {
           lessons: {
             orderBy: { position: "asc" },
-            include: {
-              media: {
-                orderBy: { createdAt: "desc" },
-                take: 1,
-              },
-            },
           },
         },
       },
@@ -3441,6 +3446,9 @@ function mapCourseDetails(course, goals) {
           topic_id: lesson.topicId || null,
           estimated_duration: estimateLessonDurationSeconds(lesson),
           curriculum_description: lesson.description || "",
+          resources: (lesson.media || [])
+            .filter((media) => media.mediaType === "RESOURCE")
+            .map(mapLessonResource),
           asset:
             lesson.type === "ROLE_PLAY"
               ? normalizeRolePlay(safeParseJson(lesson.rolePlay) || {})
@@ -3544,8 +3552,8 @@ export async function getCourseForManagement(user, slug) {
             orderBy: { position: "asc" },
             include: {
               media: {
-                orderBy: { createdAt: "desc" },
-                take: 1,
+                where: { mediaType: "RESOURCE" },
+                orderBy: { createdAt: "asc" },
               },
             },
           },
@@ -4649,6 +4657,10 @@ export async function getCourseForLearner(userId, slug) {
               lessons: {
                 orderBy: { position: "asc" },
                 include: {
+                  media: {
+                    where: { mediaType: "RESOURCE" },
+                    orderBy: { createdAt: "asc" },
+                  },
                   progress: {
                     where: { userId },
                     orderBy: { updatedAt: "desc" },
@@ -4756,6 +4768,9 @@ export async function getCourseForLearner(userId, slug) {
                   : "null",
             topic_id: lesson.topicId || null,
             curriculum_description: lesson.description || "",
+            resources: canAccessAsset
+              ? (lesson.media || []).map(mapLessonResource)
+              : [],
             estimated_duration: estimateLessonDurationSeconds(lesson),
             asset:
               !canAccessAsset
